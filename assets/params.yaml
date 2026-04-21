@@ -1,0 +1,40 @@
+# Template params file. Copy and edit paths for your project.
+
+# Input contracts
+input: assets/samplesheet.csv
+comparisons: assets/comparisons.csv
+outdir: ./results
+
+# References
+# Must match the references used during alignment/quantification.
+gtf: /path/to/reference/annotation.gtf
+
+# Option A (recommended): build transcript FASTA from genome + GTF
+use_gffread: true
+genome_fasta: /path/to/reference/genome.fa
+transcript_fasta: null
+
+# Option B: provide transcript FASTA directly
+# use_gffread: false
+# transcript_fasta: /path/to/reference/transcripts.fa
+
+genome_build: hg38
+
+# Library settings
+strandedness: reverse
+read_length: 150
+
+# Tool toggles
+run_rmats: true
+run_majiq: true
+run_isar: true
+
+# MAJIQ license key path.
+# If MAJIQ_LICENSE_FILE is exported in your environment,
+# this can be omitted or left as null.
+majiq_license: /path/to/licenses/majiq_license.key
+
+# Path to the MAJIQ Apptainer .sif image.
+# Build it with: apptainer build --fakeroot /path/to/majiq.sif <repo>/containers/majiq/Dockerfile
+# If MAJIQ_SIF is exported in your environment, this can be omitted.
+majiq_sif: /path/to/majiq.sif

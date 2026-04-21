@@ -1,0 +1,7 @@
+sample,condition,replicate,bam,bai,salmon_dir
+ctrl_rep1,control,1,/path/to/rnaseq_results/star_salmon/ctrl_rep1/ctrl_rep1.markdup.sorted.bam,/path/to/rnaseq_results/star_salmon/ctrl_rep1/ctrl_rep1.markdup.sorted.bam.bai,/path/to/rnaseq_results/star_salmon/ctrl_rep1
+ctrl_rep2,control,2,/path/to/rnaseq_results/star_salmon/ctrl_rep2/ctrl_rep2.markdup.sorted.bam,/path/to/rnaseq_results/star_salmon/ctrl_rep2/ctrl_rep2.markdup.sorted.bam.bai,/path/to/rnaseq_results/star_salmon/ctrl_rep2
+ctrl_rep3,control,3,/path/to/rnaseq_results/star_salmon/ctrl_rep3/ctrl_rep3.markdup.sorted.bam,/path/to/rnaseq_results/star_salmon/ctrl_rep3/ctrl_rep3.markdup.sorted.bam.bai,/path/to/rnaseq_results/star_salmon/ctrl_rep3
+treat_rep1,treatment,1,/path/to/rnaseq_results/star_salmon/treat_rep1/treat_rep1.markdup.sorted.bam,/path/to/rnaseq_results/star_salmon/treat_rep1/treat_rep1.markdup.sorted.bam.bai,/path/to/rnaseq_results/star_salmon/treat_rep1
+treat_rep2,treatment,2,/path/to/rnaseq_results/star_salmon/treat_rep2/treat_rep2.markdup.sorted.bam,/path/to/rnaseq_results/star_salmon/treat_rep2/treat_rep2.markdup.sorted.bam.bai,/path/to/rnaseq_results/star_salmon/treat_rep2
+treat_rep3,treatment,3,/path/to/rnaseq_results/star_salmon/treat_rep3/treat_rep3.markdup.sorted.bam,/path/to/rnaseq_results/star_salmon/treat_rep3/treat_rep3.markdup.sorted.bam.bai,/path/to/rnaseq_results/star_salmon/treat_rep3

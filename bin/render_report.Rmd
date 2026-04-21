@@ -1,0 +1,281 @@
+---
+title: "Alternative Splicing Analysis Report"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+    theme: flatly
+params:
+  comparison_id: "comparison"
+  rmats_dir: NULL
+  majiq_dir: NULL
+  isar_dir: NULL
+  fdr_cutoff: 0.05
+  dpsi_cutoff: 0.1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(DT)
+```
+
+# Summary
+
+This report presents differential alternative splicing analysis results for comparison: **`r params$comparison_id`**.
+
+**Analysis tools:**
+
+- rMATS-turbo: Differential alternative splicing (SE, A5SS, A3SS, MXE, RI events)
+- MAJIQ V3: Local Splicing Variation (LSV) detection
+- IsoformSwitchAnalyzeR: Isoform switch identification with functional consequences
+
+**Filter criteria:**
+
+- FDR cutoff: `r params$fdr_cutoff`
+- |ΔΨ| cutoff: `r params$dpsi_cutoff`
+
+---
+
+# rMATS Results
+
+```{r rmats_load, eval=!is.null(params$rmats_dir)}
+# Load rMATS summary
+event_types <- c("SE", "A5SS", "A3SS", "MXE", "RI")
+rmats_results <- list()
+
+for (event_type in event_types) {
+  jc_file <- file.path(params$rmats_dir, paste0(event_type, ".MATS.JC.txt"))
+  
+  if (file.exists(jc_file)) {
+    df <- read.delim(jc_file, stringsAsFactors = FALSE)
+    if (nrow(df) > 0) {
+      df$EventType <- event_type
+      rmats_results[[event_type]] <- df
+    }
+  }
+}
+
+# Combine all events
+if (length(rmats_results) > 0) {
+  all_rmats <- bind_rows(rmats_results)
+  
+  # Add significance flag
+  all_rmats <- all_rmats %>%
+    mutate(
+      Significant = FDR <= params$fdr_cutoff & abs(IncLevelDifference) >= params$dpsi_cutoff
+    )
+} else {
+  all_rmats <- data.frame()
+}
+```
+
+```{r rmats_summary, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
+# Summary table
+summary_table <- all_rmats %>%
+  group_by(EventType) %>%
+  summarise(
+    Total = n(),
+    Significant = sum(Significant, na.rm = TRUE),
+    FDR_leq_0.05 = sum(FDR <= 0.05, na.rm = TRUE),
+    Mean_deltaPSI = mean(abs(IncLevelDifference), na.rm = TRUE)
+  )
+
+kable(summary_table, caption = "rMATS Event Summary by Event Type", digits = 3)
+```
+
+```{r rmats_volcano, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=8}
+# Volcano plot
+all_rmats %>%
+  filter(!is.na(FDR) & FDR > 0) %>%
+  ggplot(aes(x = IncLevelDifference, y = -log10(FDR), color = Significant)) +
+  geom_point(alpha = 0.5, size = 1) +
+  facet_wrap(~EventType, scales = "free_y") +
+  scale_color_manual(values = c("gray", "red")) +
+  geom_hline(yintercept = -log10(params$fdr_cutoff), linetype = "dashed", color = "blue") +
+  geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "blue") +
+  theme_bw() +
+  labs(
+    title = "rMATS Volcano Plots",
+    x = "ΔΨ (IncLevelDifference)",
+    y = "-log10(FDR)"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+```{r rmats_top_table, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
+# Top significant events
+top_events <- all_rmats %>%
+  filter(Significant) %>%
+  arrange(FDR) %>%
+  select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference) %>%
+  head(50)
+
+if (nrow(top_events) > 0) {
+  datatable(
+    top_events,
+    caption = "Top 50 Significant rMATS Events",
+    options = list(pageLength = 10, scrollX = TRUE),
+    rownames = FALSE
+  ) %>%
+    formatRound(columns = c("FDR", "IncLevelDifference"), digits = 4)
+} else {
+  cat("No significant events detected.\n")
+}
+```
+
+---
+
+# MAJIQ Results
+
+```{r majiq_load, eval=!is.null(params$majiq_dir)}
+# Load MAJIQ TSV
+tsv_file <- list.files(params$majiq_dir, pattern = "\\.tsv$", full.names = TRUE)[1]
+
+if (!is.null(tsv_file) && file.exists(tsv_file)) {
+  majiq_results <- read.delim(tsv_file, stringsAsFactors = FALSE)
+  
+  # Add significance flag (probability_changing >= 0.95)
+  if ("probability_changing" %in% colnames(majiq_results)) {
+    majiq_results <- majiq_results %>%
+      mutate(Significant = probability_changing >= 0.95)
+  } else {
+    majiq_results$Significant <- FALSE
+  }
+} else {
+  majiq_results <- data.frame()
+}
+```
+
+```{r majiq_summary, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
+cat("Total LSVs detected:", nrow(majiq_results), "\n\n")
+
+if ("Significant" %in% colnames(majiq_results)) {
+  cat("Significant LSVs (P(changing) >= 0.95):", sum(majiq_results$Significant, na.rm = TRUE), "\n\n")
+}
+```
+
+```{r majiq_distribution, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0 && "mean_dpsi_per_lsv_junction" %in% colnames(majiq_results)}
+# Distribution of deltaPSI
+majiq_results %>%
+  filter(!is.na(mean_dpsi_per_lsv_junction)) %>%
+  ggplot(aes(x = abs(mean_dpsi_per_lsv_junction))) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  theme_bw() +
+  labs(
+    title = "Distribution of |ΔΨ| in MAJIQ LSVs",
+    x = "|mean ΔΨ per LSV junction|",
+    y = "Count"
+  )
+```
+
+```{r majiq_top_table, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
+# Top significant LSVs
+cols_to_show <- intersect(
+  c("gene_name", "lsv_id", "mean_dpsi_per_lsv_junction", "probability_changing", "probability_non_changing"),
+  colnames(majiq_results)
+)
+
+if (length(cols_to_show) > 0) {
+  top_lsvs <- majiq_results %>%
+    filter(Significant) %>%
+    arrange(desc(probability_changing)) %>%
+    select(all_of(cols_to_show)) %>%
+    head(50)
+  
+  if (nrow(top_lsvs) > 0) {
+    datatable(
+      top_lsvs,
+      caption = "Top 50 Significant MAJIQ LSVs",
+      options = list(pageLength = 10, scrollX = TRUE),
+      rownames = FALSE
+    ) %>%
+      formatRound(columns = names(top_lsvs)[sapply(top_lsvs, is.numeric)], digits = 4)
+  } else {
+    cat("No significant LSVs detected.\n")
+  }
+}
+```
+
+---
+
+# IsoformSwitchAnalyzeR Results
+
+```{r isar_load, eval=!is.null(params$isar_dir)}
+# Load ISAR results
+switches_file <- file.path(params$isar_dir, "top_isoform_switches.csv")
+consequences_file <- file.path(params$isar_dir, "consequence_summary.csv")
+
+if (file.exists(switches_file)) {
+  isar_switches <- read.csv(switches_file, stringsAsFactors = FALSE)
+} else {
+  isar_switches <- data.frame()
+}
+
+if (file.exists(consequences_file)) {
+  isar_consequences <- read.csv(consequences_file, stringsAsFactors = FALSE)
+} else {
+  isar_consequences <- data.frame()
+}
+```
+
+```{r isar_summary, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
+cat("Total isoform switches detected:", nrow(isar_switches), "\n\n")
+
+if ("gene_name" %in% colnames(isar_switches)) {
+  cat("Genes with switches:", length(unique(isar_switches$gene_name)), "\n\n")
+}
+```
+
+```{r isar_consequences_plot, eval=!is.null(params$isar_dir) && nrow(isar_consequences) > 0, fig.height=6}
+# Consequence summary plot
+if ("feature" %in% colnames(isar_consequences) && "count" %in% colnames(isar_consequences)) {
+  isar_consequences %>%
+    ggplot(aes(x = reorder(feature, count), y = count)) +
+    geom_col(fill = "steelblue") +
+    coord_flip() +
+    theme_bw() +
+    labs(
+      title = "Functional Consequences of Isoform Switches",
+      x = "Consequence Type",
+      y = "Count"
+    )
+}
+```
+
+```{r isar_top_table, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
+# Top switches table
+cols_to_show <- intersect(
+  c("gene_name", "isoform_id", "condition_1", "condition_2", "dIF", "isoform_switch_q_value"),
+  colnames(isar_switches)
+)
+
+if (length(cols_to_show) > 0) {
+  top_switches <- isar_switches %>%
+    head(50) %>%
+    select(all_of(cols_to_show))
+  
+  datatable(
+    top_switches,
+    caption = "Top 50 Isoform Switches",
+    options = list(pageLength = 10, scrollX = TRUE),
+    rownames = FALSE
+  ) %>%
+    formatRound(columns = names(top_switches)[sapply(top_switches, is.numeric)], digits = 4)
+}
+```
+
+---
+
+# Session Info
+
+```{r session_info}
+sessionInfo()
+```

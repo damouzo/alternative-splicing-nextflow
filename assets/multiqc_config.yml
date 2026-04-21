@@ -1,0 +1,37 @@
+# MultiQC Configuration
+
+report_comment: >
+  This report consolidates QC metrics from the alternative splicing analysis pipeline.
+  Pre-processing QC (FastQC, STAR, Salmon) comes from the upstream nf-core/rnaseq run.
+
+report_header_info:
+  - Pipeline: 'alternative-splicing-nextflow'
+  - Version: '1.0.0'
+
+# Module search patterns
+sp:
+  rmats:
+    fn: 'summary.txt'
+  
+  star:
+    fn: '*Log.final.out'
+
+# Table column configuration
+table_columns_visible:
+  FastQC:
+    percent_duplicates: False
+    percent_gc: True
+    avg_sequence_length: True
+    total_sequences: True
+
+# Custom content
+custom_data:
+  rmats_summary:
+    id: 'rmats_summary'
+    section_name: 'rMATS Event Summary'
+    description: 'Number of significant alternative splicing events detected by rMATS'
+    plot_type: 'bargraph'
+    pconfig:
+      id: 'rmats_events'
+      title: 'Significant AS Events (FDR < 0.05)'
+      ylab: 'Number of Events'

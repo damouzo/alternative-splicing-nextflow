@@ -1,0 +1,28 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+%labels
+    description "MAJIQ V3 for Local Splicing Variation analysis"
+    maintainer  "BCI-KRP"
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        make \
+        libhts-dev \
+        zlib1g-dev \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+    # Limit parallel C++ compilation to avoid OOM during pybind11/CMake build
+    export CMAKE_BUILD_PARALLEL_LEVEL=2
+    export MAX_JOBS=2
+
+    pip install --no-cache-dir git+https://bitbucket.org/biociphers/majiq_academic.git
+
+%environment
+    export PATH="/usr/local/bin:$PATH"
+
+%runscript
+    exec "$@"
