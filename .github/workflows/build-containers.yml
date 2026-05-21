@@ -17,14 +17,17 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_BASE: ghcr.io/${{ github.repository_owner }}/alternative-splicing-nextflow
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-isar:
     name: Build isar container
     runs-on: ubuntu-latest
+    # On push: the paths: filter above already ensures this workflow only runs when isar/Dockerfile changes.
+    # On workflow_dispatch: respect the target input.
     if: |
-      github.event_name == 'workflow_dispatch' && (inputs.target == 'isar' || inputs.target == 'all') ||
-      github.event_name == 'push' && contains(github.event.commits[0].modified, 'containers/isar/Dockerfile')
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'isar' || github.event.inputs.target == 'all'))
     permissions:
       contents: read
       packages: write
@@ -65,9 +68,11 @@ jobs:
   build-report:
     name: Build report container
     runs-on: ubuntu-latest
+    # On push: the paths: filter above already ensures this workflow only runs when report/Dockerfile changes.
+    # On workflow_dispatch: respect the target input.
     if: |
-      github.event_name == 'workflow_dispatch' && (inputs.target == 'report' || inputs.target == 'all') ||
-      github.event_name == 'push' && contains(github.event.commits[0].modified, 'containers/report/Dockerfile')
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'report' || github.event.inputs.target == 'all'))
     permissions:
       contents: read
       packages: write
