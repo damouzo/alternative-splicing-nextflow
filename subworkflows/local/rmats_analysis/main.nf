@@ -65,7 +65,8 @@ workflow RMATS_ANALYSIS {
                 }
             }
             
-            [comparison_id, g1_files.collect { it.toString() }, g2_files.collect { it.toString() }]
+            // Keep as Path objects — Nextflow will stage them properly in RMATS_POST work dir
+            [comparison_id, g1_files, g2_files]
         }
         .set { ch_rmats_files_by_comparison }
     
@@ -84,7 +85,8 @@ workflow RMATS_ANALYSIS {
                 }
             }
             
-            [comparison_id, g1_bams.collect { it.toString() }, g2_bams.collect { it.toString() }]
+            // Keep as Path objects — staged as symlinks, no large file copies
+            [comparison_id, g1_bams, g2_bams]
         }
         .set { ch_bams_by_comparison }
     
@@ -101,10 +103,10 @@ workflow RMATS_ANALYSIS {
      */
     RMATS_POST(
         ch_rmats_post_input.map { comparison_id, _g1_rmats, _g2_rmats, _g1_bams, _g2_bams -> comparison_id },
-        ch_rmats_post_input.map { _comparison_id, g1_rmats, _g2_rmats, _g1_bams, _g2_bams -> g1_rmats },
-        ch_rmats_post_input.map { _comparison_id, _g1_rmats, g2_rmats, _g1_bams, _g2_bams -> g2_rmats },
-        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, g1_bams, _g2_bams -> g1_bams },
-        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, _g1_bams, g2_bams -> g2_bams },
+        ch_rmats_post_input.map { _comparison_id, g1_rmats, _g2_rmats, _g1_bams, _g2_bams -> g1_rmats },  // List<Path> — staged
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, g2_rmats, _g1_bams, _g2_bams -> g2_rmats },  // List<Path> — staged
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, g1_bams, _g2_bams -> g1_bams },  // List<Path> — symlinked
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, _g1_bams, g2_bams -> g2_bams },  // List<Path> — symlinked
         gtf
     )
     

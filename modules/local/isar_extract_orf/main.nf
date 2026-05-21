@@ -3,7 +3,7 @@ process ISAR_EXTRACT_ORF {
     label 'process_high'
     label 'process_high_memory'
     
-    container 'oras://community.wave.seqera.io/library/bioconductor-dexseq_bioconductor-isoformswitchanalyzer_bioconductor-saturn_bioconductor-tximeta:63f4f88fcb3af3a9'
+    // Container resolved from modules.config (params.isar_container or ghcr.io default)
     
     input:
     tuple val(comparison_id), path(rds_input)

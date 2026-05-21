@@ -2,7 +2,7 @@ process RENDER_REPORT {
     tag "$comparison_id"
     label 'process_medium'
     
-    container 'rocker/verse:4.3.2'
+    // Container resolved from modules.config (params.report_container or ghcr.io default)
     
     publishDir "${params.outdir}/report", mode: params.publish_dir_mode
     
@@ -23,15 +23,6 @@ process RENDER_REPORT {
     def isar_arg  = isar_dir.name  != 'NO_ISAR'  ? isar_dir  : 'NULL'
     
     """
-    # Install required R packages if not present
-    Rscript -e "
-    if (!require('ggplot2')) install.packages('ggplot2', repos='https://cloud.r-project.org')
-    if (!require('dplyr')) install.packages('dplyr', repos='https://cloud.r-project.org')
-    if (!require('tidyr')) install.packages('tidyr', repos='https://cloud.r-project.org')
-    if (!require('DT')) install.packages('DT', repos='https://cloud.r-project.org')
-    "
-    
-    # Render R Markdown report
     Rscript -e "
     rmarkdown::render(
       input = '${report_rmd}',

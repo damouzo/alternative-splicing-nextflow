@@ -3,7 +3,7 @@ process ISAR_SWITCH_CONSEQUENCES {
     label 'process_medium'
     label 'process_high_memory'
     
-    container 'oras://community.wave.seqera.io/library/bioconductor-dexseq_bioconductor-isoformswitchanalyzer_bioconductor-saturn_bioconductor-tximeta:63f4f88fcb3af3a9'
+    // Container resolved from modules.config (params.isar_container or ghcr.io default)
     
     publishDir "${params.outdir}/isoformswitchr/${comparison_id}", mode: params.publish_dir_mode
     

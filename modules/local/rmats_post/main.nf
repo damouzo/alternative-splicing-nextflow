@@ -8,42 +8,36 @@ process RMATS_POST {
     publishDir "${params.outdir}/rmats/${comparison_id}", mode: params.publish_dir_mode
     
     input:
-    val comparison_id
-    val rmats_files_g1   // list of absolute path strings — not staged
-    val rmats_files_g2
-    val bams_g1
-    val bams_g2
+    val  comparison_id
+    path rmats_files_g1   // staged .rmats files for group 1
+    path rmats_files_g2   // staged .rmats files for group 2
+    path bams_g1          // staged BAM files for group 1 (symlinked, not copied)
+    path bams_g2          // staged BAM files for group 2
     path gtf
     
     output:
     tuple val(comparison_id), path("${comparison_id}"), emit: results
-    path "versions.yml"                                , emit: versions
+    path "versions.yml"                               , emit: versions
     
     script:
-    def strandedness = params.strandedness
-    def rmats_lib_type = strandedness == 'unstranded' ? 'fr-unstranded' :
-                         strandedness == 'forward'    ? 'fr-secondstrand' :
-                         strandedness == 'reverse'    ? 'fr-firststrand' : 'fr-unstranded'
+    def rmats_lib_type = params.strandedness == 'unstranded' ? 'fr-unstranded' :
+                         params.strandedness == 'forward'    ? 'fr-secondstrand' :
+                         params.strandedness == 'reverse'    ? 'fr-firststrand' : 'fr-unstranded'
+    // Resolve staged paths to absolute for rMATS BAM lists
+    def g1_bams = (bams_g1 instanceof List ? bams_g1 : [bams_g1]).collect { it.toAbsolutePath() }.join(',')
+    def g2_bams = (bams_g2 instanceof List ? bams_g2 : [bams_g2]).collect { it.toAbsolutePath() }.join(',')
     
     """
-    # Create BAM lists for group1 and group2
-    echo "${bams_g1.join(',')}" > b1.txt
-    echo "${bams_g2.join(',')}" > b2.txt
+    # Create BAM lists — absolute staged paths, readable regardless of executor node
+    echo "${g1_bams}" > b1.txt
+    echo "${g2_bams}" > b2.txt
 
-    # Create merged tmp directory with all .rmats files
+    # Collect all staged .rmats files into merged_tmp
     mkdir -p merged_tmp
-
-    # Copy all group1 .rmats files (absolute paths from PREP work dirs)
-    for f in ${rmats_files_g1.join(' ')}; do
+    for f in ${rmats_files_g1} ${rmats_files_g2}; do
         cp "\$f" merged_tmp/
     done
 
-    # Copy all group2 .rmats files
-    for f in ${rmats_files_g2.join(' ')}; do
-        cp "\$f" merged_tmp/
-    done
-    
-    # Create output directory
     mkdir -p ${comparison_id}
     
     # Run rMATS POST

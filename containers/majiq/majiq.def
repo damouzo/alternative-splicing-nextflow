@@ -1,9 +1,13 @@
+# Apptainer / Singularity definition for MAJIQ V3
+# Build: apptainer build majiq.sif majiq.def
+# Then pass --majiq_sif /path/to/majiq.sif to the pipeline
+
 Bootstrap: docker
 From: python:3.12-slim
 
 %labels
-    description "MAJIQ V3 for Local Splicing Variation analysis"
-    maintainer  "BCI-KRP"
+    org.opencontainers.image.description "MAJIQ V3 for Local Splicing Variation analysis"
+    org.opencontainers.image.source      "https://github.com/BCI-KRP/alternative-splicing-nextflow"
 
 %post
     apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +19,7 @@ From: python:3.12-slim
         git \
     && rm -rf /var/lib/apt/lists/*
 
-    # Limit parallel C++ compilation to avoid OOM during pybind11/CMake build
+    # Limit parallel C++ compilation to avoid OOM
     export CMAKE_BUILD_PARALLEL_LEVEL=2
     export MAX_JOBS=2
 
@@ -23,6 +27,8 @@ From: python:3.12-slim
 
 %environment
     export PATH="/usr/local/bin:$PATH"
+    # MAJIQ_LICENSE_FILE must be set in the host environment or via --env
+    # export MAJIQ_LICENSE_FILE=/path/to/majiq_license*.key
 
 %runscript
     exec "$@"

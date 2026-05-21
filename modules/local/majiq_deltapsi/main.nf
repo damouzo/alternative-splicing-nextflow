@@ -19,6 +19,9 @@ process MAJIQ_DELTAPSI {
     script:
     def sj1 = sj_files_g1 instanceof List ? sj_files_g1.join(' ') : sj_files_g1
     def sj2 = sj_files_g2 instanceof List ? sj_files_g2.join(' ') : sj_files_g2
+    // Guard against identical group names (would silently overwrite the first psicov file)
+    def g1_label = group1_name
+    def g2_label = group1_name == group2_name ? "${group2_name}_g2" : group2_name
 
     """
     export MAJIQ_LICENSE_FILE="${params.majiq_license}"
@@ -29,14 +32,14 @@ process MAJIQ_DELTAPSI {
     export NUMEXPR_NUM_THREADS=1
 
     # PSI coverage per group
-    majiq-v3 psi-coverage ${splicegraph} ${group1_name}.psicov ${sj1}
-    majiq-v3 psi-coverage ${splicegraph} ${group2_name}.psicov ${sj2}
+    majiq-v3 psi-coverage ${splicegraph} ${g1_label}.psicov ${sj1}
+    majiq-v3 psi-coverage ${splicegraph} ${g2_label}.psicov ${sj2}
 
     # DeltaPSI — outputs both voila file and TSV directly
     majiq-v3 deltapsi \\
         --splicegraph ${splicegraph} \\
-        -psi1 ${group1_name}.psicov \\
-        -psi2 ${group2_name}.psicov \\
+        -psi1 ${g1_label}.psicov \\
+        -psi2 ${g2_label}.psicov \\
         --output-voila ${comparison_id}.dpsicov \\
         --output-tsv ${comparison_id}.tsv
 

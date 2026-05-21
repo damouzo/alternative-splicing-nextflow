@@ -11,6 +11,7 @@
  */
 
 include { GFFREAD_TRANSCRIPTOME    } from '../../../modules/local/gffread_transcriptome/main'
+include { ISAR_WRITE_SAMPLESHEET   } from '../../../modules/local/isar_write_samplesheet/main'
 include { ISAR_IMPORT              } from '../../../modules/local/isar_import/main'
 include { ISAR_SWITCH_TEST         } from '../../../modules/local/isar_switch_test/main'
 include { ISAR_EXTRACT_ORF         } from '../../../modules/local/isar_extract_orf/main'
@@ -43,7 +44,8 @@ workflow ISOFORMSWITCHR_ANALYSIS {
     }
     
     /*
-     * Group samples by comparison_id and create per-comparison samplesheets
+     * Group samples by comparison_id and build per-comparison CSV rows
+     * Computing strings in .map{} is fine — writing files here is not.
      */
     samples_salmon
         .map { meta, salmon_dir ->
@@ -51,25 +53,28 @@ workflow ISOFORMSWITCHR_ANALYSIS {
         }
         .groupTuple(by: 0)
         .map { comparison_id, sample_ids, conditions, replicates, salmon_dirs ->
-            // Create temporary samplesheet for this comparison
-            def samplesheet_content = "sample,condition,replicate,salmon_dir\n"
-            sample_ids.eachWithIndex { sample_id, idx ->
-                samplesheet_content += "${sample_id},${conditions[idx]},${replicates[idx]},${salmon_dirs[idx]}\n"
-            }
-            
-            def samplesheet_file = file("${comparison_id}_samplesheet.csv")
-            samplesheet_file.text = samplesheet_content
-            
-            [comparison_id, samplesheet_file]
+            // Build list of CSV row strings; actual file writing happens in ISAR_WRITE_SAMPLESHEET
+            def rows = [sample_ids, conditions, replicates, salmon_dirs]
+                .transpose()
+                .collect { it.join(',') }
+            [comparison_id, rows]
         }
-        .set { ch_comparison_samplesheets }
-    
+        .set { ch_comparison_data }
+
+    /*
+     * Write per-comparison samplesheets inside proper Nextflow work directories
+     */
+    ISAR_WRITE_SAMPLESHEET(
+        ch_comparison_data.map { id, _rows -> id },
+        ch_comparison_data.map { _id, rows -> rows }
+    )
+
     /*
      * Run ISAR IMPORT
      */
     ISAR_IMPORT(
-        ch_comparison_samplesheets.map { comparison_id, _samplesheet_file -> comparison_id },
-        ch_comparison_samplesheets.map { _comparison_id, samplesheet_file -> samplesheet_file },
+        ISAR_WRITE_SAMPLESHEET.out.samplesheet.map { id, _f -> id },
+        ISAR_WRITE_SAMPLESHEET.out.samplesheet.map { _id, f -> f },
         gtf,
         ch_transcript_fasta
     )
