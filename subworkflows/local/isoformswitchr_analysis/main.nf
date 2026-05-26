@@ -45,38 +45,45 @@ workflow ISOFORMSWITCHR_ANALYSIS {
     
     /*
      * Group samples by comparison_id and build per-comparison CSV rows
-     * Computing strings in .map{} is fine — writing files here is not.
+     * salmon_dirs are kept as path objects so Nextflow can stage them in ISAR_IMPORT.
      */
     samples_salmon
         .map { meta, salmon_dir ->
-            [meta.comparison_id, meta.id, meta.condition, meta.replicate, salmon_dir.toString()]
+            [meta.comparison_id, meta.id, meta.condition, meta.replicate, salmon_dir]
         }
         .groupTuple(by: 0)
         .map { comparison_id, sample_ids, conditions, replicates, salmon_dirs ->
-            // Build list of CSV row strings; actual file writing happens in ISAR_WRITE_SAMPLESHEET
-            def rows = [sample_ids, conditions, replicates, salmon_dirs]
+            // Rows without salmon_dir — paths will be staged and appended in ISAR_IMPORT
+            def rows = [sample_ids, conditions, replicates]
                 .transpose()
                 .collect { it.join(',') }
-            [comparison_id, rows]
+            [comparison_id, rows, salmon_dirs]
         }
         .set { ch_comparison_data }
 
     /*
-     * Write per-comparison samplesheets inside proper Nextflow work directories
+     * Write per-comparison partial samplesheets (sample,condition,replicate) inside
+     * proper Nextflow work directories. salmon_dir column added in ISAR_IMPORT.
      */
     ISAR_WRITE_SAMPLESHEET(
-        ch_comparison_data.map { id, _rows -> id },
-        ch_comparison_data.map { _id, rows -> rows }
+        ch_comparison_data.map { id, _rows, _dirs -> id },
+        ch_comparison_data.map { _id, rows, _dirs -> rows }
     )
+
+    // Join samplesheet output with salmon_dirs so ISAR_IMPORT gets both in sync
+    ISAR_WRITE_SAMPLESHEET.out.samplesheet
+        .join(ch_comparison_data.map { id, _rows, dirs -> [id, dirs] })
+        .set { ch_isar_import_input }
 
     /*
      * Run ISAR IMPORT
      */
     ISAR_IMPORT(
-        ISAR_WRITE_SAMPLESHEET.out.samplesheet.map { id, _f -> id },
-        ISAR_WRITE_SAMPLESHEET.out.samplesheet.map { _id, f -> f },
+        ch_isar_import_input.map { id, _f, _dirs -> id },
+        ch_isar_import_input.map { _id, f, _dirs -> f },
         gtf,
-        ch_transcript_fasta
+        ch_transcript_fasta,
+        ch_isar_import_input.map { _id, _f, dirs -> dirs }
     )
     
     /*

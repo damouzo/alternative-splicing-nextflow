@@ -7,10 +7,7 @@ process RENDER_REPORT {
     publishDir "${params.outdir}/report", mode: params.publish_dir_mode
     
     input:
-    val comparison_id
-    path rmats_dir
-    path majiq_dir
-    path isar_dir
+    tuple val(comparison_id), path(rmats_dir), path(majiq_dir), path(isar_dir)
     path report_rmd
     
     output:
@@ -23,7 +20,23 @@ process RENDER_REPORT {
     def isar_arg  = isar_dir.name  != 'NO_ISAR'  ? isar_dir  : 'NULL'
     
     """
+    # Write report params to a JSON file to avoid shell injection from comparison_id
+    # or directory paths containing quotes / special characters
+    cat > report_params.json << 'JSONEOF'
+    {
+      "comparison_id": "${comparison_id}",
+      "rmats_dir":     ${rmats_arg == 'NULL' ? 'null' : '"' + rmats_arg + '"'},
+      "majiq_dir":     ${majiq_arg == 'NULL' ? 'null' : '"' + majiq_arg + '"'},
+      "isar_dir":      ${isar_arg  == 'NULL' ? 'null' : '"' + isar_arg  + '"'},
+      "fdr_cutoff":            ${params.report_fdr_cutoff},
+      "dpsi_cutoff":           ${params.report_dpsi_cutoff},
+      "majiq_prob_threshold":  ${params.majiq_probability_threshold},
+      "majiq_dpsi_cutoff":     ${params.majiq_delta_psi_threshold}
+    }
+    JSONEOF
+
     Rscript -e "
+    p <- jsonlite::fromJSON('report_params.json')
     rmarkdown::render(
       input = '${report_rmd}',
       output_format = rmarkdown::html_document(
@@ -33,15 +46,8 @@ process RENDER_REPORT {
         code_folding = 'hide',
         theme = 'flatly'
       ),
-      output_file = '${comparison_id}_splicing_report.html',
-      params = list(
-        comparison_id = '${comparison_id}',
-        rmats_dir = ${rmats_arg == 'NULL' ? 'NULL' : "'${rmats_arg}'"},
-        majiq_dir = ${majiq_arg == 'NULL' ? 'NULL' : "'${majiq_arg}'"},
-        isar_dir = ${isar_arg == 'NULL' ? 'NULL' : "'${isar_arg}'"},
-        fdr_cutoff = ${params.report_fdr_cutoff},
-        dpsi_cutoff = ${params.report_dpsi_cutoff}
-      )
+      output_file = p[['comparison_id']]  |> paste0('_splicing_report.html'),
+      params = p
     )
     "
     

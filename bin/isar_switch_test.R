@@ -26,10 +26,12 @@ suppressPackageStartupMessages({
 opt <- .parse_args()
 
 # Apply defaults for optional numeric args
-if (is.null(opt$alpha))      opt$alpha      <- "0.05"
-if (is.null(opt$dif_cutoff)) opt$dif_cutoff <- "0.1"
-opt$alpha      <- as.numeric(opt$alpha)
-opt$dif_cutoff <- as.numeric(opt$dif_cutoff)
+if (is.null(opt$alpha))           opt$alpha           <- "0.05"
+if (is.null(opt$dif_cutoff))      opt$dif_cutoff      <- "0.1"
+if (is.null(opt$iso_expr_cutoff)) opt$iso_expr_cutoff <- "1"
+opt$alpha           <- as.numeric(opt$alpha)
+opt$dif_cutoff      <- as.numeric(opt$dif_cutoff)
+opt$iso_expr_cutoff <- as.numeric(opt$iso_expr_cutoff)
 
 if (is.null(opt$input) || is.null(opt$output)) {
     stop("Required arguments: --input --output")
@@ -50,9 +52,9 @@ cat("  Isoforms:", nrow(switchAnalyzeRlist$isoformFeatures), "\n")
 cat("\nPre-filtering isoforms...\n")
 switchAnalyzeRlist <- preFilter(
     switchAnalyzeRlist = switchAnalyzeRlist,
-    geneExpressionCutoff = 1,       # min FPKM/TPM
-    isoformExpressionCutoff = 0,    # no minimum for isoform
-    IFcutoff = 0.01,                # min 1% isoform fraction
+    geneExpressionCutoff = 1,                      # min FPKM/TPM at gene level
+    isoformExpressionCutoff = opt$iso_expr_cutoff, # min TPM per isoform
+    IFcutoff = 0.01,                               # min 1% isoform fraction
     removeSingleIsoformGenes = TRUE,
     reduceToSwitchingGenes = FALSE  # keep all, filter later
 )

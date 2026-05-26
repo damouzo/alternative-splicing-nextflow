@@ -15,6 +15,8 @@ params:
   isar_dir: NULL
   fdr_cutoff: 0.05
   dpsi_cutoff: 0.1
+  majiq_prob_threshold: 0.95
+  majiq_dpsi_cutoff: 0.2
 ---
 
 ```{r setup, include=FALSE}
@@ -39,8 +41,10 @@ This report presents differential alternative splicing analysis results for comp
 
 **Filter criteria:**
 
-- FDR cutoff: `r params$fdr_cutoff`
-- |ΔΨ| cutoff: `r params$dpsi_cutoff`
+- rMATS / ISAR FDR cutoff: `r params$fdr_cutoff`
+- rMATS / ISAR |ΔΨ| / |dIF| cutoff: `r params$dpsi_cutoff`
+- MAJIQ P(|ΔΨ| > threshold) cutoff: `r params$majiq_prob_threshold`
+- MAJIQ |ΔΨ| cutoff: `r params$majiq_dpsi_cutoff`
 
 ---
 
@@ -142,10 +146,13 @@ tsv_file <- list.files(params$majiq_dir, pattern = "\\.tsv$", full.names = TRUE)
 if (!is.null(tsv_file) && file.exists(tsv_file)) {
   majiq_results <- read.delim(tsv_file, stringsAsFactors = FALSE)
   
-  # Add significance flag (probability_changing >= 0.95)
-  if ("probability_changing" %in% colnames(majiq_results)) {
+  # MAJIQ uses a Bayesian framework: significance is defined by posterior probability
+  # P(|ΔPSI| > threshold), not by FDR. Filter on probability_changing and mean_dpsi.
+  if ("probability_changing" %in% colnames(majiq_results) &&
+      "mean_dpsi_per_lsv_junction" %in% colnames(majiq_results)) {
     majiq_results <- majiq_results %>%
-      mutate(Significant = probability_changing >= 0.95)
+      mutate(Significant = probability_changing >= params$majiq_prob_threshold &
+               abs(mean_dpsi_per_lsv_junction) >= params$majiq_dpsi_cutoff)
   } else {
     majiq_results$Significant <- FALSE
   }
@@ -158,7 +165,12 @@ if (!is.null(tsv_file) && file.exists(tsv_file)) {
 cat("Total LSVs detected:", nrow(majiq_results), "\n\n")
 
 if ("Significant" %in% colnames(majiq_results)) {
-  cat("Significant LSVs (P(changing) >= 0.95):", sum(majiq_results$Significant, na.rm = TRUE), "\n\n")
+  cat(sprintf(
+    "Significant LSVs (P(|ΔPSI|) >= %.2f & |ΔPSI| >= %.2f): %d\n\n",
+    params$majiq_prob_threshold,
+    params$majiq_dpsi_cutoff,
+    sum(majiq_results$Significant, na.rm = TRUE)
+  ))
 }
 ```
 

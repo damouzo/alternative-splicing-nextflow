@@ -24,7 +24,8 @@ process MAJIQ_DELTAPSI {
     def g2_label = group1_name == group2_name ? "${group2_name}_g2" : group2_name
 
     """
-    export MAJIQ_LICENSE_FILE="${params.majiq_license}"
+    # Set license only when a non-null, non-empty path is provided
+    ${(params.majiq_license && params.majiq_license != 'null') ? "export MAJIQ_LICENSE_FILE=\"${params.majiq_license}\"" : "# MAJIQ_LICENSE_FILE not set — rely on environment"}
     # Prevent OpenBLAS/OpenMP from spawning excessive threads on shared systems
     export OPENBLAS_NUM_THREADS=1
     export OMP_NUM_THREADS=1
@@ -40,6 +41,7 @@ process MAJIQ_DELTAPSI {
         --splicegraph ${splicegraph} \\
         -psi1 ${g1_label}.psicov \\
         -psi2 ${g2_label}.psicov \\
+        --min-nonzero ${params.majiq_min_nonzero} \\
         --output-voila ${comparison_id}.dpsicov \\
         --output-tsv ${comparison_id}.tsv
 

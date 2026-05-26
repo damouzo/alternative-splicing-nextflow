@@ -45,12 +45,11 @@ workflow ALTERNATIVE_SPLICING {
             rmats:    meta
             majiq:    meta
             isar:     meta
-            for_ids:  meta
         }
         .set { ch_comp_split }
 
-    // Comparison IDs are needed to assemble report inputs even when a branch is disabled
-    ch_comp_split.for_ids
+    // Comparison IDs for the disabled-tool branches (emit [comp_id, placeholder_dir])
+    ch_comparisons_meta
         .map { comp_meta -> comp_meta.id }
         .multiMap { comp_id ->
             rmats: comp_id
@@ -69,11 +68,8 @@ workflow ALTERNATIVE_SPLICING {
             ch_comp_split.rmats,
             ch_gtf
         )
-
-        ch_ids_split.rmats
-            .join(RMATS_ANALYSIS.out.results, by: 0)
-            .map { comp_id, rmats_dir -> [comp_id, rmats_dir] }
-            .set { ch_rmats_for_report }
+        // Output already carries [comparison_id, dir] — no join needed
+        ch_rmats_for_report = RMATS_ANALYSIS.out.results
     } else {
         ch_ids_split.rmats
             .map { comp_id -> [comp_id, no_rmats_dir] }
@@ -90,11 +86,7 @@ workflow ALTERNATIVE_SPLICING {
             ch_comp_split.majiq,
             ch_gtf
         )
-
-        ch_ids_split.majiq
-            .join(MAJIQ_ANALYSIS.out.results, by: 0)
-            .map { comp_id, majiq_dir -> [comp_id, majiq_dir] }
-            .set { ch_majiq_for_report }
+        ch_majiq_for_report = MAJIQ_ANALYSIS.out.results
     } else {
         ch_ids_split.majiq
             .map { comp_id -> [comp_id, no_majiq_dir] }
@@ -111,11 +103,7 @@ workflow ALTERNATIVE_SPLICING {
             ch_comp_split.isar,
             ch_gtf
         )
-
-        ch_ids_split.isar
-            .join(ISOFORMSWITCHR_ANALYSIS.out.results, by: 0)
-            .map { comp_id, isar_dir -> [comp_id, isar_dir] }
-            .set { ch_isar_for_report }
+        ch_isar_for_report = ISOFORMSWITCHR_ANALYSIS.out.results
     } else {
         ch_ids_split.isar
             .map { comp_id -> [comp_id, no_isar_dir] }
@@ -125,19 +113,14 @@ workflow ALTERNATIVE_SPLICING {
     /*
      * MODULE: Render final R Markdown report per comparison
      */
-    // Join all results for each comparison
+    // Join all results for each comparison into a single tuple
     ch_rmats_for_report
         .join(ch_majiq_for_report, by: 0)
         .join(ch_isar_for_report, by: 0)
         .set { ch_report_inputs }
     
-    RENDER_REPORT(
-        ch_report_inputs.map { comparison_id, _rmats_dir, _majiq_dir, _isar_dir -> comparison_id },
-        ch_report_inputs.map { _comparison_id, rmats_dir, _majiq_dir, _isar_dir -> rmats_dir },
-        ch_report_inputs.map { _comparison_id, _rmats_dir, majiq_dir, _isar_dir -> majiq_dir },
-        ch_report_inputs.map { _comparison_id, _rmats_dir, _majiq_dir, isar_dir -> isar_dir },
-        ch_report_rmd                    // report Rmd template
-    )
+    // Pass the full tuple — avoids multiple queue-channel consumers causing desync
+    RENDER_REPORT(ch_report_inputs, ch_report_rmd)
     
     /*
      * TODO: MODULE: MultiQC - aggregate QC reports

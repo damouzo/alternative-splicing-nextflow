@@ -17,14 +17,19 @@ process RMATS_PREP {
     def rmats_lib_type = strandedness == 'unstranded' ? 'fr-unstranded' :
                          strandedness == 'forward'    ? 'fr-secondstrand' :
                          strandedness == 'reverse'    ? 'fr-firststrand' : 'fr-unstranded'
+    // novelSS options must be identical in PREP and POST — controlled via params.rmats_novel_ss
+    def novelss_opt = params.rmats_novel_ss ? '--novelSS' : ''
+    def mil_opt     = params.rmats_novel_ss ? "--mil ${params.rmats_min_intron_length}" : ''
+    def mel_opt     = params.rmats_novel_ss ? "--mel ${params.rmats_max_exon_length}" : ''
     
     """
     export OPENBLAS_NUM_THREADS=1
     export OMP_NUM_THREADS=1
     export MKL_NUM_THREADS=1
 
-    # Create single-sample BAM list for PREP
-    echo "${bam}" > bam_list.txt
+    # Create single-sample BAM list — use realpath so the path is valid
+    # regardless of stageInMode (copy/symlink/rellink)
+    echo "\$(realpath "${bam}")" > bam_list.txt
     
     # Create output and temp directories
     mkdir -p prep_output
@@ -34,7 +39,7 @@ process RMATS_PREP {
     python /rmats/rmats.py \\
         --b1 bam_list.txt \\
         --gtf ${gtf} \\
-        -t paired \\
+        -t ${params.rmats_read_type} \\
         --readLength ${params.read_length} \\
         --variable-read-length \\
         --allow-clipping \\
@@ -42,7 +47,8 @@ process RMATS_PREP {
         --nthread ${task.cpus} \\
         --od prep_output \\
         --tmp prep_tmp \\
-        --task prep
+        --task prep \\
+        ${novelss_opt} ${mil_opt} ${mel_opt}
     
     # Copy .rmats files to CWD with sample prefix (avoids staging subdirectory collision in POST)
     for f in prep_tmp/*.rmats; do

@@ -6,23 +6,33 @@ process ISAR_IMPORT {
     // Container resolved from modules.config (params.isar_container or ghcr.io default)
     
     input:
-    val comparison_id
-    path samplesheet
+    val  comparison_id
+    path samplesheet    // partial CSV: sample,condition,replicate (no salmon_dir)
     path gtf
     path transcript_fasta
+    path salmon_dirs    // staged Salmon output directories — one per sample, same order as CSV rows
     
     output:
     tuple val(comparison_id), path("${comparison_id}_raw.rds"), emit: rds
     path "versions.yml"                                        , emit: versions
     
     script:
+    // Build space-separated list of staged salmon dir names for bash
+    def staged_dirs = (salmon_dirs instanceof List ? salmon_dirs : [salmon_dirs])
+                        .collect { it.name }.join(' ')
     """
     export OPENBLAS_NUM_THREADS=1
     export OMP_NUM_THREADS=1
     export MKL_NUM_THREADS=1
 
+    # Append staged salmon_dir paths to the partial samplesheet CSV.
+    # paste merges the two files column-by-column; both have the same row order.
+    staged_dirs=(${staged_dirs})
+    printf '%s\\n' "\${staged_dirs[@]}" > salmon_dirs.txt
+    paste -d',' ${samplesheet} salmon_dirs.txt > full_samplesheet.csv
+
     isar_import.R \\
-        --samplesheet ${samplesheet} \\
+        --samplesheet full_samplesheet.csv \\
         --gtf ${gtf} \\
         --transcript_fasta ${transcript_fasta} \\
         --output ${comparison_id}_raw.rds

@@ -160,6 +160,16 @@ def validate_samplesheet(samplesheet_path, gtf_path, expected_read_length):
         check_file_exists(sample['bam'], f"BAM for sample {sample['sample']}")
         check_file_exists(sample['bai'], f"BAI for sample {sample['sample']}")
         
+        # Warn if index is older than the BAM — likely stale and may cause silent failures
+        bam_mtime = Path(sample['bam']).stat().st_mtime
+        bai_mtime = Path(sample['bai']).stat().st_mtime
+        if bai_mtime < bam_mtime:
+            print(
+                f"WARNING: BAI for sample '{sample['sample']}' is older than its BAM. "
+                f"Re-index recommended (samtools index {sample['bam']}).",
+                file=sys.stderr
+            )
+        
         salmon_dir = Path(sample['salmon_dir'])
         if not salmon_dir.exists() or not salmon_dir.is_dir():
             sys.exit(f"ERROR: Salmon directory not found for sample {sample['sample']}: {sample['salmon_dir']}")

@@ -8,6 +8,7 @@ gene -> transcript -> exon hierarchy required by MAJIQ v3.
 
 import re
 import sys
+import os
 from collections import OrderedDict
 
 
@@ -88,5 +89,8 @@ def main(gtf_file, gff3_file):
 if __name__ == '__main__':
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <input.gtf> <output.gff3>", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.isfile(sys.argv[1]):
+        print(f"ERROR: GTF file not found: {sys.argv[1]}", file=sys.stderr)
         sys.exit(1)
     main(sys.argv[1], sys.argv[2])

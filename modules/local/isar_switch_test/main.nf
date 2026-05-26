@@ -22,7 +22,8 @@ process ISAR_SWITCH_TEST {
         --input ${rds_input} \\
         --output ${comparison_id}_tested.rds \\
         --alpha ${params.isar_alpha} \\
-        --dif_cutoff ${params.isar_dif_cutoff}
+        --dif_cutoff ${params.isar_dif_cutoff} \\
+        --iso_expr_cutoff ${params.isar_iso_expr_cutoff}
     
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

@@ -25,6 +25,10 @@ process RMATS_POST {
                          params.strandedness == 'reverse'    ? 'fr-firststrand' : 'fr-unstranded'
     def g1_bams_staged = (bams_g1 instanceof List ? bams_g1 : [bams_g1]).join(' ')
     def g2_bams_staged = (bams_g2 instanceof List ? bams_g2 : [bams_g2]).join(' ')
+    // novelSS options mirror what was used in PREP — controlled via params.rmats_novel_ss
+    def novelss_opt = params.rmats_novel_ss ? '--novelSS' : ''
+    def mil_opt     = params.rmats_novel_ss ? "--mil ${params.rmats_min_intron_length}" : ''
+    def mel_opt     = params.rmats_novel_ss ? "--mel ${params.rmats_max_exon_length}" : ''
     """
     # Create BAM lists — resolve staged symlinks to absolute paths via realpath
     for bam in ${g1_bams_staged}; do realpath "\$bam"; done | paste -sd ',' - > b1.txt
@@ -43,7 +47,7 @@ process RMATS_POST {
         --b1 b1.txt \\
         --b2 b2.txt \\
         --gtf ${gtf} \\
-        -t paired \\
+        -t ${params.rmats_read_type} \\
         --readLength ${params.read_length} \\
         --variable-read-length \\
         --allow-clipping \\
@@ -51,13 +55,11 @@ process RMATS_POST {
         --nthread ${task.cpus} \\
         --tstat ${params.rmats_tstat_threads} \\
         --cstat ${params.rmats_cstat} \\
-        --novelSS \\
-        --mil ${params.rmats_min_intron_length} \\
-        --mel ${params.rmats_max_exon_length} \\
         --individual-counts \\
         --od ${comparison_id} \\
         --tmp merged_tmp \\
-        --task post
+        --task post \\
+        ${novelss_opt} ${mil_opt} ${mel_opt}
     
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

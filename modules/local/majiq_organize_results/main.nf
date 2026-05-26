@@ -1,6 +1,6 @@
 // In MAJIQ v3, the deltapsi TSV is generated directly by majiq-v3 deltapsi.
-// This module organises the outputs into a results directory for the report.
-process MAJIQ_VOILA_TSV {
+// This module organises the outputs into a named results directory for the report.
+process MAJIQ_ORGANIZE_RESULTS {
     tag "$comparison_id"
     label 'process_low'
 

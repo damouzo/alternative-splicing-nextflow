@@ -10,25 +10,25 @@ process MAJIQ_BUILD {
     path bams
     path bais
     path gff3         // annotation.gff3 — converted from GTF by MAJIQ_PREPARE_ANNOTATION
-    val  sample_info  // [[sample_id, bam_path], ...]
+    val  sample_info  // [[sample_id], ...] — order must match staged bams list
 
     output:
     tuple val(comparison_id), path("sj/*.sj"), path("built_sg.zarr"), emit: majiq_build
     path "versions.yml"                                              , emit: versions
 
     script:
-    // Build per-sample sj extraction commands (one per line)
-    def sj_cmds = sample_info.collect { sample_id, bam_path ->
-        "majiq-v3 sj ${bam_path} ann_sg.zarr sj/${sample_id}.sj"
-    }.join('\n')
+    // Derive sample IDs in order — must match the order of staged bams
+    def sample_ids     = sample_info.collect { it[0] }
+    def sample_ids_str = sample_ids.join(' ')
 
     // Build groups TSV content (all samples under a single group for the build step)
-    def tsv_rows = sample_info.collect { sample_id, _ ->
-        "all\t${sample_id}\tsj/${sample_id}.sj"
+    def tsv_rows = sample_ids.collect { sid ->
+        "all\t${sid}\tsj/${sid}.sj"
     }.join('\n')
 
     """
-    export MAJIQ_LICENSE_FILE="${params.majiq_license}"
+    # Set license only when a non-null, non-empty path is provided
+    ${(params.majiq_license && params.majiq_license != 'null') ? "export MAJIQ_LICENSE_FILE=\"${params.majiq_license}\"" : "# MAJIQ_LICENSE_FILE not set — rely on environment"}
     # Prevent OpenBLAS/OpenMP from spawning excessive threads on shared systems
     export OPENBLAS_NUM_THREADS=1
     export OMP_NUM_THREADS=1
@@ -38,14 +38,22 @@ process MAJIQ_BUILD {
     # Step 1: Build zarr splicegraph from GFF3 annotation
     majiq-v3 gff3 ${gff3} ann_sg.zarr
 
-    # Step 2: Extract splice junctions per sample (parallelisable in v3)
+    # Step 2: Extract splice junctions per sample using staged BAM paths.
+    # bams are staged in the work dir — iterate using the declared sample order.
     mkdir -p sj
-    ${sj_cmds}
+    bam_array=(${(bams instanceof List ? bams : [bams]).join(' ')})
+    sid_array=(${sample_ids_str})
+    for i in "\${!bam_array[@]}"; do
+        majiq-v3 sj "\${bam_array[\$i]}" ann_sg.zarr "sj/\${sid_array[\$i]}.sj"
+    done
 
     # Step 3: Build splicegraph across all samples
     printf 'group\\tprefix\\tsj\\n${tsv_rows}\\n' > build_config.tsv
     majiq-v3 build ann_sg.zarr built_sg.zarr \\
         --groups-tsv build_config.tsv \\
+        --min-reads ${params.majiq_min_reads} \\
+        --min-intronic-cov ${params.majiq_min_intronic_cov} \\
+        --min-denovo-reads ${params.majiq_min_denovo_reads} \\
         -j ${task.cpus}
 
     cat <<-END_VERSIONS > versions.yml

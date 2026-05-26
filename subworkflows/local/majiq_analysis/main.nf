@@ -11,7 +11,7 @@
 include { MAJIQ_PREPARE_ANNOTATION } from '../../../modules/local/majiq_prepare_annotation/main'
 include { MAJIQ_BUILD              } from '../../../modules/local/majiq_build/main'
 include { MAJIQ_DELTAPSI           } from '../../../modules/local/majiq_deltapsi/main'
-include { MAJIQ_VOILA_TSV          } from '../../../modules/local/majiq_voila_tsv/main'
+include { MAJIQ_ORGANIZE_RESULTS   } from '../../../modules/local/majiq_organize_results/main'
 
 workflow MAJIQ_ANALYSIS {
     take:
@@ -23,7 +23,9 @@ workflow MAJIQ_ANALYSIS {
 
     // Convert GTF to GFF3 — MAJIQ v3 requires GFF3 with Parent= hierarchy
     MAJIQ_PREPARE_ANNOTATION(gtf)
-    ch_gff3 = MAJIQ_PREPARE_ANNOTATION.out.gff3
+    // .first() converts the queue channel to a value channel so all MAJIQ_BUILD
+    // invocations (one per comparison) can consume the same GFF3 without blocking.
+    ch_gff3 = MAJIQ_PREPARE_ANNOTATION.out.gff3.first()
 
     /*
      * Group samples by comparison_id
@@ -41,12 +43,9 @@ workflow MAJIQ_ANALYSIS {
      */
     ch_samples_by_comparison
         .map { comparison_id, _groups, sample_ids, bams, bais ->
-            // Create sample_info list: [[sample_id, bam_path], ...]
-            def sample_info = []
-            sample_ids.eachWithIndex { sid, idx ->
-                sample_info.add([sid, bams[idx].toString()])
-            }
-
+            // sample_info carries only sample IDs — their order matches the staged bams list.
+            // bam_path is no longer passed to avoid using pre-staging absolute paths in the script.
+            def sample_info = sample_ids.collect { sid -> [sid] }
             [comparison_id, bams, bais, sample_info]
         }
         .set { ch_majiq_build_input }
@@ -119,7 +118,7 @@ workflow MAJIQ_ANALYSIS {
     )
     
     /*
-     * Run VOILA TSV to organise deltapsi outputs (TSV generated directly by deltapsi in v3)
+     * Organise deltapsi outputs into a results directory for the report
      */
     MAJIQ_DELTAPSI.out.deltapsi
         .map { comparison_id, dpsicov, tsv ->
@@ -130,19 +129,19 @@ workflow MAJIQ_ANALYSIS {
                 [comparison_id, splicegraph]
             }
         )
-        .set { ch_voila_input }
+        .set { ch_organize_input }
 
-    MAJIQ_VOILA_TSV(
-        ch_voila_input.map { comparison_id, _dpsicov, _tsv, _splicegraph -> comparison_id },
-        ch_voila_input.map { _comparison_id, _dpsicov, _tsv, splicegraph -> splicegraph },
-        ch_voila_input.map { _comparison_id, dpsicov, _tsv, _splicegraph -> dpsicov },
-        ch_voila_input.map { _comparison_id, _dpsicov, tsv, _splicegraph -> tsv }
+    MAJIQ_ORGANIZE_RESULTS(
+        ch_organize_input.map { comparison_id, _dpsicov, _tsv, _splicegraph -> comparison_id },
+        ch_organize_input.map { _comparison_id, _dpsicov, _tsv, splicegraph -> splicegraph },
+        ch_organize_input.map { _comparison_id, dpsicov, _tsv, _splicegraph -> dpsicov },
+        ch_organize_input.map { _comparison_id, _dpsicov, tsv, _splicegraph -> tsv }
     )
     
     emit:
-    results  = MAJIQ_VOILA_TSV.out.results  // [comparison_id, results_dir]
+    results  = MAJIQ_ORGANIZE_RESULTS.out.results  // [comparison_id, results_dir]
     versions = MAJIQ_PREPARE_ANNOTATION.out.versions
         .mix(MAJIQ_BUILD.out.versions)
         .mix(MAJIQ_DELTAPSI.out.versions)
-        .mix(MAJIQ_VOILA_TSV.out.versions)
+        .mix(MAJIQ_ORGANIZE_RESULTS.out.versions)
 }

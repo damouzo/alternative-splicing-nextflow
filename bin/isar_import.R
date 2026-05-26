@@ -59,13 +59,15 @@ cat("\nImporting Salmon quantifications...\n")
 # ISA v2+ API: step 1 — import expression only (no annotation args here)
 quant_vec <- setNames(salmon_quant_paths$quant_path, salmon_quant_paths$sampleID)
 isoformExpression <- importIsoformExpression(
-    sampleVector = quant_vec,
-    showProgress = FALSE,
-    quiet        = FALSE
+    sampleVector      = quant_vec,
+    ignoreAfterPeriod = TRUE,   # match importRdata setting; handles versioned transcript IDs
+    showProgress      = FALSE,
+    quiet             = FALSE
 )
 
 # Step 2 — build SwitchAnalyzeRlist combining expression + annotation
-# Provide transcript FASTA so sequence-based ORF steps do not require BSgenome.
+# addAnnotatedORFs = FALSE: ORF extraction is handled explicitly in ISAR_EXTRACT_ORF
+# to avoid running addORFfromGTF twice.
 cat("Building SwitchAnalyzeRlist...\n")
 switchAnalyzeRlist <- importRdata(
     isoformCountMatrix   = isoformExpression$counts,
@@ -73,6 +75,7 @@ switchAnalyzeRlist <- importRdata(
     designMatrix         = design,
     isoformExonAnnoation = opt$gtf,
     isoformNtFasta       = opt$transcript_fasta,
+    addAnnotatedORFs     = FALSE,
     ignoreAfterPeriod    = TRUE,   # Salmon IDs may carry transcript version suffixes
     showProgress         = FALSE
 )
