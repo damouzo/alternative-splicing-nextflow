@@ -66,18 +66,34 @@ cat("\nRunning isoform switch test (satuRn)...\n")
 cat("  Alpha:", opt$alpha, "\n")
 cat("  dIF cutoff:", opt$dif_cutoff, "\n")
 
-switchAnalyzeRlist <- isoformSwitchTestSatuRn(
-    switchAnalyzeRlist = switchAnalyzeRlist,
-    reduceToSwitchingGenes = TRUE,
-    alpha = opt$alpha,
-    dIFcutoff = opt$dif_cutoff,
-    testIntegration = 'isoform_only'  # Test isoform switches
-)
+switchAnalyzeRlist <- tryCatch({
+    isoformSwitchTestSatuRn(
+        switchAnalyzeRlist = switchAnalyzeRlist,
+        reduceToSwitchingGenes = TRUE,
+        alpha = opt$alpha,
+        dIFcutoff = opt$dif_cutoff
+    )
+}, error = function(e) {
+    if (grepl("No genes were considered switching", conditionMessage(e))) {
+        # No significant switches at these cutoffs — run without reduction
+        # so test statistics are preserved in isoformFeatures
+        cat("  NOTE: No significant switches at current thresholds, saving full results\n")
+        isoformSwitchTestSatuRn(
+            switchAnalyzeRlist = switchAnalyzeRlist,
+            reduceToSwitchingGenes = FALSE,
+            alpha = opt$alpha,
+            dIFcutoff = opt$dif_cutoff
+        )
+    } else {
+        stop(e)
+    }
+})
 
 cat("\nSwitch test results:\n")
-if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis)) {
+if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis) &&
+    nrow(switchAnalyzeRlist$isoformSwitchAnalysis) > 0) {
     cat("  Switching isoforms:", nrow(switchAnalyzeRlist$isoformSwitchAnalysis), "\n")
-    cat("  Switching genes:", 
+    cat("  Switching genes:",
         length(unique(switchAnalyzeRlist$isoformSwitchAnalysis$gene_id)), "\n")
 } else {
     cat("  No significant switches detected\n")

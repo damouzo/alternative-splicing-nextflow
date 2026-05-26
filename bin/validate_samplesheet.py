@@ -170,8 +170,9 @@ def validate_samplesheet(samplesheet_path, gtf_path, expected_read_length):
     
     # Validate conditions
     conditions = set(s['condition'] for s in samples)
-    if len(conditions) != 2:
-        sys.exit(f"ERROR: Expected exactly 2 conditions, found {len(conditions)}: {', '.join(conditions)}")
+    if len(conditions) < 2:
+        sys.exit(f"ERROR: Expected at least 2 conditions, found {len(conditions)}: {', '.join(conditions)}")
+    print(f"✓ Found {len(conditions)} condition(s): {', '.join(sorted(conditions))}")
     
     # Count replicates per condition
     condition_counts = defaultdict(int)

@@ -51,35 +51,89 @@ cat("Loaded data with", nrow(switchAnalyzeRlist$isoformFeatures), "isoforms\n")
 cat("\nAnalyzing switch consequences...\n")
 cat("  dIF cutoff:", opt$dif_cutoff, "\n")
 
-# Analyze consequences
-switchAnalyzeRlist <- analyzeSwitchConsequences(
-    switchAnalyzeRlist = switchAnalyzeRlist,
-    consequencesToAnalyze = c(
-        'intron_retention',
-        'coding_potential',
-        'ORF_seq_similarity',
-        'NMD_status'
-        # Domain and signal peptide analysis require external tool results:
-        # 'domains_identified', 'domain_isotype',
-        # 'IDR_identified', 'IDR_type', 'IDR_seq_similarity',
-        # 'signal_peptide_identified',
-        # 'topology_identified'
-    ),
-    dIFcutoff = opt$dif_cutoff,
-    onlySigIsoforms = FALSE,
-    showProgress = FALSE
+consequences_to_analyze <- c(
+    'intron_retention',
+    'coding_potential',
+    'ORF_seq_similarity',
+    'NMD_status'
 )
+
+# Ensure intron retention has been precomputed when requested by ISAR.
+switchAnalyzeRlist <- tryCatch({
+    analyzeIntronRetention(
+        switchAnalyzeRlist = switchAnalyzeRlist,
+        onlySwitchingGenes = FALSE,
+        dIFcutoff = opt$dif_cutoff,
+        showProgress = FALSE,
+        quiet = TRUE
+    )
+}, error = function(e) {
+    cat("  NOTE: Skipping intron_retention analysis:", conditionMessage(e), "\n")
+    consequences_to_analyze <<- consequences_to_analyze[consequences_to_analyze != 'intron_retention']
+    switchAnalyzeRlist
+})
+
+# Analyze consequences with graceful degradation when optional annotations are missing
+no_switching_genes <- FALSE
+while (length(consequences_to_analyze) > 0) {
+    analysis_attempt <- tryCatch({
+        list(
+            ok = TRUE,
+            result = analyzeSwitchConsequences(
+                switchAnalyzeRlist = switchAnalyzeRlist,
+                consequencesToAnalyze = consequences_to_analyze,
+                dIFcutoff = opt$dif_cutoff,
+                onlySigIsoforms = FALSE,
+                showProgress = FALSE
+            )
+        )
+    }, error = function(e) {
+        list(ok = FALSE, message = conditionMessage(e))
+    })
+
+    if (analysis_attempt$ok) {
+        switchAnalyzeRlist <- analysis_attempt$result
+        break
+    }
+
+    err_msg <- analysis_attempt$message
+    if (grepl("coding_potential", err_msg, fixed = TRUE) &&
+        'coding_potential' %in% consequences_to_analyze) {
+        cat("  NOTE: Skipping coding_potential (missing CPAT/CPC2 results)\n")
+        consequences_to_analyze <- consequences_to_analyze[consequences_to_analyze != 'coding_potential']
+    } else if (grepl("No genes were considered switching", err_msg, fixed = TRUE)) {
+        cat("  NOTE: No genes considered switching with current cutoffs; skipping consequence analysis\n")
+        no_switching_genes <- TRUE
+        break
+    } else if (grepl("intron retention", tolower(err_msg), fixed = TRUE) &&
+               'intron_retention' %in% consequences_to_analyze) {
+        cat("  NOTE: Skipping intron_retention (classification not available)\n")
+        consequences_to_analyze <- consequences_to_analyze[consequences_to_analyze != 'intron_retention']
+    } else {
+        stop(err_msg)
+    }
+}
+
+if (length(consequences_to_analyze) == 0) {
+    cat("  NOTE: No consequence categories available with current annotations\n")
+}
 
 # Extract top switches
 cat("\nExtracting top switches...\n")
-if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis)) {
-    topSwitches <- extractTopSwitches(
-        switchAnalyzeRlist = switchAnalyzeRlist,
-        filterForConsequences = FALSE,  # Include all switches
-        n = Inf,
-        extractGenes = FALSE,
-        sortByQvals = TRUE
-    )
+if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis) &&
+    nrow(switchAnalyzeRlist$isoformSwitchAnalysis) > 0) {
+    topSwitches <- tryCatch({
+        extractTopSwitches(
+            switchAnalyzeRlist = switchAnalyzeRlist,
+            filterForConsequences = FALSE,  # Include all switches
+            n = Inf,
+            extractGenes = FALSE,
+            sortByQvals = TRUE
+        )
+    }, error = function(e) {
+        cat("  NOTE: No significant switching isoforms available for top switch extraction\n")
+        data.frame()
+    })
     
     output_csv <- file.path(opt$output_dir, "top_isoform_switches.csv")
     write.csv(topSwitches, output_csv, row.names = FALSE)
@@ -93,12 +147,20 @@ if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis)) {
 
 # Extract consequence summary
 cat("\nExtracting consequence summary...\n")
-consequenceSummary <- extractConsequenceSummary(
-    switchAnalyzeRlist = switchAnalyzeRlist,
-    includeCombined = TRUE,
-    consequencesToPlot = 'all',
-    asFractionTotal = FALSE
-)
+consequenceSummary <- tryCatch({
+    if (no_switching_genes) {
+        stop("No switching genes available for consequence summary")
+    }
+    extractConsequenceSummary(
+        switchAnalyzeRlist = switchAnalyzeRlist,
+        includeCombined = TRUE,
+        consequencesToPlot = 'all',
+        asFractionTotal = FALSE
+    )
+}, error = function(e) {
+    cat("  NOTE: Could not build consequence summary:", conditionMessage(e), "\n")
+    data.frame()
+})
 
 output_summary <- file.path(opt$output_dir, "consequence_summary.csv")
 write.csv(consequenceSummary, output_summary, row.names = FALSE)

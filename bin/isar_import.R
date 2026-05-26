@@ -65,14 +65,15 @@ isoformExpression <- importIsoformExpression(
 )
 
 # Step 2 — build SwitchAnalyzeRlist combining expression + annotation
-# Note: isoformNtFasta and ORF analysis are deferred to isar_extract_orf.R
+# Provide transcript FASTA so sequence-based ORF steps do not require BSgenome.
 cat("Building SwitchAnalyzeRlist...\n")
 switchAnalyzeRlist <- importRdata(
     isoformCountMatrix   = isoformExpression$counts,
     isoformRepExpression = isoformExpression$abundance,
     designMatrix         = design,
     isoformExonAnnoation = opt$gtf,
-    ignoreAfterPeriod    = TRUE,   # Salmon IDs lack version suffix (ENST.1 vs ENST)
+    isoformNtFasta       = opt$transcript_fasta,
+    ignoreAfterPeriod    = TRUE,   # Salmon IDs may carry transcript version suffixes
     showProgress         = FALSE
 )
 

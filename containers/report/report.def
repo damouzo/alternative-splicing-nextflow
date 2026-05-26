@@ -1,0 +1,24 @@
+# Apptainer / Singularity definition for the R Markdown report renderer
+# Build: apptainer build /data/BCI-KRP/containers/report-1.0.0.sif containers/report/report.def
+# Then pass --report_container /path/to/report-1.0.0.sif to the pipeline
+
+Bootstrap: docker
+From: rocker/verse:4.4.2
+
+%labels
+    org.opencontainers.image.description "R Markdown report renderer for alternative-splicing-nextflow"
+    org.opencontainers.image.source      "https://github.com/BCI-KRP/alternative-splicing-nextflow"
+
+%post
+    # Interactive table and plot packages not bundled in rocker/verse
+    R -e " \
+        install.packages(c( \
+            'DT', 'plotly', 'UpSetR' \
+        ), repos='https://cloud.r-project.org', Ncpus=4) \
+    "
+
+    # Verify packages load
+    R -e "library(DT); library(plotly); library(UpSetR); library(rmarkdown)"
+
+%runscript
+    exec "$@"

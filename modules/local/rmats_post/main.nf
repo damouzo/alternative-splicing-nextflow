@@ -23,14 +23,12 @@ process RMATS_POST {
     def rmats_lib_type = params.strandedness == 'unstranded' ? 'fr-unstranded' :
                          params.strandedness == 'forward'    ? 'fr-secondstrand' :
                          params.strandedness == 'reverse'    ? 'fr-firststrand' : 'fr-unstranded'
-    // Resolve staged paths to absolute for rMATS BAM lists
-    def g1_bams = (bams_g1 instanceof List ? bams_g1 : [bams_g1]).collect { it.toAbsolutePath() }.join(',')
-    def g2_bams = (bams_g2 instanceof List ? bams_g2 : [bams_g2]).collect { it.toAbsolutePath() }.join(',')
-    
+    def g1_bams_staged = (bams_g1 instanceof List ? bams_g1 : [bams_g1]).join(' ')
+    def g2_bams_staged = (bams_g2 instanceof List ? bams_g2 : [bams_g2]).join(' ')
     """
-    # Create BAM lists — absolute staged paths, readable regardless of executor node
-    echo "${g1_bams}" > b1.txt
-    echo "${g2_bams}" > b2.txt
+    # Create BAM lists — resolve staged symlinks to absolute paths via realpath
+    for bam in ${g1_bams_staged}; do realpath "\$bam"; done | paste -sd ',' - > b1.txt
+    for bam in ${g2_bams_staged}; do realpath "\$bam"; done | paste -sd ',' - > b2.txt
 
     # Collect all staged .rmats files into merged_tmp
     mkdir -p merged_tmp
