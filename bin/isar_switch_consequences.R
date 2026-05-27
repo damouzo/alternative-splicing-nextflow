@@ -28,10 +28,8 @@ opt <- .parse_args()
 # Apply defaults for optional args
 if (is.null(opt$output_dir))  opt$output_dir  <- "."
 if (is.null(opt$dif_cutoff))  opt$dif_cutoff  <- "0.1"
-if (is.null(opt$alpha))       opt$alpha        <- "0.05"
 if (is.null(opt$top_n_plots)) opt$top_n_plots <- "25"
 opt$dif_cutoff  <- as.numeric(opt$dif_cutoff)
-opt$alpha       <- as.numeric(opt$alpha)
 opt$top_n_plots <- as.integer(opt$top_n_plots)
 
 if (is.null(opt$input) || is.null(opt$output)) {
@@ -121,7 +119,8 @@ if (length(consequences_to_analyze) == 0) {
 }
 
 # Extract all tested isoforms from isoformFeatures regardless of significance.
-# This mirrors the GSEA convention: show all results, flag those that pass cutoffs.
+# The CSV is raw data: q-values and dIF for every isoform satuRn could test.
+# Significance filtering is a display decision — done at report render time.
 cat("\nExtracting isoform switches (all tested)...\n")
 
 all_switches <- tryCatch({
@@ -143,13 +142,7 @@ all_switches <- tryCatch({
     keep_cols <- intersect(wanted_cols, colnames(feat))
     feat <- feat[, keep_cols, drop = FALSE]
 
-    # Significance flag: isoform-level q-value + dIF magnitude
-    feat$significant <- (
-        feat$isoform_switch_q_value < opt$alpha &
-        abs(feat$dIF) > opt$dif_cutoff
-    )
-
-    # Sort: significant first, then by q-value, then by |dIF| descending
+    # Sort by q-value, then by |dIF| descending
     feat <- feat[order(feat$isoform_switch_q_value, -abs(feat$dIF)), ]
     rownames(feat) <- NULL
     feat
@@ -158,14 +151,10 @@ all_switches <- tryCatch({
     data.frame()
 })
 
-n_sig <- if (nrow(all_switches) > 0 && "significant" %in% colnames(all_switches))
-    sum(all_switches$significant, na.rm = TRUE) else 0
-
 output_csv <- file.path(opt$output_dir, "top_isoform_switches.csv")
 write.csv(all_switches, output_csv, row.names = FALSE)
 cat("  Saved:", output_csv, "\n")
 cat("  Total isoforms tested:", nrow(all_switches), "\n")
-cat("  Significant (FDR <", opt$alpha, "& |dIF| >", opt$dif_cutoff, "):", n_sig, "\n")
 
 # Extract consequence summary
 cat("\nExtracting consequence summary...\n")
@@ -188,7 +177,18 @@ output_summary <- file.path(opt$output_dir, "consequence_summary.csv")
 write.csv(consequenceSummary, output_summary, row.names = FALSE)
 cat("  Saved:", output_summary, "\n")
 
-# Generate switch plots for top N significant genes (only if any pass the cutoff)
+# Generate switch plots for top N significant genes.
+# Use report_fdr_cutoff / report_dpsi_cutoff defaults as approximation;
+# the definitive cutoff lives in the report params, not here.
+n_sig <- tryCatch({
+    feat <- switchAnalyzeRlist$isoformFeatures
+    sum(
+        !is.na(feat$isoform_switch_q_value) & !is.na(feat$dIF) &
+        feat$isoform_switch_q_value < 0.05 & abs(feat$dIF) > opt$dif_cutoff,
+        na.rm = TRUE
+    )
+}, error = function(e) 0L)
+
 if (n_sig > 0) {
     cat("\nGenerating switch plots for top", opt$top_n_plots, "significant genes...\n")
 

@@ -249,22 +249,29 @@ isar_consequences  <- read_csv_safe(consequences_file)
 ```
 
 ```{r isar_summary, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
+# Compute significance at render time using report params (single source of truth)
+if ("isoform_switch_q_value" %in% colnames(isar_switches) &&
+    "dIF" %in% colnames(isar_switches)) {
+  isar_switches$significant <- (
+    isar_switches$isoform_switch_q_value < params$fdr_cutoff &
+    abs(isar_switches$dIF) >= params$dpsi_cutoff
+  )
+} else {
+  isar_switches$significant <- NA
+}
+
 n_total <- nrow(isar_switches)
-n_sig   <- if ("significant" %in% colnames(isar_switches))
-    sum(isar_switches$significant, na.rm = TRUE) else NA
+n_sig   <- sum(isar_switches$significant, na.rm = TRUE)
 
 cat("Total isoforms tested:", n_total, "\n\n")
-
-if (!is.na(n_sig)) {
-  cat(sprintf(
-    "Significant (FDR < %.2f & |dIF| >= %.2f): %d\n\n",
-    params$fdr_cutoff, params$dpsi_cutoff, n_sig
-  ))
-}
+cat(sprintf(
+  "Significant (FDR < %.2f & |dIF| >= %.2f): %d\n\n",
+  params$fdr_cutoff, params$dpsi_cutoff, n_sig
+))
 
 if ("gene_name" %in% colnames(isar_switches)) {
   cat("Genes tested:", length(unique(isar_switches$gene_name)), "\n")
-  if (!is.na(n_sig) && n_sig > 0) {
+  if (n_sig > 0) {
     sig_genes <- length(unique(isar_switches$gene_name[isar_switches$significant]))
     cat("Genes with significant switches:", sig_genes, "\n")
   }
@@ -289,6 +296,7 @@ if ("feature" %in% colnames(isar_consequences) && "count" %in% colnames(isar_con
 
 ```{r isar_top_table, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
 # Show all tested isoforms; significant ones highlighted in green.
+# significant column was computed in isar_summary chunk above.
 cols_to_show <- intersect(
   c("gene_name", "gene_id", "isoform_id", "condition_1", "condition_2",
     "IF1", "IF2", "dIF", "isoform_switch_q_value", "gene_switch_q_value",
