@@ -141,14 +141,19 @@ if (nrow(top_events) > 0) {
 
 ```{r majiq_load, eval=!is.null(params$majiq_dir)}
 # Load MAJIQ TSV
-tsv_file <- list.files(params$majiq_dir, pattern = "\\.tsv$", full.names = TRUE)[1]
+tsv_files <- list.files(params$majiq_dir, pattern = "\\.tsv$", full.names = TRUE)
+tsv_file  <- if (length(tsv_files) > 0) tsv_files[1] else NA_character_
 
-if (!is.null(tsv_file) && file.exists(tsv_file)) {
-  majiq_results <- read.delim(tsv_file, stringsAsFactors = FALSE)
+if (!is.na(tsv_file) && file.exists(tsv_file)) {
+  majiq_results <- tryCatch(
+    read.delim(tsv_file, stringsAsFactors = FALSE),
+    error = function(e) data.frame()
+  )
   
   # MAJIQ uses a Bayesian framework: significance is defined by posterior probability
   # P(|ΔPSI| > threshold), not by FDR. Filter on probability_changing and mean_dpsi.
-  if ("probability_changing" %in% colnames(majiq_results) &&
+  if (nrow(majiq_results) > 0 &&
+      "probability_changing" %in% colnames(majiq_results) &&
       "mean_dpsi_per_lsv_junction" %in% colnames(majiq_results)) {
     majiq_results <- majiq_results %>%
       mutate(Significant = probability_changing >= params$majiq_prob_threshold &
@@ -225,17 +230,17 @@ if (length(cols_to_show) > 0) {
 switches_file <- file.path(params$isar_dir, "top_isoform_switches.csv")
 consequences_file <- file.path(params$isar_dir, "consequence_summary.csv")
 
-if (file.exists(switches_file)) {
-  isar_switches <- read.csv(switches_file, stringsAsFactors = FALSE)
-} else {
-  isar_switches <- data.frame()
+# read_csv_safe: returns empty data.frame when file is absent, empty, or unparseable
+read_csv_safe <- function(path) {
+  if (!file.exists(path) || file.size(path) < 3L) return(data.frame())
+  tryCatch(
+    read.csv(path, stringsAsFactors = FALSE),
+    error = function(e) data.frame()
+  )
 }
 
-if (file.exists(consequences_file)) {
-  isar_consequences <- read.csv(consequences_file, stringsAsFactors = FALSE)
-} else {
-  isar_consequences <- data.frame()
-}
+isar_switches      <- read_csv_safe(switches_file)
+isar_consequences  <- read_csv_safe(consequences_file)
 ```
 
 ```{r isar_summary, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}

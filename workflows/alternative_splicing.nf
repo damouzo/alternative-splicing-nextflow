@@ -113,10 +113,15 @@ workflow ALTERNATIVE_SPLICING {
     /*
      * MODULE: Render final R Markdown report per comparison
      */
-    // Join all results for each comparison into a single tuple
+    // Join all results for each comparison into a single tuple.
+    // Pass original dir names as vals so RENDER_REPORT can detect NO_* placeholders
+    // even after stageAs renames the paths in the work directory.
     ch_rmats_for_report
         .join(ch_majiq_for_report, by: 0)
         .join(ch_isar_for_report, by: 0)
+        .map { comp_id, rdir, mdir, idir ->
+            [comp_id, rdir.name, rdir, mdir.name, mdir, idir.name, idir]
+        }
         .set { ch_report_inputs }
     
     // Pass the full tuple — avoids multiple queue-channel consumers causing desync

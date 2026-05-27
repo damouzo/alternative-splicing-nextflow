@@ -32,16 +32,21 @@ process MAJIQ_DELTAPSI {
     export MKL_NUM_THREADS=1
     export NUMEXPR_NUM_THREADS=1
 
-    # PSI coverage per group
-    majiq-v3 psi-coverage ${splicegraph} ${g1_label}.psicov ${sj1}
-    majiq-v3 psi-coverage ${splicegraph} ${g2_label}.psicov ${sj2}
+    # PSI coverage per group — apply read/bin thresholds at this step
+    majiq-v3 psi-coverage ${splicegraph} ${g1_label}.psicov \
+        --minreads ${params.majiq_min_reads} \
+        --minbins ${params.majiq_min_nonzero} \
+        ${sj1}
+    majiq-v3 psi-coverage ${splicegraph} ${g2_label}.psicov \
+        --minreads ${params.majiq_min_reads} \
+        --minbins ${params.majiq_min_nonzero} \
+        ${sj2}
 
     # DeltaPSI — outputs both voila file and TSV directly
     majiq-v3 deltapsi \\
         --splicegraph ${splicegraph} \\
         -psi1 ${g1_label}.psicov \\
         -psi2 ${g2_label}.psicov \\
-        --min-nonzero ${params.majiq_min_nonzero} \\
         --output-voila ${comparison_id}.dpsicov \\
         --output-tsv ${comparison_id}.tsv
 

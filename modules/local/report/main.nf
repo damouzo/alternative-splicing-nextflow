@@ -6,8 +6,14 @@ process RENDER_REPORT {
     
     publishDir "${params.outdir}/report", mode: params.publish_dir_mode
     
+    // stageAs gives each dir a unique name in the work dir — avoids basename collision
+    // when rMATS, MAJIQ and ISAR all emit a directory named after the comparison_id.
+    // The original names are passed as vals so NO_* placeholders can still be detected.
     input:
-    tuple val(comparison_id), path(rmats_dir), path(majiq_dir), path(isar_dir)
+    tuple val(comparison_id),
+          val(rmats_name), path(rmats_dir, stageAs: 'rmats_in'),
+          val(majiq_name), path(majiq_dir, stageAs: 'majiq_in'),
+          val(isar_name),  path(isar_dir,  stageAs: 'isar_in')
     path report_rmd
     
     output:
@@ -15,9 +21,9 @@ process RENDER_REPORT {
     path "versions.yml"                         , emit: versions
     
     script:
-    def rmats_arg = rmats_dir.name != 'NO_RMATS' ? rmats_dir : 'NULL'
-    def majiq_arg = majiq_dir.name != 'NO_MAJIQ' ? majiq_dir : 'NULL'
-    def isar_arg  = isar_dir.name  != 'NO_ISAR'  ? isar_dir  : 'NULL'
+    def rmats_arg = rmats_name != 'NO_RMATS' ? 'rmats_in' : 'NULL'
+    def majiq_arg = majiq_name != 'NO_MAJIQ' ? 'majiq_in' : 'NULL'
+    def isar_arg  = isar_name  != 'NO_ISAR'  ? 'isar_in'  : 'NULL'
     
     """
     # Write report params to a JSON file to avoid shell injection from comparison_id

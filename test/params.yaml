@@ -1,0 +1,24 @@
+# Synthetic SE test data — ctrl vs treat (3 replicates each).
+# MAJIQ is disabled: requires academic licence + user-built container.
+#
+# Launch:
+#   nextflow run main.nf -profile docker,test   -params-file /data/BCI-KRP/projects/alternative-splicing-nextflow/test/params.yaml
+#   nextflow run main.nf -profile apptainer,test -params-file /data/BCI-KRP/projects/alternative-splicing-nextflow/test/params.yaml
+#
+# To also run MAJIQ, add:
+#   --run_majiq true --majiq_sif <path/to/majiq.sif> --majiq_license <path/to/license>
+
+input:        /data/BCI-KRP/projects/alternative-splicing-nextflow/test/samplesheet.csv
+comparisons:  /data/BCI-KRP/projects/alternative-splicing-nextflow/test/comparisons.csv
+outdir:       /data/BCI-KRP/projects/alternative-splicing-nextflow/test/results
+
+gtf:          /data/BCI-KRP/projects/alternative-splicing-nextflow/test/ref/test.gtf
+genome_fasta: /data/BCI-KRP/projects/alternative-splicing-nextflow/test/ref/test.genome.fa
+use_gffread:  true
+
+strandedness: unstranded
+read_length:  100
+
+run_rmats: true
+run_majiq: false
+run_isar:  true

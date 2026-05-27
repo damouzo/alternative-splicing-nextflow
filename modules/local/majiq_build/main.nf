@@ -21,9 +21,9 @@ process MAJIQ_BUILD {
     def sample_ids     = sample_info.collect { it[0] }
     def sample_ids_str = sample_ids.join(' ')
 
-    // Build groups TSV content (all samples under a single group for the build step)
+    // Build groups TSV: only 'group' and 'sj' columns are required by majiq-v3 build
     def tsv_rows = sample_ids.collect { sid ->
-        "all\t${sid}\tsj/${sid}.sj"
+        "all\tsj/${sid}.sj"
     }.join('\n')
 
     """
@@ -48,12 +48,12 @@ process MAJIQ_BUILD {
     done
 
     # Step 3: Build splicegraph across all samples
-    printf 'group\\tprefix\\tsj\\n${tsv_rows}\\n' > build_config.tsv
+    printf 'group\\tsj\\n${tsv_rows}\\n' > build_config.tsv
     majiq-v3 build ann_sg.zarr built_sg.zarr \\
         --groups-tsv build_config.tsv \\
-        --min-reads ${params.majiq_min_reads} \\
-        --min-intronic-cov ${params.majiq_min_intronic_cov} \\
-        --min-denovo-reads ${params.majiq_min_denovo_reads} \\
+        --minreads ${params.majiq_min_reads} \\
+        --minpos ${params.majiq_min_intronic_cov} \\
+        --mindenovo ${params.majiq_min_denovo_reads} \\
         -j ${task.cpus}
 
     cat <<-END_VERSIONS > versions.yml

@@ -11,7 +11,7 @@ process ISAR_EXTRACT_ORF {
     
     output:
     tuple val(comparison_id), path("${comparison_id}_orf.rds"), emit: rds
-    path "isoformSwitchAnalyzeR_*.fasta"                      , emit: fastas
+    path "isoformSwitchAnalyzeR_*.fasta"                      , emit: fastas  , optional: true
     path "versions.yml"                                       , emit: versions
     
     script:

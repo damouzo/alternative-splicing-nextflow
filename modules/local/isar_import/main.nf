@@ -26,9 +26,9 @@ process ISAR_IMPORT {
     export MKL_NUM_THREADS=1
 
     # Append staged salmon_dir paths to the partial samplesheet CSV.
-    # paste merges the two files column-by-column; both have the same row order.
+    # paste merges the two files column-by-column; include header so rows align.
     staged_dirs=(${staged_dirs})
-    printf '%s\\n' "\${staged_dirs[@]}" > salmon_dirs.txt
+    { echo 'salmon_dir'; printf '%s\\n' "\${staged_dirs[@]}"; } > salmon_dirs.txt
     paste -d',' ${samplesheet} salmon_dirs.txt > full_samplesheet.csv
 
     isar_import.R \\
