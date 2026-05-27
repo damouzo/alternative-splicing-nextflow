@@ -27,6 +27,7 @@ process ISAR_SWITCH_CONSEQUENCES {
         --input ${rds_input} \\
         --output ${comparison_id}/${comparison_id}_final.rds \\
         --output_dir ${comparison_id} \\
+        --alpha ${params.isar_alpha} \\
         --dif_cutoff ${params.isar_dif_cutoff} \\
         --top_n_plots 25
     

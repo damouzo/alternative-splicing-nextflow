@@ -28,8 +28,10 @@ opt <- .parse_args()
 # Apply defaults for optional args
 if (is.null(opt$output_dir))  opt$output_dir  <- "."
 if (is.null(opt$dif_cutoff))  opt$dif_cutoff  <- "0.1"
+if (is.null(opt$alpha))       opt$alpha        <- "0.05"
 if (is.null(opt$top_n_plots)) opt$top_n_plots <- "25"
 opt$dif_cutoff  <- as.numeric(opt$dif_cutoff)
+opt$alpha       <- as.numeric(opt$alpha)
 opt$top_n_plots <- as.integer(opt$top_n_plots)
 
 if (is.null(opt$input) || is.null(opt$output)) {
@@ -118,32 +120,52 @@ if (length(consequences_to_analyze) == 0) {
     cat("  NOTE: No consequence categories available with current annotations\n")
 }
 
-# Extract top switches
-cat("\nExtracting top switches...\n")
-if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis) &&
-    nrow(switchAnalyzeRlist$isoformSwitchAnalysis) > 0) {
-    topSwitches <- tryCatch({
-        extractTopSwitches(
-            switchAnalyzeRlist = switchAnalyzeRlist,
-            filterForConsequences = FALSE,  # Include all switches
-            n = Inf,
-            extractGenes = FALSE,
-            sortByQvals = TRUE
-        )
-    }, error = function(e) {
-        cat("  NOTE: No significant switching isoforms available for top switch extraction\n")
-        data.frame()
-    })
-    
-    output_csv <- file.path(opt$output_dir, "top_isoform_switches.csv")
-    write.csv(topSwitches, output_csv, row.names = FALSE)
-    cat("  Saved:", output_csv, "\n")
-    cat("  Total switches:", nrow(topSwitches), "\n")
-} else {
-    cat("  No switches detected\n")
-    # Create empty file
-    write.csv(data.frame(), file.path(opt$output_dir, "top_isoform_switches.csv"))
-}
+# Extract all tested isoforms from isoformFeatures regardless of significance.
+# This mirrors the GSEA convention: show all results, flag those that pass cutoffs.
+cat("\nExtracting isoform switches (all tested)...\n")
+
+all_switches <- tryCatch({
+    feat <- switchAnalyzeRlist$isoformFeatures
+
+    # Keep only rows where satuRn produced a q-value and dIF was estimated
+    tested_rows <- !is.na(feat$dIF) & !is.na(feat$isoform_switch_q_value)
+    feat <- feat[tested_rows, , drop = FALSE]
+
+    # Select columns present in this object (consequence annotations may vary)
+    wanted_cols <- c(
+        "gene_name", "gene_id", "isoform_id", "condition_1", "condition_2",
+        "IF1", "IF2", "dIF",
+        "isoform_switch_q_value", "gene_switch_q_value",
+        # consequence columns — present only if analyzeSwitchConsequences ran
+        "IR_identified", "coding_potential", "ORF_seq_similarity", "NMD_status",
+        "switchConsequencesGene"
+    )
+    keep_cols <- intersect(wanted_cols, colnames(feat))
+    feat <- feat[, keep_cols, drop = FALSE]
+
+    # Significance flag: isoform-level q-value + dIF magnitude
+    feat$significant <- (
+        feat$isoform_switch_q_value < opt$alpha &
+        abs(feat$dIF) > opt$dif_cutoff
+    )
+
+    # Sort: significant first, then by q-value, then by |dIF| descending
+    feat <- feat[order(feat$isoform_switch_q_value, -abs(feat$dIF)), ]
+    rownames(feat) <- NULL
+    feat
+}, error = function(e) {
+    cat("  NOTE: Could not extract isoform features:", conditionMessage(e), "\n")
+    data.frame()
+})
+
+n_sig <- if (nrow(all_switches) > 0 && "significant" %in% colnames(all_switches))
+    sum(all_switches$significant, na.rm = TRUE) else 0
+
+output_csv <- file.path(opt$output_dir, "top_isoform_switches.csv")
+write.csv(all_switches, output_csv, row.names = FALSE)
+cat("  Saved:", output_csv, "\n")
+cat("  Total isoforms tested:", nrow(all_switches), "\n")
+cat("  Significant (FDR <", opt$alpha, "& |dIF| >", opt$dif_cutoff, "):", n_sig, "\n")
 
 # Extract consequence summary
 cat("\nExtracting consequence summary...\n")
@@ -166,15 +188,13 @@ output_summary <- file.path(opt$output_dir, "consequence_summary.csv")
 write.csv(consequenceSummary, output_summary, row.names = FALSE)
 cat("  Saved:", output_summary, "\n")
 
-# Generate switch plots for top N genes
-if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis) && 
-    nrow(switchAnalyzeRlist$isoformSwitchAnalysis) > 0) {
-    
-    cat("\nGenerating switch plots for top", opt$top_n_plots, "genes...\n")
-    
+# Generate switch plots for top N significant genes (only if any pass the cutoff)
+if (n_sig > 0) {
+    cat("\nGenerating switch plots for top", opt$top_n_plots, "significant genes...\n")
+
     switchplot_dir <- file.path(opt$output_dir, "switchplots")
     dir.create(switchplot_dir, showWarnings = FALSE, recursive = TRUE)
-    
+
     tryCatch({
         switchPlotTopSwitches(
             switchAnalyzeRlist = switchAnalyzeRlist,

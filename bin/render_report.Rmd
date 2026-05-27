@@ -146,18 +146,19 @@ tsv_file  <- if (length(tsv_files) > 0) tsv_files[1] else NA_character_
 
 if (!is.na(tsv_file) && file.exists(tsv_file)) {
   majiq_results <- tryCatch(
-    read.delim(tsv_file, stringsAsFactors = FALSE),
+    # comment.char skips the JSON metadata block (#-prefixed lines) at the top of MAJIQ v3 TSVs
+    read.delim(tsv_file, stringsAsFactors = FALSE, comment.char = "#"),
     error = function(e) data.frame()
   )
   
   # MAJIQ uses a Bayesian framework: significance is defined by posterior probability
-  # P(|ΔPSI| > threshold), not by FDR. Filter on probability_changing and mean_dpsi.
+  # P(|ΔPSI| > threshold), not by FDR. Filter on probability_changing and dpsi_mean.
   if (nrow(majiq_results) > 0 &&
       "probability_changing" %in% colnames(majiq_results) &&
-      "mean_dpsi_per_lsv_junction" %in% colnames(majiq_results)) {
+      "dpsi_mean" %in% colnames(majiq_results)) {
     majiq_results <- majiq_results %>%
       mutate(Significant = probability_changing >= params$majiq_prob_threshold &
-               abs(mean_dpsi_per_lsv_junction) >= params$majiq_dpsi_cutoff)
+               abs(dpsi_mean) >= params$majiq_dpsi_cutoff)
   } else {
     majiq_results$Significant <- FALSE
   }
@@ -167,7 +168,7 @@ if (!is.na(tsv_file) && file.exists(tsv_file)) {
 ```
 
 ```{r majiq_summary, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
-cat("Total LSVs detected:", nrow(majiq_results), "\n\n")
+cat("Total junctions detected:", nrow(majiq_results), "\n\n")
 
 if ("Significant" %in% colnames(majiq_results)) {
   cat(sprintf(
@@ -179,44 +180,48 @@ if ("Significant" %in% colnames(majiq_results)) {
 }
 ```
 
-```{r majiq_distribution, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0 && "mean_dpsi_per_lsv_junction" %in% colnames(majiq_results)}
+```{r majiq_distribution, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0 && "dpsi_mean" %in% colnames(majiq_results)}
 # Distribution of deltaPSI
 majiq_results %>%
-  filter(!is.na(mean_dpsi_per_lsv_junction)) %>%
-  ggplot(aes(x = abs(mean_dpsi_per_lsv_junction))) +
+  filter(!is.na(dpsi_mean)) %>%
+  ggplot(aes(x = abs(dpsi_mean))) +
   geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
   theme_bw() +
   labs(
-    title = "Distribution of |ΔΨ| in MAJIQ LSVs",
-    x = "|mean ΔΨ per LSV junction|",
+    title = "Distribution of |ΔΨ| in MAJIQ junctions",
+    x = "|dpsi_mean|",
     y = "Count"
   )
 ```
 
 ```{r majiq_top_table, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
-# Top significant LSVs
+# Top significant junctions
 cols_to_show <- intersect(
-  c("gene_name", "lsv_id", "mean_dpsi_per_lsv_junction", "probability_changing", "probability_non_changing"),
+  c("gene_name", "gene_id", "event_type", "seqid", "start", "end",
+    "dpsi_mean", "dpsi_std", "probability_changing", "probability_nonchanging",
+    "grp1_raw_psi_mean", "grp2_raw_psi_mean"),
   colnames(majiq_results)
 )
 
 if (length(cols_to_show) > 0) {
   top_lsvs <- majiq_results %>%
     filter(Significant) %>%
-    arrange(desc(probability_changing)) %>%
+    arrange(desc(probability_changing), desc(abs(dpsi_mean))) %>%
     select(all_of(cols_to_show)) %>%
-    head(50)
+    head(100)
   
   if (nrow(top_lsvs) > 0) {
     datatable(
       top_lsvs,
-      caption = "Top 50 Significant MAJIQ LSVs",
+      caption = paste0("Top 100 Significant MAJIQ Junctions (P >= ",
+                       params$majiq_prob_threshold, ", |ΔΨ| >= ",
+                       params$majiq_dpsi_cutoff, ")"),
       options = list(pageLength = 10, scrollX = TRUE),
       rownames = FALSE
     ) %>%
       formatRound(columns = names(top_lsvs)[sapply(top_lsvs, is.numeric)], digits = 4)
   } else {
-    cat("No significant LSVs detected.\n")
+    cat("No significant junctions detected.\n")
   }
 }
 ```
@@ -244,10 +249,25 @@ isar_consequences  <- read_csv_safe(consequences_file)
 ```
 
 ```{r isar_summary, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
-cat("Total isoform switches detected:", nrow(isar_switches), "\n\n")
+n_total <- nrow(isar_switches)
+n_sig   <- if ("significant" %in% colnames(isar_switches))
+    sum(isar_switches$significant, na.rm = TRUE) else NA
+
+cat("Total isoforms tested:", n_total, "\n\n")
+
+if (!is.na(n_sig)) {
+  cat(sprintf(
+    "Significant (FDR < %.2f & |dIF| >= %.2f): %d\n\n",
+    params$fdr_cutoff, params$dpsi_cutoff, n_sig
+  ))
+}
 
 if ("gene_name" %in% colnames(isar_switches)) {
-  cat("Genes with switches:", length(unique(isar_switches$gene_name)), "\n\n")
+  cat("Genes tested:", length(unique(isar_switches$gene_name)), "\n")
+  if (!is.na(n_sig) && n_sig > 0) {
+    sig_genes <- length(unique(isar_switches$gene_name[isar_switches$significant]))
+    cat("Genes with significant switches:", sig_genes, "\n")
+  }
 }
 ```
 
@@ -268,24 +288,47 @@ if ("feature" %in% colnames(isar_consequences) && "count" %in% colnames(isar_con
 ```
 
 ```{r isar_top_table, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
-# Top switches table
+# Show all tested isoforms; significant ones highlighted in green.
 cols_to_show <- intersect(
-  c("gene_name", "isoform_id", "condition_1", "condition_2", "dIF", "isoform_switch_q_value"),
+  c("gene_name", "gene_id", "isoform_id", "condition_1", "condition_2",
+    "IF1", "IF2", "dIF", "isoform_switch_q_value", "gene_switch_q_value",
+    "significant"),
   colnames(isar_switches)
 )
 
 if (length(cols_to_show) > 0) {
-  top_switches <- isar_switches %>%
-    head(50) %>%
-    select(all_of(cols_to_show))
-  
-  datatable(
-    top_switches,
-    caption = "Top 50 Isoform Switches",
+  display_df <- isar_switches %>% select(all_of(cols_to_show))
+
+  has_sig <- "significant" %in% colnames(display_df)
+  n_sig_table <- if (has_sig) sum(display_df$significant, na.rm = TRUE) else 0
+
+  dt <- datatable(
+    display_df,
+    caption = paste0(
+      "All tested isoforms, ordered by q-value. ",
+      if (has_sig) paste0(n_sig_table, " pass FDR < ", params$fdr_cutoff,
+                          " & |dIF| >= ", params$dpsi_cutoff, ".")
+      else ""
+    ),
     options = list(pageLength = 10, scrollX = TRUE),
     rownames = FALSE
   ) %>%
-    formatRound(columns = names(top_switches)[sapply(top_switches, is.numeric)], digits = 4)
+    formatRound(
+      columns = names(display_df)[sapply(display_df, is.numeric)],
+      digits = 4
+    )
+
+  # Highlight rows that pass the significance cutoff
+  if (has_sig) {
+    dt <- dt %>%
+      formatStyle(
+        "significant",
+        target = "row",
+        backgroundColor = styleEqual(c(TRUE, FALSE), c("#d4edda", "white"))
+      )
+  }
+
+  dt
 }
 ```
 
