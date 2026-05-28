@@ -184,10 +184,41 @@ Planned for v1.1.0:
 
 ---
 
-## [Unreleased]
+## [1.1.0] - 2026-05-28
+
+### Added
+
+#### Analysis tools
+- **Sashimi plots** via rmats2sashimiplot (`--run_sashimi`): per-event arc plots for top rMATS events; configurable top_n, group labels, and scale factors
+- **PEGASAS pathway–splicing correlation** (`--run_pegasas`): Python 3 port of PEGASAS KS enrichment + Pearson correlation of PSI vs pathway activity scores
+- **LeafCutter intron excision analysis** (`--run_leafcutter`): regtools junction extraction, leafcutter_cluster_regtools clustering, and leafcutter_ds differential splicing; annotated with gene names from GTF
+- **ISAR Tier A full functional annotation** (`--run_isar_full_annotation`): PFAM domain analysis via HMMER/hmmscan (`--pfam_hmm`) and IDR prediction via IUPred3; adds `domains_identified` and `IDR_identified` consequence categories
+
+#### Report
+- **PSI PCA** section: per-sample PSI matrix from rMATS IncLevel columns, PCA of splicing profiles
+- **Splice junction QC** section: per-sample mean inclusion junction count as coverage proxy
+- **Event prioritization score** in rMATS table: `−log10(FDR) × |ΔΨ|`
+- **Cross-tool UpSet plot** (UpSetR) including rMATS, MAJIQ, ISAR, and LeafCutter gene sets
+- **DE + AS dual-hit volcano** (`--de_results`): integrates DESeq2/edgeR results with AS hits
+- **PEGASAS KS score plots** and high-correlation event tables
+- **LeafCutter section** with cluster significance table and effect size distribution
+- **QC Metrics section** using nf-core/rnaseq MultiQC output (`--nfcore_multiqc_dir`)
+- **GO/KEGG enrichment** (clusterProfiler; `--organism` human/mouse)
+
+#### Infrastructure
+- **GHCR CI/CD** via `.github/workflows/build-containers.yml`: auto-builds isar, report, pegasas, and leafcutter containers on push to main; manual dispatch per target
+- **Multi-comparison support**: samplesheet supports N comparisons in a single run
+- **Container override params**: `--isar_container`, `--report_container`, `--pegasas_container`, `--leafcutter_container`
+- **MAJIQ_SIF env var** support: `MAJIQ_SIF` environment variable sets container path without explicit param
 
 ### Changed
-- Awaiting first post-release updates
+- Default `use_gffread` changed from `true` to `false` (user must opt in)
+- Pipeline version bumped to 1.1.0 in manifest
+- README rewritten to reflect current feature set and GHCR container strategy
+
+### Fixed
+- docs/usage.md: removed non-existent params (`--rmats_cutoff`, `--rmats_min_counts`, `--isar_switch_test_method`); corrected `--rmats_novelss` → `--rmats_novel_ss`
+- docs/output.md: added sashimi, PEGASAS, LeafCutter output descriptions and updated directory tree
 
 ---
 

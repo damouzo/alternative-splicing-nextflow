@@ -1,102 +1,138 @@
 # alternative-splicing-nextflow
 
-Standalone Nextflow DSL2 pipeline for differential alternative splicing analysis.
+Nextflow DSL2 pipeline for differential alternative splicing analysis.
 
-This repository focuses only on alternative splicing. It does not require direct communication with any upstream pipeline. You provide file paths in a samplesheet, and the pipeline consumes those files.
+Accepts outputs from nf-core/rnaseq (BAMs + Salmon quantifications). Produces one self-contained HTML report per comparison.
 
 ## What It Runs
 
-- rMATS-turbo for event-based splicing analysis
-- MAJIQ for local splicing variation and delta PSI
-- IsoformSwitchAnalyzeR for isoform switching and consequence analysis
-- One consolidated HTML report per comparison
+**Core tools** (all enabled by default):
 
-## Input Contract
+- rMATS-turbo — event-based splicing (SE, A5SS, A3SS, MXE, RI)
+- MAJIQ V3 — Local Splicing Variations with Bayesian deltaPSI
+- IsoformSwitchAnalyzeR — isoform switches with functional consequences (NMD, ORF, coding potential)
 
-The pipeline needs two CSV files:
+**Optional tools** (disabled by default):
 
-1. samplesheet.csv
-2. comparisons.csv
+- Sashimi plots (`--run_sashimi`) — rmats2sashimiplot for top rMATS events
+- PEGASAS (`--run_pegasas`) — pathway activity × PSI correlation
+- LeafCutter (`--run_leafcutter`) — intron excision differential splicing
+- ISAR full annotation (`--run_isar_full_annotation`) — PFAM domains + IUPred3 IDR prediction (Tier A)
 
+**Report features** (always included if data available):
 
-## Required Run Parameters
+- Interactive volcano plots (plotly)
+- Cross-tool gene overlap (UpSetR)
+- PSI PCA and splice junction QC
+- GO/KEGG enrichment (clusterProfiler)
+- DE + AS dual-hit volcano (`--de_results`)
 
-- --input
-- --comparisons
-- --gtf
-- --strandedness (unstranded, forward, reverse)
-- --read_length
+## Input
 
-If use_gffread=true, you must also provide --genome_fasta.
-If run_majiq=true, you must provide --majiq_license.
+Two CSV files:
+
+1. `samplesheet.csv` — sample, condition, replicate, bam, bai, salmon_dir
+2. `comparisons.csv` — group1, group2
+
+## Required Parameters
+
+- `--input`
+- `--comparisons`
+- `--gtf`
+- `--strandedness` (unstranded, forward, reverse)
+- `--read_length`
+
+If `use_gffread=true` (default: false), also provide `--genome_fasta`.
+If `run_majiq=true`, provide `--majiq_license` or set `MAJIQ_LICENSE_FILE` env var.
 
 ## Quick Run
 
-Parameter templates included:
-
-- Generic template: [assets/params.yaml](assets/params.yaml)
-- Demo template (ad vs old): [demo/params.yaml](demo/params.yaml)
-
-Run with generic template:
-
+```bash
+# Using a params file (recommended)
 nextflow run main.nf -profile docker -params-file assets/params.yaml
 
-Run with demo template:
+# HPC with Apptainer
+nextflow run main.nf -profile apptainer,slurm -params-file demo/params.yaml
 
-nextflow run main.nf -profile docker -params-file demo/params.yaml
+# rMATS + sashimi plots only
+nextflow run main.nf -profile docker \
+  --run_majiq false --run_isar false \
+  --run_sashimi true --sashimi_top_n 10 \
+  -params-file params.yaml
 
-Or on HPC with Apptainer/Singularity:
+# With LeafCutter and ISAR full annotation
+nextflow run main.nf -profile docker \
+  --run_leafcutter true \
+  --run_isar_full_annotation true --pfam_hmm /data/Pfam-A.hmm \
+  -params-file params.yaml
+```
 
-nextflow run main.nf -profile apptainer -params-file demo/params.yaml -c custom.config
+Parameter templates:
 
-## Internal Assets
+- Generic: [assets/params.yaml](assets/params.yaml)
+- Demo (ad vs old): [demo/params.yaml](demo/params.yaml)
 
-The folder [assets/empty](assets/empty) is internal pipeline scaffolding.
+## Containers
 
-- [assets/empty/NO_RMATS](assets/empty/NO_RMATS)
-- [assets/empty/NO_MAJIQ](assets/empty/NO_MAJIQ)
-- [assets/empty/NO_ISAR](assets/empty/NO_ISAR)
+Container images are built automatically from `containers/` and published to GitHub Container Registry (GHCR) via `.github/workflows/build-containers.yml` on push to `main`.
 
-These sentinel directories are used when a branch is disabled to keep report input wiring stable. They should not be removed.
+| Image | Registry tag | Built from |
+|-------|-------------|------------|
+| isar | `ghcr.io/damouzo/alternative-splicing-nextflow/isar:latest` | `containers/isar/` |
+| report | `ghcr.io/damouzo/alternative-splicing-nextflow/report:latest` | `containers/report/` |
+| pegasas | `ghcr.io/damouzo/alternative-splicing-nextflow/pegasas:latest` | `containers/pegasas/` |
+| leafcutter | `ghcr.io/damouzo/alternative-splicing-nextflow/leafcutter:latest` | `containers/leafcutter/` |
 
-## MAJIQ License and Runtime
+MAJIQ is excluded from auto-build (requires academic licence). Build locally:
 
-MAJIQ does not need a user/password in params. It needs a valid MAJIQ license key file.
+```bash
+docker build -t your-registry/majiq:3.0 containers/majiq/
+```
 
-1. Export the license in your shell.
+Override any image via env var or param:
 
-export MAJIQ_LICENSE_FILE=/path/to/licenses/majiq_license.key
+```bash
+export ISAR_CONTAINER=my-registry/isar:custom
+# or --isar_container my-registry/isar:custom
+```
 
-2. Run the pipeline.
+## MAJIQ License
 
+MAJIQ requires an academic licence (free from https://majiq.biociphers.org).
+
+```bash
+export MAJIQ_LICENSE_FILE=/path/to/majiq_license.key
 nextflow run main.nf -profile apptainer -params-file demo/params.yaml
-
-The pipeline now picks `MAJIQ_LICENSE_FILE` automatically as default `majiq_license`.
-
-About installation on HPC:
-
-- You do not need MAJIQ installed system-wide if you run with containers.
-- You do need a working container runtime (Apptainer/Singularity or Docker).
-- The container images used by the pipeline must be available to the runtime.
-
-Example local image build names used by this pipeline:
-
-- `local/majiq:3.0`
-- `local/isar:2.10.0`
-
-If needed, build them from:
-
-- [containers/majiq/Dockerfile](containers/majiq/Dockerfile)
-- [containers/isar/Dockerfile](containers/isar/Dockerfile)
+```
 
 ## Output Layout
 
+```
 results/
   rmats/<comparison_id>/
   majiq/<comparison_id>/
   isoformswitchr/<comparison_id>/
+  leafcutter/<comparison_id>/           # when --run_leafcutter true
+  sashimi_plots/<comparison_id>/        # when --run_sashimi true
+  pegasas/<comparison_id>/              # when --run_pegasas true
   report/<comparison_id>_splicing_report.html
+```
 
+## Internal Assets
+
+`assets/empty/` holds sentinel directories used internally when a tool branch is disabled. They must not be removed.
+
+- `assets/empty/NO_RMATS`
+- `assets/empty/NO_MAJIQ`
+- `assets/empty/NO_ISAR`
+- `assets/empty/NO_SASHIMI`
+- `assets/empty/NO_PEGASAS`
+- `assets/empty/NO_LEAFCUTTER`
+
+## Documentation
+
+- Parameters and usage: [docs/usage.md](docs/usage.md)
+- Output files: [docs/output.md](docs/output.md)
 
 ## License
 

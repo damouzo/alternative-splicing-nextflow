@@ -15,12 +15,13 @@ include { ISAR_WRITE_SAMPLESHEET   } from '../../../modules/local/isar_write_sam
 include { ISAR_IMPORT              } from '../../../modules/local/isar_import/main'
 include { ISAR_SWITCH_TEST         } from '../../../modules/local/isar_switch_test/main'
 include { ISAR_EXTRACT_ORF         } from '../../../modules/local/isar_extract_orf/main'
+include { ISAR_RUN_PFAM            } from '../../../modules/local/isar_run_pfam/main'
+include { ISAR_RUN_IUPRED          } from '../../../modules/local/isar_run_iupred/main'
 include { ISAR_SWITCH_CONSEQUENCES } from '../../../modules/local/isar_switch_consequences/main'
 
 workflow ISOFORMSWITCHR_ANALYSIS {
     take:
     samples_salmon  // channel: [meta, salmon_dir] with meta.comparison_id
-    _comparisons    // channel: [comparison_meta]
     gtf             // path: annotation.gtf
     
     main:
@@ -100,14 +101,44 @@ workflow ISOFORMSWITCHR_ANALYSIS {
         ISAR_SWITCH_TEST.out.rds,
         gtf
     )
-    
+
+    /*
+     * Optional: PFAM domain analysis and IUPred3 IDR prediction (Tier A full annotation)
+     * Gated by --run_isar_full_annotation flag
+     */
+    def no_pfam_file   = file("${workflow.projectDir}/assets/empty/NO_PFAM")
+    def no_iupred_file = file("${workflow.projectDir}/assets/empty/NO_IUPRED")
+
+    ch_orf_rds = ISAR_EXTRACT_ORF.out.rds
+
+    if (params.run_isar_full_annotation) {
+        ISAR_RUN_IUPRED(ch_orf_rds)
+
+        if (params.pfam_hmm) {
+            ch_pfam_hmm = channel.fromPath(params.pfam_hmm, checkIfExists: true).first()
+            ISAR_RUN_PFAM(ch_orf_rds, ch_pfam_hmm)
+
+            ch_orf_rds
+                .join(ISAR_RUN_PFAM.out.results)
+                .join(ISAR_RUN_IUPRED.out.results)
+                .set { ch_consequences_input }
+        } else {
+            ch_orf_rds
+                .join(ISAR_RUN_IUPRED.out.results)
+                .map { id, rds, iupred -> [id, rds, no_pfam_file, iupred] }
+                .set { ch_consequences_input }
+        }
+    } else {
+        ch_orf_rds
+            .map { id, rds -> [id, rds, no_pfam_file, no_iupred_file] }
+            .set { ch_consequences_input }
+    }
+
     /*
      * Run ISAR SWITCH CONSEQUENCES
      */
-    ISAR_SWITCH_CONSEQUENCES(
-        ISAR_EXTRACT_ORF.out.rds
-    )
-    
+    ISAR_SWITCH_CONSEQUENCES(ch_consequences_input)
+
     emit:
     results  = ISAR_SWITCH_CONSEQUENCES.out.results  // [comparison_id, results_dir]
     versions = ch_gffread_versions

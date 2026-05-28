@@ -26,9 +26,11 @@ suppressPackageStartupMessages({
 opt <- .parse_args()
 
 # Apply defaults for optional args
-if (is.null(opt$output_dir))  opt$output_dir  <- "."
-if (is.null(opt$dif_cutoff))  opt$dif_cutoff  <- "0.1"
-if (is.null(opt$top_n_plots)) opt$top_n_plots <- "25"
+if (is.null(opt$output_dir))    opt$output_dir    <- "."
+if (is.null(opt$dif_cutoff))    opt$dif_cutoff    <- "0.1"
+if (is.null(opt$top_n_plots))   opt$top_n_plots   <- "25"
+if (is.null(opt$pfam_results))  opt$pfam_results  <- NULL
+if (is.null(opt$iupred_results)) opt$iupred_results <- NULL
 opt$dif_cutoff  <- as.numeric(opt$dif_cutoff)
 opt$top_n_plots <- as.integer(opt$top_n_plots)
 
@@ -45,8 +47,41 @@ switchAnalyzeRlist <- readRDS(opt$input)
 
 cat("Loaded data with", nrow(switchAnalyzeRlist$isoformFeatures), "isoforms\n")
 
-# Note: External annotation tools (CPC2, PFAM, SignalP, etc.) would be run here
-# For now, we analyze consequences based on available annotations (ORF-based)
+# PFAM domain analysis (Tier A full annotation)
+pfam_ran <- FALSE
+if (!is.null(opt$pfam_results) && file.exists(opt$pfam_results) && file.size(opt$pfam_results) > 100) {
+    cat("\nRunning analyzePFAM()...\n")
+    switchAnalyzeRlist <- tryCatch({
+        analyzePFAM(
+            switchAnalyzeRlist   = switchAnalyzeRlist,
+            pathToPFAMresultFile = opt$pfam_results,
+            showProgress         = FALSE,
+            quiet                = TRUE
+        )
+    }, error = function(e) {
+        cat("  NOTE: analyzePFAM() failed:", conditionMessage(e), "\n")
+        switchAnalyzeRlist
+    })
+    pfam_ran <- TRUE
+}
+
+# IUPred3 IDR prediction (Tier A full annotation)
+iupred_ran <- FALSE
+if (!is.null(opt$iupred_results) && file.exists(opt$iupred_results) && file.size(opt$iupred_results) > 0) {
+    cat("\nRunning analyzeIUPred2A()...\n")
+    switchAnalyzeRlist <- tryCatch({
+        analyzeIUPred2A(
+            switchAnalyzeRlist       = switchAnalyzeRlist,
+            pathToIUPred2AresultFile = opt$iupred_results,
+            showProgress             = FALSE,
+            quiet                    = TRUE
+        )
+    }, error = function(e) {
+        cat("  NOTE: analyzeIUPred2A() failed:", conditionMessage(e), "\n")
+        switchAnalyzeRlist
+    })
+    iupred_ran <- TRUE
+}
 
 cat("\nAnalyzing switch consequences...\n")
 cat("  dIF cutoff:", opt$dif_cutoff, "\n")
@@ -57,6 +92,10 @@ consequences_to_analyze <- c(
     'ORF_seq_similarity',
     'NMD_status'
 )
+
+# Extend consequences list with newly available annotations
+if (pfam_ran)   consequences_to_analyze <- c(consequences_to_analyze, 'domains_identified')
+if (iupred_ran) consequences_to_analyze <- c(consequences_to_analyze, 'IDR_identified')
 
 # Ensure intron retention has been precomputed when requested by ISAR.
 switchAnalyzeRlist <- tryCatch({
@@ -130,15 +169,16 @@ all_switches <- tryCatch({
     tested_rows <- !is.na(feat$dIF) & !is.na(feat$isoform_switch_q_value)
     feat <- feat[tested_rows, , drop = FALSE]
 
-    # Select columns present in this object (consequence annotations may vary)
-    wanted_cols <- c(
-        "gene_name", "gene_id", "isoform_id", "condition_1", "condition_2",
-        "IF1", "IF2", "dIF",
-        "isoform_switch_q_value", "gene_switch_q_value",
-        # consequence columns — present only if analyzeSwitchConsequences ran
-        "IR_identified", "coding_potential", "ORF_seq_similarity", "NMD_status",
-        "switchConsequencesGene"
-    )
+        # Select columns present in this object (consequence annotations may vary)
+        wanted_cols <- c(
+            "gene_name", "gene_id", "isoform_id", "condition_1", "condition_2",
+            "IF1", "IF2", "dIF",
+            "isoform_switch_q_value", "gene_switch_q_value",
+            # consequence columns — present only if analyzeSwitchConsequences ran
+            "IR_identified", "coding_potential", "ORF_seq_similarity", "NMD_status",
+            "domains_identified", "domain_isotype", "IDR_identified", "IDR_type",
+            "switchConsequencesGene"
+        )
     keep_cols <- intersect(wanted_cols, colnames(feat))
     feat <- feat[, keep_cols, drop = FALSE]
 

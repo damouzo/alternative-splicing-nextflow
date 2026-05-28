@@ -1,18 +1,23 @@
 name: Build and push containers
 
-# Triggers: push to main that touches a Dockerfile, or manual dispatch
+# Triggers: push to main that touches a container directory, or manual dispatch.
+# MAJIQ is excluded — it requires an academic licence and must not be pushed publicly.
 on:
   push:
     branches: [main]
     paths:
-      - 'containers/isar/Dockerfile'
-      - 'containers/report/Dockerfile'
+      - 'containers/isar/**'
+      - 'containers/report/**'
+      - 'containers/pegasas/**'
+      - 'containers/leafcutter/**'
   workflow_dispatch:
     inputs:
       target:
-        description: 'Which container to build (isar, report, or all)'
+        description: 'Which container to build: isar, report, pegasas, leafcutter, or all'
         required: false
         default: 'all'
+        type: choice
+        options: [isar, report, pegasas, leafcutter, all]
 
 env:
   REGISTRY: ghcr.io
@@ -20,21 +25,45 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-isar:
-    name: Build isar container
+  # Determine which container directories changed (push events only).
+  # workflow_dispatch skips this job and uses the target input directly.
+  detect:
+    name: Detect changed containers
     runs-on: ubuntu-latest
-    # On push: the paths: filter above already ensures this workflow only runs when isar/Dockerfile changes.
-    # On workflow_dispatch: respect the target input.
+    if: github.event_name == 'push'
+    outputs:
+      isar: ${{ steps.filter.outputs.isar }}
+      report: ${{ steps.filter.outputs.report }}
+      pegasas: ${{ steps.filter.outputs.pegasas }}
+      leafcutter: ${{ steps.filter.outputs.leafcutter }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            isar: ['containers/isar/**']
+            report: ['containers/report/**']
+            pegasas: ['containers/pegasas/**']
+            leafcutter: ['containers/leafcutter/**']
+
+  build-isar:
+    name: Build isar
+    runs-on: ubuntu-latest
+    needs: [detect]
+    # always() lets this job run even when detect was skipped (workflow_dispatch).
     if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'isar' || github.event.inputs.target == 'all'))
+      always() && !cancelled() && (
+        (github.event_name == 'push' && needs.detect.outputs.isar == 'true') ||
+        (github.event_name == 'workflow_dispatch' &&
+          (github.event.inputs.target == 'isar' || github.event.inputs.target == 'all'))
+      )
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -49,37 +78,37 @@ jobs:
         with:
           images: ${{ env.IMAGE_BASE }}/isar
           tags: |
-            type=raw,value=1.0.0
             type=raw,value=latest
+            type=sha,prefix=sha-
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Build and push isar image
+      - name: Build and push isar
         uses: docker/build-push-action@v5
         with:
           context: containers/isar
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=isar
+          cache-to: type=gha,mode=max,scope=isar
 
   build-report:
-    name: Build report container
+    name: Build report
     runs-on: ubuntu-latest
-    # On push: the paths: filter above already ensures this workflow only runs when report/Dockerfile changes.
-    # On workflow_dispatch: respect the target input.
+    needs: [detect]
     if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'report' || github.event.inputs.target == 'all'))
+      always() && !cancelled() && (
+        (github.event_name == 'push' && needs.detect.outputs.report == 'true') ||
+        (github.event_name == 'workflow_dispatch' &&
+          (github.event.inputs.target == 'report' || github.event.inputs.target == 'all'))
+      )
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -94,18 +123,107 @@ jobs:
         with:
           images: ${{ env.IMAGE_BASE }}/report
           tags: |
-            type=raw,value=1.0.0
             type=raw,value=latest
+            type=sha,prefix=sha-
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Build and push report image
+      - name: Build and push report
         uses: docker/build-push-action@v5
         with:
           context: containers/report
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=report
+          cache-to: type=gha,mode=max,scope=report
+
+  build-pegasas:
+    name: Build pegasas
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: |
+      always() && !cancelled() && (
+        (github.event_name == 'push' && needs.detect.outputs.pegasas == 'true') ||
+        (github.event_name == 'workflow_dispatch' &&
+          (github.event.inputs.target == 'pegasas' || github.event.inputs.target == 'all'))
+      )
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_BASE }}/pegasas
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push pegasas
+        uses: docker/build-push-action@v5
+        with:
+          context: containers/pegasas
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pegasas
+          cache-to: type=gha,mode=max,scope=pegasas
+
+  build-leafcutter:
+    name: Build leafcutter
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: |
+      always() && !cancelled() && (
+        (github.event_name == 'push' && needs.detect.outputs.leafcutter == 'true') ||
+        (github.event_name == 'workflow_dispatch' &&
+          (github.event.inputs.target == 'leafcutter' || github.event.inputs.target == 'all'))
+      )
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_BASE }}/leafcutter
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push leafcutter
+        uses: docker/build-push-action@v5
+        with:
+          context: containers/leafcutter
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=leafcutter
+          cache-to: type=gha,mode=max,scope=leafcutter

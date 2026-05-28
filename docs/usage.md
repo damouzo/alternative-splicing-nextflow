@@ -412,6 +412,10 @@ Or use `--use_gffread true` to extract from genome+GTF (ensures consistency).
 | `--run_rmats` | boolean | `true` | Run rMATS-turbo differential splicing analysis |
 | `--run_majiq` | boolean | `true` | Run MAJIQ deltaPSI quantification |
 | `--run_isar` | boolean | `true` | Run IsoformSwitchAnalyzeR isoform switch analysis |
+| `--run_sashimi` | boolean | `false` | Generate sashimi plots for top rMATS events |
+| `--run_pegasas` | boolean | `false` | Run PEGASAS pathway–splicing PSI correlation |
+| `--run_leafcutter` | boolean | `false` | Run LeafCutter intron excision analysis |
+| `--run_isar_full_annotation` | boolean | `false` | Enable Tier A ISAR annotation (PFAM + IUPred3) |
 
 **Example**: To run only rMATS and skip MAJIQ/ISAR:
 ```bash
@@ -427,19 +431,25 @@ nextflow run main.nf \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--rmats_novelss` | boolean | `false` | Enable novel splice site detection (increases runtime ~3-5×) |
-| `--rmats_cutoff` | float | `0.05` | FDR cutoff for significance filtering |
-| `--rmats_min_counts` | integer | `10` | Minimum junction read count threshold |
+| `--rmats_novel_ss` | boolean | `false` | Enable novel splice site detection (increases runtime ~3-5×) |
+| `--rmats_cstat` | float | `0.0001` | rMATS Cstat significance threshold |
+| `--rmats_min_intron_length` | integer | `50` | Minimum intron length |
+| `--rmats_max_exon_length` | integer | `500` | Maximum exon length for filtering |
+| `--rmats_tstat_threads` | integer | `6` | Threads for t-statistic computation |
+| `--rmats_read_type` | string | `'paired'` | Read type: `paired` or `single` |
 
 ### MAJIQ Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--majiq_license` | file | `null` | Path to MAJIQ academic license file (required to run MAJIQ) |
-| `--majiq_min_experiments` | integer | `1` | Minimum replicates supporting an LSV |
-| `--majiq_min_reads` | integer | `10` | Minimum read coverage for LSV detection |
-| `--majiq_deltapsi_threshold` | float | `0.2` | deltaPSI threshold for reporting (default 20%) |
-| `--majiq_probability_threshold` | float | `0.95` | Posterior probability threshold for high-confidence events |
+| `--majiq_license` | file | env `MAJIQ_LICENSE_FILE` | MAJIQ academic licence key file |
+| `--majiq_sif` | string | env `MAJIQ_SIF` | MAJIQ container image path/tag |
+| `--majiq_min_denovo_reads` | integer | `2` | Min reads supporting a de novo junction |
+| `--majiq_min_intronic_cov` | integer | `3` | Min intronic coverage |
+| `--majiq_min_reads` | integer | `10` | Min reads for junction detection |
+| `--majiq_min_nonzero` | integer | `3` | Min non-zero samples |
+| `--majiq_delta_psi_threshold` | float | `0.2` | deltaPSI reporting threshold |
+| `--majiq_probability_threshold` | float | `0.95` | Posterior probability threshold |
 
 **Note**: MAJIQ requires an academic license. Set `MAJIQ_LICENSE_FILE` environment variable or pass `--majiq_license`.
 
@@ -448,8 +458,90 @@ nextflow run main.nf \
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--isar_alpha` | float | `0.05` | Significance threshold for isoform switches |
-| `--isar_dif_cutoff` | float | `0.1` | Minimum isoform fraction (IF) difference (10%) |
-| `--isar_switch_test_method` | string | `'DEXSeq'` | Statistical test: `DEXSeq` or `DRIMSeq` |
+| `--isar_dif_cutoff` | float | `0.1` | Minimum isoform fraction difference |
+| `--isar_gene_expr_cutoff` | float | `1` | Minimum gene TPM |
+| `--isar_iso_expr_cutoff` | float | `1` | Minimum isoform TPM |
+| `--run_isar_full_annotation` | boolean | `false` | Enable Tier A annotation: PFAM + IUPred3 IDR |
+| `--pfam_hmm` | file | `null` | Path to Pfam-A.hmm database file (~500 MB) |
+
+### Sashimi Plots
+
+Requires `--run_sashimi true`. Generates arc plots via rmats2sashimiplot for top rMATS SE events.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--run_sashimi` | boolean | `false` | Enable sashimi plot generation |
+| `--sashimi_top_n` | integer | `10` | Number of top events to plot |
+| `--sashimi_group1_label` | string | `'Group1'` | Label for group1 in plots |
+| `--sashimi_group2_label` | string | `'Group2'` | Label for group2 in plots |
+| `--sashimi_exon_scale` | integer | `25` | Exon scale factor |
+| `--sashimi_intron_scale` | integer | `5` | Intron scale factor |
+
+```bash
+nextflow run main.nf -profile docker \
+  --run_sashimi true --sashimi_top_n 20 \
+  --sashimi_group1_label control --sashimi_group2_label treatment \
+  -params-file params.yaml
+```
+
+### PEGASAS
+
+Requires `--run_pegasas true`. Correlates pathway activity scores (from gene sets) with per-sample PSI values.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--run_pegasas` | boolean | `false` | Enable PEGASAS pathway–splicing correlation |
+| `--pathway_gmt` | file | `null` | GMT file with gene sets (e.g., MSigDB Hallmarks) |
+| `--salmon_merged_tpm` | file | `null` | Merged TPM matrix from nf-core/rnaseq (all samples) |
+| `--pegasas_groups` | string | `null` | Comma-separated condition labels matching samplesheet |
+| `--pegasas_num_interval` | integer | `100` | Number of KS enrichment intervals |
+
+```bash
+nextflow run main.nf -profile docker \
+  --run_pegasas true \
+  --pathway_gmt /data/h.all.v2023.1.Hs.symbols.gmt \
+  --salmon_merged_tpm /data/salmon.merged.gene_tpm.tsv \
+  -params-file params.yaml
+```
+
+### DE + AS Integration
+
+Overlay DESeq2/edgeR results on the splicing report as a dual-hit volcano plot.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--de_results` | file | `null` | TSV with DE results (columns: gene_name, log2FoldChange, padj) |
+
+### LeafCutter
+
+Requires `--run_leafcutter true`. Performs intron excision clustering and differential splicing via LeafCutter.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--run_leafcutter` | boolean | `false` | Enable LeafCutter analysis |
+| `--leafcutter_container` | string | GHCR tag | Override LeafCutter container image |
+
+```bash
+nextflow run main.nf -profile docker \
+  --run_leafcutter true \
+  -params-file params.yaml
+```
+
+### QC / Report
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--nfcore_multiqc_dir` | path | `null` | Path to nf-core/rnaseq MultiQC output directory |
+| `--organism` | string | `'human'` | Organism for GO/KEGG enrichment (`human` or `mouse`) |
+
+### Container Overrides
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--isar_container` | string | GHCR tag | Override ISAR container image |
+| `--report_container` | string | GHCR tag | Override report container image |
+| `--pegasas_container` | string | GHCR tag | Override PEGASAS container image |
+| `--leafcutter_container` | string | GHCR tag | Override LeafCutter container image |
 
 ### Output Options
 
@@ -457,14 +549,6 @@ nextflow run main.nf \
 |-----------|------|---------|-------------|
 | `--outdir` | path | `'./results'` | Output directory for all results |
 | `--publish_dir_mode` | string | `'copy'` | File publishing mode: `copy`, `symlink`, or `move` |
-
-### Compute Resources
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--max_cpus` | integer | `16` | Maximum CPUs per process |
-| `--max_memory` | string | `'128.GB'` | Maximum memory per process |
-| `--max_time` | string | `'240.h'` | Maximum walltime per process |
 
 ### Execution Profiles
 

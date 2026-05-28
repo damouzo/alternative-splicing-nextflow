@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+# -*- coding: UTF-8 -*-
+
+import os
+import sys
+import argparse as ap
+from PEGASAS import config
+
+__author__  = "Yang Pan"
+__version__ = config.CURRENT_VERSION
+__email__   = "panyang@ucla.edu"
+
+
+def main():
+    argparser = get_arg_parser()
+    args = argparser.parse_args()
+
+    subcommand = args.subcommand
+
+    if subcommand == "pathway":
+        from PEGASAS import PEGASAS_pathway
+        PEGASAS_pathway.main(args)
+
+    elif subcommand == "correlation":
+        from PEGASAS import PEGASAS_correlation
+        PEGASAS_correlation.main(args)
+
+
+def get_arg_parser():
+    description = "%(prog)s -- PEGASAS"
+    epilog = "For command line options of each sub-command, type: %(prog)s COMMAND -h"
+
+    argparser = ap.ArgumentParser(description=description, epilog=epilog)
+    argparser.add_argument("--version", action="version", version="%(prog)s " + __version__)
+
+    subparsers = argparser.add_subparsers(dest="subcommand")
+    add_pathway_parser(subparsers)
+    add_correlation_parser(subparsers)
+    return argparser
+
+
+def add_pathway_parser(subparsers):
+    p = subparsers.add_parser(
+        "pathway",
+        help="Calculates signaling pathway activity from gene expression using KS enrichment",
+    )
+    optional = p._action_groups.pop()
+    required = p.add_argument_group("required arguments")
+    required.add_argument(
+        "geneExpbySample",
+        help="TSV matrix: rows=samples, cols=genes (FPKM/TPM/etc.)",
+    )
+    required.add_argument(
+        "geneSignatureList",
+        default=config.HALLMARKS50,
+        help="GMT-format gene signature file",
+    )
+    required.add_argument(
+        "groupInfo",
+        help="TSV file: sample_id<TAB>group",
+    )
+    optional.add_argument("-o", "--out-dir", default="PEGASAS_pathway",
+                          dest="out_dir", help="Output folder [PEGASAS_pathway]")
+    optional.add_argument("-n", "--num-interval", type=int, default=40,
+                          dest="num_interval",
+                          help="Parallel KS processes per batch [40]")
+    optional.add_argument("--plotting", default=False, action="store_true",
+                          help="Save KS enrichment plot per sample")
+    p._action_groups.append(optional)
+
+
+def add_correlation_parser(subparsers):
+    p = subparsers.add_parser(
+        "correlation",
+        help="Computes pathway-correlated alternative splicing events",
+    )
+    optional = p._action_groups.pop()
+    required = p.add_argument_group("required arguments")
+    required.add_argument(
+        "signatureScorebySample",
+        help="TSV: sample_id<TAB>group<TAB>KS_score (output of 'pathway' step)",
+    )
+    required.add_argument(
+        "PSIbySample",
+        help="TSV matrix: rows=splicing events, cols=samples (PSI values)",
+    )
+    required.add_argument(
+        "groupNameOrder",
+        help="File with comma-separated group name order for heatmap",
+    )
+    optional.add_argument("-o", "--out-dir", default="PEGASAS_PathwayScore",
+                          dest="out_dir", help="Output folder [PEGASAS_PathwayScore]")
+    optional.add_argument("--GO", default=False, action="store_true",
+                          help="Run GO enrichment analysis")
+    optional.add_argument("--GO-only", default=False, action="store_true",
+                          dest="GO_only",
+                          help="Only run GO analysis (skip correlation step)")
+    optional.add_argument("-b", "--GO-background-gene-list",
+                          dest="GO_background_gene_list",
+                          help="Background gene list for GO bias correction")
+    optional.add_argument("--GOdb-versions",
+                          default="GO_Biological_Process_2017b,GO_Cellular_Component_2015,GO_Molecular_Function_2017b",
+                          dest="GOdb_versions",
+                          help="EnrichR GO db versions to use")
+    p._action_groups.append(optional)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stderr.write("[INFO] User interrupted; program terminated.\n")
+        sys.exit(0)

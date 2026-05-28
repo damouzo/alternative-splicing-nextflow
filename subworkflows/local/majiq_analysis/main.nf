@@ -16,7 +16,6 @@ include { MAJIQ_ORGANIZE_RESULTS   } from '../../../modules/local/majiq_organize
 workflow MAJIQ_ANALYSIS {
     take:
     samples_bam  // channel: [meta, bam, bai] with meta.comparison_id and meta.group
-    _comparisons // channel: [comparison_meta]
     gtf          // path: annotation.gtf — will be converted to GFF3 internally
     
     main:

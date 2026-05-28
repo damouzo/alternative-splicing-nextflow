@@ -13,7 +13,6 @@ include { RMATS_POST } from '../../../modules/local/rmats_post/main'
 workflow RMATS_ANALYSIS {
     take:
     samples_bam  // channel: [meta, bam, bai] with meta.comparison_id and meta.group
-    _comparisons // channel: [comparison_meta]
     gtf          // path: annotation.gtf
     
     main:

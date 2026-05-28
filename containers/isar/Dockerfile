@@ -28,9 +28,18 @@ RUN R -e " \
     ), repos='https://cloud.r-project.org', Ncpus=4) \
 "
 
-# pfamAnalyzeR — required for PFAM domain analysis (future)
+# pfamAnalyzeR — required by analyzePFAM() for domain gain/loss detection
 RUN R -e "BiocManager::install('remotes', update=FALSE, ask=FALSE)" && \
     R -e "remotes::install_github('kvittingseerup/pfamAnalyzeR', upgrade='never')"
+
+# HMMER for PFAM domain analysis (analyzePFAM)
+RUN apt-get update && apt-get install -y --no-install-recommends hmmer && \
+    rm -rf /var/lib/apt/lists/*
+
+# Python3 + iupred3 for IDR prediction (analyzeIUPred2A)
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && \
+    pip3 install --no-cache-dir --break-system-packages iupred3 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Verify core packages load
 RUN R -e "library(IsoformSwitchAnalyzeR); library(satuRn); library(tximeta); sessionInfo()"

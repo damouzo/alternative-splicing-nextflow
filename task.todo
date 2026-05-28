@@ -1,0 +1,151 @@
+# alternative-splicing-nextflow — task tracking
+
+## Status vs Eleni's pipeline (last reviewed May 2026)
+
+Eleni's pipeline is a script-based (non-Nextflow) workflow that runs rMATS + MAJIQ
+and generates downstream plots and analyses with ad-hoc R/Python scripts.
+
+### Where we now match or exceed Eleni
+
+| Feature                                  | Eleni | Us         |
+|------------------------------------------|-------|------------|
+| rMATS-turbo (5 event types)              | ✅    | ✅          |
+| MAJIQ deltaPSI                           | ✅    | ✅ (V3 API) |
+| IsoformSwitchAnalyzeR                    | ❌    | ✅          |
+| Sashimi plots (rmats2sashimiplot)        | ✅    | ✅          |
+| GO/KEGG enrichment (clusterProfiler)     | ✅    | ✅          |
+| PEGASAS pathway-splicing correlation     | ✅    | ✅ (Py3 port)|
+| Cross-tool overlap (UpSetR)              | ✅    | ✅          |
+| PSI PCA (per-sample IncLevel matrix)     | ✅    | ✅          |
+| Splice junction QC section               | ❌    | ✅          |
+| Event prioritization score               | ❌    | ✅          |
+| DE + AS integration (dual-hit volcano)   | ✅    | ✅          |
+| HTML report (one file, all results)      | ❌    | ✅          |
+| Reproducible (Nextflow + containers)     | ❌    | ✅          |
+| CI/CD auto-container builds (GHCR)       | ❌    | ✅          |
+| Multi-comparison support (samplesheet)   | ❌    | ✅          |
+
+### Remaining genuine gaps vs Eleni
+
+| Feature                                        | Eleni | Us  | Notes                                     |
+|------------------------------------------------|-------|-----|-------------------------------------------|
+| ISAR full functional annotation (PFAM, IUPred, SignalP) | ❌ | ✅ | PFAM + IUPred3 (Tier A); SignalP/DeepTMHMM deferred |
+| LeafCutter (intron excision events)            | ✅    | ✅  | Modules + subworkflow + report section complete |
+
+---
+
+## Pending work — quality / completeness
+
+### Q1 — README.md update ✅ DONE
+### Q2 — docs/usage.md + docs/output.md update ✅ DONE
+### Q3 — CHANGELOG.md v1.1.0 entry ✅ DONE
+### Q4 — assets/empty sentinels in README ✅ DONE
+
+### Q5 — Test profile with real data (CI regression) ✅ DONE
+conf/test.config now explicitly sets run_leafcutter = false and
+run_isar_full_annotation = false alongside the existing rMATS + ISAR smoke-test.
+
+---
+
+## Next: ISAR full functional annotation (TODO-1 from PIPELINE_PLAN.md)
+
+This is the biggest remaining analytical gap. Currently isar_switch_consequences.R
+only computes: intron_retention, coding_potential, ORF_seq_similarity, NMD_status.
+
+Full annotation adds: domains_identified, domain_isotype (PFAM),
+IDR_identified, IDR_type (IUPred2A/3), signal_peptide_identified (SignalP),
+topology_identified (DeepTMHMM).
+
+### Feasibility tiers
+
+Tier A — free, easy to containerize, high value:
+- [x] PFAM via HMMER (bioconda::hmmer + Pfam-A.hmm provided by user ~500 MB)
+      → analyzePFAM() in ISAR; adds domain gain/loss consequences
+- [x] IUPred2A/IUPred3 (free academic, conda-installable)
+      → analyzeIUPred2A() in ISAR; adds IDR consequences
+- [ ] CPC2 (free, replaces ISAR's built-in coding potential with a better caller)
+      → analyzeCPC2() in ISAR (deferred to future iteration)
+
+Tier B — institutional/registration, worth supporting as optional:
+- [ ] SignalP 6.0 (DTU Health Tech, free for academic, needs manual download)
+      → accept pre-computed result via --signalp_results param
+- [ ] DeepTMHMM (free via Docker, BioLib API or local)
+      → accept pre-computed result via --deeptmhmm_results param
+
+Implementation plan for Tier A:
+- [x] F1  Add HMMER + Pfam-A.hmm container block to isar Dockerfile
+- [x] F2  Create modules/local/isar_run_pfam/main.nf — runs hmmscan on AA FASTA
+- [x] F3  Create modules/local/isar_run_iupred/main.nf — runs iupred3 on AA FASTA
+- [x] F4  Add analyzePFAM() + analyzeIUPred2A() calls to isar_switch_consequences.R
+- [x] F5  Add --run_isar_full_annotation boolean param (default: false) — gates F1-F4
+- [x] F6  Add --pfam_hmm param for user-provided Pfam-A.hmm path
+- [x] F7  Wire into isoformswitchr_analysis subworkflow behind the flag
+
+---
+
+## Next: LeafCutter integration
+
+LeafCutter quantifies intron usage ratios (not exon inclusion like rMATS) and is
+especially sensitive to complex splicing patterns and unannotated introns.
+It complements rMATS well and is already part of many published splicing workflows.
+
+- [x] L1  Create containers/leafcutter/Dockerfile (Python 3 + R leafcutter bioconductor pkg)
+- [x] L2  Create modules/local/leafcutter_bam2junc/main.nf — per-sample BAM → junc conversion
+- [x] L3  Create modules/local/leafcutter_cluster/main.nf — cluster introns across samples
+- [x] L4  Create modules/local/leafcutter_ds/main.nf — differential splicing test
+- [x] L5  Create subworkflows/local/leafcutter_analysis/main.nf
+- [x] L6  Add --run_leafcutter param + wire into main workflow + sentinel fallback
+- [x] L7  Add LeafCutter section to render_report.Rmd (deltaPSI distribution, top cluster table)
+- [x] L8  Include LeafCutter genes in cross-tool UpSet plot
+
+---
+
+## New ideas — within scope, reasonable effort
+
+These are not blocking anything but would meaningfully improve the pipeline.
+
+### I1 — VOILA interactive report link
+After MAJIQ_DELTAPSI, optionally run `majiq-v3 voila` to produce a self-contained
+HTML interactive browser for LSV exploration. Gate with --run_voila flag.
+Effort: low (single new process, same container as MAJIQ).
+
+### I2 — ISAR switch plots in HTML report
+isar_switch_consequences.R already calls switchPlotTopN() and writes PDFs.
+Embed the top 5 switch plots (convert PDF→PNG via imagemagick or use ggplot2
+plots directly) into the Rmd report so reviewers see them without opening PDFs.
+Effort: low-medium (R only, no new module).
+
+### I3 — nf-core lint compliance
+Add missing nf-core boilerplate: nextflow_schema.json, CITATIONS.md, .nf-core.yml.
+Required before submitting to nf-core/pipelines or citing the pipeline in a paper.
+Effort: medium (schema JSON is verbose but templated).
+
+### I4 — Export TSV summary per comparison
+After the report renders, publish a machine-readable TSV combining top hits from
+rMATS + MAJIQ + ISAR into one unified table (gene, event_type, tool, dPSI, FDR).
+Effort: low (R script addition to RENDER_REPORT process).
+
+### I5 — Salmon bootstrap warning
+In validate_samplesheet.py (or ISAR_IMPORT), check that quant.sf files have a
+corresponding bootstrap_inferential_replicates directory. ISAR uses bootstraps for
+the satuRn test uncertainty model; without them only point estimates are used.
+Emit a clear WARNING rather than silently running without bootstraps.
+Effort: low (Python, modify validate_samplesheet.py).
+
+### I6 — Multi-organism support for GO/KEGG
+Currently --organism only accepts 'human' or 'mouse'. Extend to rat, zebrafish,
+fly, worm via org.Rn.eg.db, org.Dr.eg.db, org.Dm.eg.db, org.Ce.eg.db.
+Add the packages to containers/report/Dockerfile and extend the Rmd switch block.
+Effort: low.
+
+---
+
+## Notes (kept from previous task.todo)
+
+- PEGASAS container must be built from containers/pegasas/Dockerfile and pushed to
+  GHCR via build-containers.yml (workflow_dispatch target=pegasas) before first use.
+- PEGASAS Python 3 port source: containers/pegasas/PEGASAS/
+- --pegasas_groups expects TSV: sample_id<TAB>group, same order as BAM list
+- --de_results expects TSV: gene_id, log2FC, padj (gene symbols matching rMATS geneSymbol)
+- nf-core example results: /data/BCI-KRP/projects/CRUK_DDX41_DHX34/analysis/totalRNAseq/batch_2026_04/nfcore_rnaseq/results
+- salmon.merged.gene_tpm.tsv: .../results/star_salmon/salmon.merged.gene_tpm.tsv

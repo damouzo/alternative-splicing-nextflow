@@ -27,6 +27,14 @@ results/
 │       ├── isoform_switches.txt
 │       ├── consequences_summary.txt
 │       └── isoformSwitchAnalyzeR_AA.fasta
+├── leafcutter/
+│   └── <comparison_id>/           # when --run_leafcutter true
+│       ├── <comparison_id>_cluster_significance.txt
+│       └── <comparison_id>_effect_sizes.txt
+├── sashimi_plots/
+│   └── <comparison_id>/           # when --run_sashimi true
+├── pegasas/
+│   └── <comparison_id>/           # when --run_pegasas true
 ├── report/
 │   └── <comparison_id>_splicing_report.html
 ├── multiqc/
@@ -311,6 +319,42 @@ Amino acid sequences for all annotated isoforms. Use for:
 
 ---
 
+## LeafCutter Output
+
+**Location**: `results/leafcutter/<comparison_id>/`
+
+LeafCutter quantifies intron usage ratios (not exon inclusion) and is especially sensitive to complex splicing and unannotated introns.
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `<comparison_id>_cluster_significance.txt` | Per-cluster differential splicing p-values and FDR |
+| `<comparison_id>_effect_sizes.txt` | Per-intron log effect size and deltaPSI |
+
+### `<comparison_id>_cluster_significance.txt` columns
+
+| Column | Description |
+|--------|-------------|
+| `cluster` | Cluster ID (chr:start:end) |
+| `p` | Nominal p-value (Chi-squared likelihood ratio test) |
+| `p.adjust` | BH-adjusted p-value |
+| `df` | Degrees of freedom (introns in cluster − 1) |
+| `verdict` | `Significant` or `NotSignificant` |
+| `genes` | Associated gene names (when GTF annotation provided) |
+
+### `<comparison_id>_effect_sizes.txt` columns
+
+| Column | Description |
+|--------|-------------|
+| `intron` | Intron coordinates (chr:start:end:clu_N_strand) |
+| `logef` | Log effect size |
+| `deltapsi` | Change in intron usage (group2 − group1) |
+| `psi1` | Mean intron usage in group1 |
+| `psi2` | Mean intron usage in group2 |
+
+---
+
 ## Consolidated Report
 
 **Location**: `results/report/<comparison_id>_splicing_report.html`
@@ -329,12 +373,14 @@ Interactive HTML report integrating all three tools' results with visualizations
 2. **Quality Control**
    - Embedded MultiQC metrics (if available)
    - Sample validation results
+   - Splice junction QC (per-sample mean inclusion junction counts)
 
 3. **rMATS Results**
    - Event counts per AS type (bar chart)
    - Volcano plots (deltaPSI vs -log10(FDR))
-   - Interactive data table with top events
+   - Interactive data table with top events (with prioritization score: −log10(FDR) × |ΔΨ|)
    - Distribution of deltaPSI values
+   - PSI PCA across samples
 
 4. **MAJIQ Results**
    - LSV detection summary
@@ -348,18 +394,32 @@ Interactive HTML report integrating all three tools' results with visualizations
    - Top switches with consequences table
    - Gene-level switch summary
 
-6. **Cross-Tool Overlap**
-   - Venn diagram of genes significant in ≥2 tools
-   - List of high-confidence genes (found by all 3 tools)
+6. **LeafCutter Results** (when `--run_leafcutter true`)
+   - Cluster significance table
+   - Effect size distribution
 
-7. **Methods**
-   - Auto-generated methods section (copy-paste ready for papers)
-   - Tool citations
-   - Parameter settings
+7. **PEGASAS Results** (when `--run_pegasas true`)
+   - KS score plots per pathway
+   - High-correlation event tables
 
-8. **Session Info**
-   - R/Python package versions
-   - Complete reproducibility information
+8. **Cross-Tool Overlap**
+   - UpSet plot of genes significant across rMATS, MAJIQ, ISAR, and LeafCutter
+   - List of high-confidence genes (found by multiple tools)
+
+9. **DE + AS Integration** (when `--de_results` provided)
+   - Dual-hit volcano plot overlaying DESeq2/edgeR results with AS hits
+
+10. **GO/KEGG Enrichment**
+    - clusterProfiler enrichment for differentially spliced gene sets
+
+11. **Methods**
+    - Auto-generated methods section (copy-paste ready for papers)
+    - Tool citations
+    - Parameter settings
+
+12. **Session Info**
+    - R/Python package versions
+    - Complete reproducibility information
 
 ### Interactive Features
 

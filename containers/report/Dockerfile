@@ -8,14 +8,31 @@ LABEL org.opencontainers.image.description="R Markdown report renderer for alter
 LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# Interactive table and plot packages not bundled in rocker/verse
+# Interactive table and visualization packages not bundled in rocker/verse
 RUN R -e " \
     install.packages(c( \
-        'DT', 'plotly', 'UpSetR' \
+        'DT', 'plotly', 'UpSetR', 'ggrepel' \
     ), repos='https://cloud.r-project.org', Ncpus=4) \
 "
 
-# Verify packages load
-RUN R -e "library(DT); library(plotly); library(UpSetR); library(rmarkdown)"
+# BiocManager is required to install Bioconductor packages
+RUN R -e "if (!requireNamespace('BiocManager', quietly=TRUE)) install.packages('BiocManager', repos='https://cloud.r-project.org')"
+
+# Bioconductor packages for GO/KEGG enrichment and pathway analysis
+# org.Hs.eg.db / org.Mm.eg.db: annotation databases for human and mouse
+# clusterProfiler: GO and KEGG over-representation and gene-set enrichment
+# fgsea: fast GSEA (used for PEGASAS-equivalent per-sample pathway scoring)
+RUN R -e " \
+    BiocManager::install( \
+        c('clusterProfiler', 'org.Hs.eg.db', 'org.Mm.eg.db', 'fgsea'), \
+        ask=FALSE, update=FALSE \
+    ) \
+"
+
+# Verify all packages load cleanly
+RUN R -e " \
+    library(DT); library(plotly); library(UpSetR); library(ggrepel); \
+    library(rmarkdown); library(clusterProfiler); library(fgsea) \
+"
 
 WORKDIR /data
