@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 def main():
     setup(
         name="PEGASAS",
-        version="1.1.1.py3",
+        version="1.1.1",
         description="Pathway Enrichment-Guided Activity Study of Alternative Splicing",
         author="Yang Pan",
         author_email="panyang@ucla.edu",

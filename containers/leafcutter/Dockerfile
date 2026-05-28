@@ -34,19 +34,27 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     scipy \
     pysam
 
-# R packages: leafcutter + dependencies
-# leafcutter is installed from GitHub (davidaknowles/leafcutter)
+# Pre-install ALL of leafcutter's DESCRIPTION dependencies before the GitHub build.
+# remotes::install_github resolves CRAN deps but not Bioconductor ones (TailRank),
+# so everything must be in place before the C++ compilation step.
+
+# CRAN Imports + LinkingTo from leafcutter DESCRIPTION
 RUN R -e " \
     install.packages(c( \
-        'optparse', 'R.utils', 'rstan', 'ggplot2', 'reshape2', \
-        'gridExtra', 'Hmisc', 'dplyr' \
+        'rstan', 'rstantools', 'StanHeaders', 'BH', 'Rcpp', 'RcppEigen', \
+        'optparse', 'R.utils', 'ggplot2', 'reshape2', 'gridExtra', \
+        'Hmisc', 'dplyr', 'foreach', 'magrittr', 'stringr', 'doMC', \
+        'shiny', 'shinyjs', 'DT', 'intervals', 'shinycssloaders', 'gtable' \
     ), repos='https://cloud.r-project.org', Ncpus=4) \
 "
 
+# Bioconductor Imports: DirichletMultinomial + TailRank
+# TailRank is Bioconductor-only; remotes cannot install it from CRAN repos
 RUN R -e " \
-    BiocManager::install('DirichletMultinomial', update=FALSE, ask=FALSE) \
+    BiocManager::install(c('DirichletMultinomial', 'TailRank'), update=FALSE, ask=FALSE) \
 "
 
+# Install leafcutter from GitHub — all deps already satisfied, only C++ compilation needed
 RUN R -e " \
     if (!requireNamespace('remotes', quietly=TRUE)) install.packages('remotes') \
     remotes::install_github('davidaknowles/leafcutter/leafcutter', upgrade='never') \
