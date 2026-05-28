@@ -8,12 +8,24 @@ LABEL org.opencontainers.image.description="LeafCutter for intron usage quantifi
 LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# System tools: samtools and regtools for junction extraction
+# System tools: samtools + build deps for regtools
+# regtools (Griffith Lab) is not in any standard apt repo — must be compiled from source
 RUN apt-get update && apt-get install -y --no-install-recommends \
     samtools \
-    regtools \
     python3 \
     python3-pip \
+    git \
+    cmake \
+    zlib1g-dev \
+    libbz2-dev \
+    liblzma-dev \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    && git clone --depth 1 https://github.com/griffithlab/regtools.git /opt/regtools \
+    && cmake -S /opt/regtools -B /opt/regtools/build \
+    && cmake --build /opt/regtools/build \
+    && install -m755 /opt/regtools/build/regtools /usr/local/bin/ \
+    && rm -rf /opt/regtools \
     && rm -rf /var/lib/apt/lists/*
 
 # Python dependencies for leafcutter scripts

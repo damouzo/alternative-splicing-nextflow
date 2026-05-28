@@ -25,9 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir numpy scipy matplotlib
 
 # Install PEGASAS Python 3 package
+# setuptools + wheel must be explicit: python:3.11-slim pip uses PEP 517 build
+# isolation which may not inherit the system setuptools for legacy setup.py builds
 WORKDIR /opt/pegasas
 COPY . .
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir setuptools wheel && \
+    pip install --no-cache-dir .
 
 # R packages: LSD and data.table (required by cor_matrix_direct_perm.R)
 RUN Rscript -e "install.packages(c('LSD', 'data.table', 'ggplot2'), repos='https://cloud.r-project.org', Ncpus=4)"

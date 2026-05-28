@@ -22,10 +22,13 @@ RUN R -e "if (!requireNamespace('BiocManager', quietly=TRUE)) install.packages('
 # org.Hs.eg.db / org.Mm.eg.db: annotation databases for human and mouse
 # clusterProfiler: GO and KEGG over-representation and gene-set enrichment
 # fgsea: fast GSEA (used for PEGASAS-equivalent per-sample pathway scoring)
+# update=FALSE removed: rocker/verse ships pre-installed CRAN packages that may
+# be outdated relative to what clusterProfiler requires; allowing updates ensures
+# the full dependency graph resolves cleanly
 RUN R -e " \
     BiocManager::install( \
         c('clusterProfiler', 'org.Hs.eg.db', 'org.Mm.eg.db', 'fgsea'), \
-        ask=FALSE, update=FALSE \
+        ask=FALSE \
     ) \
 "
 
