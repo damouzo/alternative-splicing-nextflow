@@ -56,7 +56,7 @@ RUN R -e " \
 
 # Install leafcutter from GitHub — all deps already satisfied, only C++ compilation needed
 RUN R -e " \
-    if (!requireNamespace('remotes', quietly=TRUE)) install.packages('remotes') \
+    if (!requireNamespace('remotes', quietly=TRUE)) install.packages('remotes', repos='https://cloud.r-project.org'); \
     remotes::install_github('davidaknowles/leafcutter/leafcutter', upgrade='never') \
 "
 

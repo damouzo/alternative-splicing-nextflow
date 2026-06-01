@@ -28,9 +28,13 @@ RUN R -e " \
     ), repos='https://cloud.r-project.org', Ncpus=4) \
 "
 
-# pfamAnalyzeR — required by analyzePFAM() for domain gain/loss detection
-RUN R -e "BiocManager::install('remotes', update=FALSE, ask=FALSE)" && \
-    R -e "remotes::install_github('kvittingseerup/pfamAnalyzeR', upgrade='never')"
+# pfamAnalyzeR is a dependency of IsoformSwitchAnalyzeR; use GitHub only as fallback
+RUN R -e " \
+    if (!requireNamespace('pfamAnalyzeR', quietly=TRUE)) { \
+        if (!requireNamespace('remotes', quietly=TRUE)) install.packages('remotes', repos='https://cloud.r-project.org'); \
+        remotes::install_github('kvittingseerup/pfamAnalyzeR', upgrade='never'); \
+    } \
+"
 
 # HMMER for PFAM domain analysis (analyzePFAM)
 RUN apt-get update && apt-get install -y --no-install-recommends hmmer && \
