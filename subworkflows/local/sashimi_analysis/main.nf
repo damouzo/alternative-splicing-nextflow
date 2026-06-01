@@ -13,7 +13,7 @@
  * ========================================================================================
  */
 
-include { SASHIMI_PLOTS } from '../../modules/local/sashimi_plots/main'
+include { SASHIMI_PLOTS } from '../../../modules/local/sashimi_plots/main'
 
 workflow SASHIMI_ANALYSIS {
 
