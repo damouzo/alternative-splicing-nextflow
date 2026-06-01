@@ -16,11 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     git \
     cmake \
+    libtbb-dev \
     zlib1g-dev \
     libbz2-dev \
     liblzma-dev \
     libcurl4-openssl-dev \
     libssl-dev \
+    && if [ ! -f /usr/include/tbb/tbb_stddef.h ] && [ -f /usr/include/oneapi/tbb/version.h ]; then \
+        mkdir -p /usr/include/tbb; \
+        printf '#pragma once\n#include <oneapi/tbb/version.h>\n' > /usr/include/tbb/tbb_stddef.h; \
+    fi \
     && git clone --depth 1 https://github.com/griffithlab/regtools.git /opt/regtools \
     && cmake -S /opt/regtools -B /opt/regtools/build \
     && cmake --build /opt/regtools/build \
