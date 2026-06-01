@@ -70,8 +70,9 @@ RUN git clone --depth 1 https://github.com/davidaknowles/leafcutter.git /opt/lea
 RUN R CMD INSTALL /opt/leafcutter-src/leafcutter
 
 # Verify the exact entrypoints used by the pipeline.
+# leafcutter_ds.R lives in the repo's scripts/ dir, not in the R package inst/scripts/,
+# so system.file() returns "" — use the source path directly.
 RUN python3 /opt/leafcutter-src/clustering/leafcutter_cluster_regtools.py -h >/dev/null \
-    && ds_script="$(Rscript -e 'cat(system.file("scripts", "leafcutter_ds.R", package="leafcutter"))')" \
-    && Rscript "${ds_script}" -h >/dev/null
+    && Rscript /opt/leafcutter-src/scripts/leafcutter_ds.R --help >/dev/null
 
 WORKDIR /data

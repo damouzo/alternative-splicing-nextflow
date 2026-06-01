@@ -47,16 +47,17 @@ PYEOF
             sub('.*gene_name "([^"]+)".*', '\\\\1', exons\$attribute),
             exons\$gene_id
         )
-        exon_tbl <- exons[, c('seqname','start','end','strand','gene_id','gene_name')]
-        colnames(exon_tbl) <- c('Chr','Start','End','Strand','gene_id','gene_name')
+        exon_tbl <- exons[, c('seqname','start','end','strand','gene_name')]
+        colnames(exon_tbl) <- c('chr','start','end','strand','gene_name')
         write.table(exon_tbl, 'exons.txt', sep = '\\t', row.names = FALSE, quote = FALSE)
     }
     REOF
 
     EXON_ARG=""
-    [ -f "exons.txt" ] && EXON_ARG="--exons exons.txt"
+    [ -f "exons.txt" ] && EXON_ARG="--exon_file exons.txt"
 
-    Rscript \$(Rscript -e "cat(system.file('scripts', 'leafcutter_ds.R', package='leafcutter'))") \\
+    # leafcutter_ds.R lives in the repo's scripts/ dir, not installed in the R package
+    Rscript /opt/leafcutter-src/scripts/leafcutter_ds.R \\
         --num_threads ${task.cpus} \\
         --output_prefix ${comparison_id}/${comparison_id} \\
         \$EXON_ARG \\
