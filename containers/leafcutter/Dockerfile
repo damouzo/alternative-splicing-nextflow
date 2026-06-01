@@ -54,13 +54,37 @@ RUN R -e " \
     BiocManager::install(c('DirichletMultinomial', 'TailRank'), update=FALSE, ask=FALSE) \
 "
 
-# Install leafcutter from GitHub — all deps already satisfied, only C++ compilation needed
-RUN R -e " \
-    if (!requireNamespace('remotes', quietly=TRUE)) install.packages('remotes', repos='https://cloud.r-project.org'); \
-    remotes::install_github('davidaknowles/leafcutter/leafcutter', upgrade='never') \
-"
+# Install leafcutter from source and patch stanmodels.R for modern rstan API.
+# Upstream still calls rstan::stanc_builder(), removed in recent rstan releases.
+# Keep a fallback to rstan::stanc() so namespace loading works on current R images.
+RUN git clone --depth 1 https://github.com/davidaknowles/leafcutter.git /opt/leafcutter-src \
+    && Rscript - <<'RS'
+f <- '/opt/leafcutter-src/leafcutter/R/stanmodels.R'
+x <- readLines(f, warn = FALSE)
+pat <- grep('stanfit <- rstan::stanc_builder\\(stan_file,', x)
+if (length(pat) != 1) {
+    stop('Expected stanc_builder call not found in stanmodels.R')
+}
+i <- pat[[1]]
+x[i:(i+2)] <- c(
+  '  stanc_fun <- if (exists("stanc_builder", where = asNamespace("rstan"), mode = "function")) {',
+  '    rstan::stanc_builder',
+  '  } else {',
+  '    function(file, allow_undefined = TRUE, obfuscate_model_name = FALSE) {',
+  '      rstan::stanc(file = file, allow_undefined = allow_undefined)',
+  '    }',
+  '  }',
+  '  stanfit <- stanc_fun(stan_file,',
+  '                       allow_undefined = TRUE,',
+  '                       obfuscate_model_name = FALSE)'
+)
+writeLines(x, f)
+RS
+RUN R CMD INSTALL /opt/leafcutter-src/leafcutter
 
-# Verify leafcutter loads
-RUN R -e "library(leafcutter); sessionInfo()"
+# Verify the exact entrypoints used by the pipeline.
+RUN python3 /opt/leafcutter-src/clustering/leafcutter_cluster_regtools.py -h >/dev/null \
+    && ds_script="$(Rscript -e 'cat(system.file("scripts", "leafcutter_ds.R", package="leafcutter"))')" \
+    && Rscript "${ds_script}" -h >/dev/null
 
 WORKDIR /data

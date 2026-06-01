@@ -15,7 +15,7 @@ process LEAFCUTTER_CLUSTER {
     # Write the list of junction files
     printf '%s\\n' ${junc_files.join(' ')} | tr ' ' '\\n' > junc_file_list.txt
 
-    python3 -m leafcutter.scripts.leafcutter_cluster_regtools \\
+    python3 /opt/leafcutter-src/clustering/leafcutter_cluster_regtools.py \\
         --junc_files junc_file_list.txt \\
         --output_prefix ${comparison_id} \\
         --min_cov 1 \\
