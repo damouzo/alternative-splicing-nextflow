@@ -59,32 +59,14 @@ RUN R -e " \
     BiocManager::install(c('DirichletMultinomial', 'TailRank'), update=FALSE, ask=FALSE) \
 "
 
-# Install leafcutter from source and patch stanmodels.R for modern rstan API.
-# Upstream still calls rstan::stanc_builder(), removed in recent rstan releases.
-# Keep a fallback to rstan::stanc() so namespace loading works on current R images.
+# Clone leafcutter and regenerate Stan C++ model code for current rstan/StanHeaders.
+# Leafcutter ships Stan 2.19.1 pre-compiled headers; rstan 2.21+ replaced the
+# model base class (prob_grad -> model_base_crtp), causing compilation failure.
+# rstan_config() regenerates src/stanExports_*.h, src/stanExports_*.cc, and
+# R/stanmodels.R from the .stan source files using the installed rstan version.
 RUN git clone --depth 1 https://github.com/davidaknowles/leafcutter.git /opt/leafcutter-src \
-    && Rscript - <<'RS'
-f <- '/opt/leafcutter-src/leafcutter/R/stanmodels.R'
-x <- readLines(f, warn = FALSE)
-pat <- grep('stanfit <- rstan::stanc_builder\\(stan_file,', x)
-if (length(pat) != 1) {
-    stop('Expected stanc_builder call not found in stanmodels.R')
-}
-i <- pat[[1]]
-x[i:(i+2)] <- c(
-  '  stanc_fun <- if (exists("stanc_builder", where = asNamespace("rstan"), mode = "function")) {',
-  '    rstan::stanc_builder',
-  '  } else {',
-  '    function(file, allow_undefined = TRUE, obfuscate_model_name = FALSE) {',
-  '      rstan::stanc(file = file, allow_undefined = allow_undefined)',
-  '    }',
-  '  }',
-  '  stanfit <- stanc_fun(stan_file,',
-  '                       allow_undefined = TRUE,',
-  '                       obfuscate_model_name = FALSE)'
-)
-writeLines(x, f)
-RS
+    && Rscript -e "setwd('/opt/leafcutter-src/leafcutter'); rstantools::rstan_config()"
+
 RUN R CMD INSTALL /opt/leafcutter-src/leafcutter
 
 # Verify the exact entrypoints used by the pipeline.
