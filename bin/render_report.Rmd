@@ -588,6 +588,24 @@ if (nrow(leafcutter_clusters) > 0 &&
 }
 ```
 
+```{r overlap_note}
+# The UpSet plot below is a gene-level overlap, not an event-level one.
+# rMATS reports exon-level events, MAJIQ reports local splice variations
+# (LSVs, junction-level), IsoformSwitchAnalyzeR reports whole isoform
+# switches, and LeafCutter reports intron clusters. Two tools sharing a
+# gene does NOT mean they detected the same event — they may be capturing
+# distinct aspects of the same gene's regulation. For event-level
+# concordance, downstream matching by genomic coordinates is required.
+```
+
+```{r overlap_set_sizes, eval=length(gene_sets) >= 1}
+set_sizes <- data.frame(
+  Tool      = names(gene_sets),
+  Genes_sig = lengths(gene_sets)
+)
+knitr::kable(set_sizes, caption = "Significant AS genes per tool (overlap is at gene level, not event level)")
+```
+
 ```{r overlap_upset, eval=length(gene_sets) >= 2, fig.height=5}
 upset(
   fromList(gene_sets),
@@ -639,13 +657,15 @@ parse_psi_vec <- function(x) {
   suppressWarnings(as.numeric(strsplit(as.character(x), ",")[[1]]))
 }
 
-# Use SE events if available; otherwise fall back to whichever event type has most significant events
-pca_event_type <- if ("SE" %in% all_rmats$EventType[all_rmats$Significant]) "SE" else {
-  all_rmats %>% filter(Significant) %>% count(EventType) %>% slice_max(n, n=1) %>% pull(EventType)
+# Prefer SE events; fall back to the type with most quantifiable events.
+# Use the full event set (not only significant) so the PCA reflects the global
+# structure of PSI variability rather than only the contrast of interest.
+pca_event_type <- if ("SE" %in% all_rmats$EventType) "SE" else {
+  all_rmats %>% count(EventType) %>% slice_max(n, n=1) %>% pull(EventType)
 }
 pca_events_raw <- if (length(pca_event_type) > 0) {
   all_rmats %>%
-    filter(Significant, EventType == pca_event_type[1],
+    filter(EventType == pca_event_type[1],
            !is.na(IncLevel1), !is.na(IncLevel2),
            IncLevel1 != "NA", IncLevel2 != "NA") %>%
     head(2000)   # cap for performance
@@ -657,24 +677,36 @@ if (nrow(pca_events_raw) >= 10) {
       parse_psi_vec(pca_events_raw$IncLevel2[i]))
   })
 
-  # Only keep events where every sample has a valid PSI
   n_samples <- length(psi_list[[1]])
-  valid_events <- sapply(psi_list, function(v) length(v) == n_samples && !any(is.na(v)))
+
+  # Keep events with valid PSI in >= 3 samples; missing samples in the
+  # remaining positions are imputed per-event below.
+  valid_events <- sapply(psi_list, function(v) {
+    length(v) == n_samples && sum(!is.na(v)) >= 3
+  })
   psi_list <- psi_list[valid_events]
 
   if (length(psi_list) >= 10) {
     psi_mat <- do.call(rbind, psi_list)   # events × samples
 
-    # Determine group sizes from the first valid event
+    # Impute remaining NAs with the per-event median — preserves the event's
+    # central tendency without forcing a global mean across heterogeneous events.
+    psi_mat <- apply(psi_mat, 1, function(row) {
+      med <- median(row, na.rm = TRUE)
+      row[is.na(row)] <- med
+      row
+    }) %>% t()
+
     n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[which(valid_events)[1]]))
     n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[which(valid_events)[1]]))
 
     sample_labels <- c(paste0("Group1_rep", seq_len(n1)), paste0("Group2_rep", seq_len(n2)))
     group_labels  <- c(rep("Group1", n1), rep("Group2", n2))
 
-    # PCA on transposed matrix (samples as rows)
+    # PCA on transposed matrix (samples as rows). scale. = TRUE standardises
+    # each event so high-range events (PSI near 0/1) do not dominate the PCs.
     pca_res <- tryCatch(
-      prcomp(t(psi_mat), center = TRUE, scale. = FALSE),
+      prcomp(t(psi_mat), center = TRUE, scale. = TRUE),
       error = function(e) NULL
     )
 
@@ -690,16 +722,16 @@ if (nrow(pca_events_raw) >= 10) {
         theme_bw() +
         scale_color_brewer(palette = "Set1") +
         labs(
-          title    = paste0("PCA of PSI profiles (", pca_event_type[1], " events, n=", length(psi_list), ")"),
+          title    = paste0("PCA of PSI profiles (", pca_event_type[1], " events, n=", length(psi_list), ", per-event median imputation, scaled)"),
           x        = paste0("PC1 (", var_exp[1], "% variance)"),
           y        = paste0("PC2 (", var_exp[2], "% variance)")
         )
     }
   } else {
-    cat("Insufficient events with complete PSI data for PCA (need >= 10).\n")
+    cat("Insufficient events with valid PSI data for PCA (need >= 10).\n")
   }
 } else {
-  cat("No significant rMATS events available for PCA.\n")
+  cat("No rMATS events available for PCA.\n")
 }
 ```
 
@@ -761,8 +793,12 @@ if (nrow(jq_events) > 0) {
 # Pathway Enrichment
 
 ```{r enrichment_setup}
-# Pool significant genes from all active tools
-all_sig_genes <- unique(c(rmats_sig_genes, isar_sig_genes, leafcutter_sig_genes))
+# Pool significant genes from all active tools (rMATS, MAJIQ, ISAR, LeafCutter).
+# Keeping all 4 maximises statistical power for over-representation analysis;
+# clusterProfiler tests the query set against the OrgDb background, so excluding
+# a tool's hits would only reduce sensitivity.
+all_sig_genes <- unique(c(rmats_sig_genes, majiq_sig_genes,
+                          isar_sig_genes, leafcutter_sig_genes))
 has_genes_for_enrichment <- length(all_sig_genes) >= 10
 ```
 

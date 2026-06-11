@@ -7,6 +7,11 @@
  *   - ch_rmats_results:  [comp_id, rmats_dir]
  *   - ch_salmon_tpm:     path  (single file, shared across comparisons)
  *   - ch_gmt:            path  (GMT gene signature file)
+ *   - ch_sample_ids:     [comp_id, g1_ids: List<String>, g2_ids: List<String>]
+ *                        Sample ids in the same order rMATS POST wrote
+ *                        b1.txt / b2.txt, so they map unambiguously to
+ *                        IncLevel1 / IncLevel2 column positions in
+ *                        SE.MATS.JC.txt.
  *
  *  Emits:
  *   - results: [comp_id, correlation_dir]
@@ -23,6 +28,7 @@ workflow PEGASAS_ANALYSIS {
     ch_rmats_results  // [comp_id, rmats_dir]
     ch_salmon_tpm     // path
     ch_gmt            // path
+    ch_sample_ids     // [comp_id, g1_ids, g2_ids]
 
     main:
     ch_group_info = channel.fromPath(params.pegasas_groups, checkIfExists: true)
@@ -34,12 +40,14 @@ workflow PEGASAS_ANALYSIS {
             [comp_id, se_file]
         }
 
-    // Join: [comp_id, salmon_tpm, se_file, group_info]
+    // Join: [comp_id, salmon_tpm, se_file, group_info, g1_ids, g2_ids]
     ch_prepare_input = ch_rmats_se
+        .combine(ch_sample_ids, by: 0)
         .combine(ch_salmon_tpm)
         .combine(ch_group_info)
-        .map { comp_id, se_file, tpm, grp ->
-            [comp_id, tpm, se_file, grp]
+        .map { comp_id, se_file, ids, tpm, grp ->
+            def (g1_ids, g2_ids) = ids
+            [comp_id, tpm, se_file, grp, g1_ids, g2_ids]
         }
 
     PEGASAS_PREPARE(ch_prepare_input)

@@ -141,7 +141,8 @@ workflow ALTERNATIVE_SPLICING {
         PEGASAS_ANALYSIS(
             ch_rmats_for_pegasas,
             ch_salmon_tpm,
-            ch_gmt
+            ch_gmt,
+            RMATS_ANALYSIS.out.sample_ids
         )
         ch_pegasas_for_report = PEGASAS_ANALYSIS.out.results
     } else {

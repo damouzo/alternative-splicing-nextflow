@@ -2,6 +2,12 @@
 """
 Prepare PEGASAS input matrices from pipeline outputs.
 
+Sample ids for the PSI matrix come from the rMATS BAM list (b1.txt / b2.txt
+order) and are passed in via --g1-ids / --g2-ids. They are validated against
+the per-event column counts of SE.MATS.JC.txt to make sure the assignment is
+unambiguous — if the counts do not match, the script aborts with a clear
+error instead of silently producing wrong correlations.
+
 Outputs:
   gene_exp_bySample.tsv  — rows=samples, cols=genes (TPM, samples ordered by group)
   PSI_bySample.tsv       — rows=SE events, cols=samples (IncLevel1/IncLevel2 merged)
@@ -20,11 +26,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("salmon_tpm",     help="salmon.merged.gene_tpm.tsv (genes × samples)")
     p.add_argument("rmats_se",       help="SE.MATS.JC.txt from rMATS output")
     p.add_argument("group_info_in",  help="TSV: sample_id<TAB>group (one row per sample)")
+    p.add_argument("--g1-ids",       dest="g1_ids", default="",
+                   help="Comma-separated sample_ids in the order rMATS POST wrote b1.txt")
+    p.add_argument("--g2-ids",       dest="g2_ids", default="",
+                   help="Comma-separated sample_ids in the order rMATS POST wrote b2.txt")
     p.add_argument("--out-dir",      default=".", dest="out_dir",
                    help="Output directory [.]")
     p.add_argument("--min-samples",  type=int, default=3, dest="min_samples",
                    help="Min samples with valid PSI per event [3]")
     return p.parse_args()
+
+
+def parse_id_list(raw: str) -> list:
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def load_group_info(fin: str) -> dict:
@@ -84,11 +98,14 @@ def transpose_tpm(fin: str, sample_order: list, out_path: str) -> None:
     print(f"[INFO] Gene expression matrix: {len(valid_samples)} samples × {len(genes)} genes → {out_path}")
 
 
-def build_psi_matrix(fin: str, sample_order: list, out_path: str,
+def build_psi_matrix(fin: str, g1_ids: list, g2_ids: list, out_path: str,
                      min_samples: int) -> None:
     """
     Parse SE.MATS.JC.txt and output PSI matrix (events × samples).
-    IncLevel1/IncLevel2 columns contain comma-separated per-sample values.
+
+    Sample ids are taken from --g1-ids / --g2-ids (the order rMATS POST used
+    for b1.txt / b2.txt) and validated against the per-event IncLevel1 /
+    IncLevel2 column counts.
     """
     with open(fin) as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -97,17 +114,26 @@ def build_psi_matrix(fin: str, sample_order: list, out_path: str,
     if not rows:
         sys.exit("[ERROR] SE.MATS.JC.txt is empty")
 
-    # Determine how many samples per group from first data row
     first = rows[0]
     n1 = len(first["IncLevel1"].split(","))
     n2 = len(first["IncLevel2"].split(","))
 
-    # Reconstruct per-sample column names (same order as BAM list)
-    # We don't have sample names here, so we use the group_info order
-    # to assign them: first n1 samples belong to group1, next n2 to group2
-    grp1_samples = [s for s in sample_order[:n1]]
-    grp2_samples = [s for s in sample_order[n1:n1 + n2]]
-    all_samples  = grp1_samples + grp2_samples
+    if len(g1_ids) != n1:
+        sys.exit(
+            f"[ERROR] SE.MATS.JC.txt has {n1} samples in IncLevel1 but "
+            f"--g1-ids declares {len(g1_ids)} ({g1_ids}). The BAM list "
+            f"order used by rMATS POST is the source of truth; this mismatch "
+            f"would silently misassign PSI to the wrong sample."
+        )
+    if len(g2_ids) != n2:
+        sys.exit(
+            f"[ERROR] SE.MATS.JC.txt has {n2} samples in IncLevel2 but "
+            f"--g2-ids declares {len(g2_ids)} ({g2_ids}). The BAM list "
+            f"order used by rMATS POST is the source of truth; this mismatch "
+            f"would silently misassign PSI to the wrong sample."
+        )
+
+    all_samples = g1_ids + g2_ids
 
     header_cols = ["AC", "GeneName", "chr", "strand",
                    "exonStart", "exonEnd", "upstreamEE", "downstreamES"]
@@ -121,12 +147,21 @@ def build_psi_matrix(fin: str, sample_order: list, out_path: str,
             psi_vals2 = row["IncLevel2"].split(",")
             psi_all   = psi_vals1 + psi_vals2
 
-            # Skip events with too many missing values
+            # Defensive: should never trigger after the validation above, but
+            # different rows could in theory have variable N if rMATS ever
+            # emitted them.
+            if len(psi_all) != len(all_samples):
+                sys.exit(
+                    f"[ERROR] Row {row.get('ID', '?')} has "
+                    f"{len(psi_all)} PSI values but expected "
+                    f"{len(all_samples)} (g1={n1}, g2={n2}). Aborting to "
+                    f"avoid silent misassignment."
+                )
+
             valid = sum(1 for v in psi_all if v not in ("", "NA", "na"))
             if valid < min_samples:
                 continue
 
-            # Replace empty/NA with NA string; keep numeric as-is
             psi_clean = ["NA" if v in ("", "NA", "na") else v for v in psi_all]
 
             event_id = "{}_{}_{}_{}_{}_{}_{}_{}".format(
@@ -182,21 +217,37 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
 
     group_map    = load_group_info(args.group_info_in)
+    g1_ids       = parse_id_list(args.g1_ids)
+    g2_ids       = parse_id_list(args.g2_ids)
+
+    if not g1_ids or not g2_ids:
+        sys.exit(
+            "[ERROR] --g1-ids and --g2-ids are required. They are propagated "
+            "from the rMATS BAM list order so that PSI values are assigned "
+            "to the correct sample in the matrix."
+        )
+
+    # Every rMATS sample must be present in group_info — otherwise the
+    # group_info used downstream would miss samples and the correlation would
+    # silently skip them.
+    missing = [s for s in (g1_ids + g2_ids) if s not in group_map]
+    if missing:
+        sys.exit(
+            f"[ERROR] {len(missing)} sample(s) from rMATS are missing in "
+            f"group_info: {missing}. Add them to the group_info TSV."
+        )
+
     sample_order = list(group_map.keys())
 
-    # Gene expression matrix (PEGASAS pathway input)
     tpm_out = os.path.join(args.out_dir, "gene_exp_bySample.tsv")
     transpose_tpm(args.salmon_tpm, sample_order, tpm_out)
 
-    # PSI matrix (PEGASAS correlation input)
     psi_out = os.path.join(args.out_dir, "PSI_bySample.tsv")
-    build_psi_matrix(args.rmats_se, sample_order, psi_out, args.min_samples)
+    build_psi_matrix(args.rmats_se, g1_ids, g2_ids, psi_out, args.min_samples)
 
-    # Group info for PEGASAS --groupInfo
     grp_out = os.path.join(args.out_dir, "group_info.tsv")
     write_group_info(sample_order, group_map, grp_out)
 
-    # Group order for PEGASAS correlation --groupNameOrder
     ord_out = os.path.join(args.out_dir, "group_order.txt")
     write_group_order(group_map, ord_out)
 

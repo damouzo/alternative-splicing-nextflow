@@ -29,7 +29,7 @@ process SASHIMI_PLOTS {
 
     """
     # Step 1: filter rMATS output to top-N events per event type
-    python3 ${projectDir}/bin/filter_rmats_for_sashimi.py \\
+    filter_rmats_for_sashimi.py \\
         rmats_results/ \\
         filtered_events/ \\
         --top-n ${top_n} \\

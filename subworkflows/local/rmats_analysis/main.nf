@@ -47,15 +47,22 @@ workflow RMATS_ANALYSIS {
      */
     ch_rmats_prep_grouped
         .groupTuple(by: 0)  // Group by comparison_id
-        .map { comparison_id, groups, _metas, rmats_files_list ->
-            // Separate group 1 and group 2
+        .map { comparison_id, groups, metas, rmats_files_list ->
+            // Separate group 1 and group 2, tracking samples that did not
+            // produce .rmats files (RMATS_PREP output is optional: true
+            // to avoid Nextflow aborting when an empty BAM slips through).
             def g1_files = []
             def g2_files = []
-            
+            def missing  = []
+
             groups.eachWithIndex { group, idx ->
+                def files = rmats_files_list[idx]
+                if (!files) {
+                    missing.add(metas[idx].id)
+                    return
+                }
                 // rmats_files_list[idx] may be a single Path or a List<Path>
                 // depending on how many files the glob matched — normalise to list
-                def files = rmats_files_list[idx]
                 def fileList = files instanceof List ? files : [files]
                 if (group == 1) {
                     g1_files.addAll(fileList)
@@ -63,7 +70,14 @@ workflow RMATS_ANALYSIS {
                     g2_files.addAll(fileList)
                 }
             }
-            
+
+            if (missing) {
+                log.warn "[RMATS_ANALYSIS] ${comparison_id}: no .rmats files for samples ${missing} — excluding from POST"
+            }
+            if (!g1_files || !g2_files) {
+                error "[RMATS_ANALYSIS] ${comparison_id}: missing .rmats files for group 1 or group 2 — cannot run rMATS POST. Check that the affected BAMs have reads aligned to splice junctions and match the GTF annotation."
+            }
+
             // Keep as Path objects — Nextflow will stage them properly in RMATS_POST work dir
             [comparison_id, g1_files, g2_files]
         }
@@ -75,7 +89,7 @@ workflow RMATS_ANALYSIS {
         .map { comparison_id, groups, bams ->
             def g1_bams = []
             def g2_bams = []
-            
+
             groups.eachWithIndex { group, idx ->
                 if (group == 1) {
                     g1_bams.add(bams[idx])
@@ -83,11 +97,33 @@ workflow RMATS_ANALYSIS {
                     g2_bams.add(bams[idx])
                 }
             }
-            
+
             // Keep as Path objects — staged as symlinks, no large file copies
             [comparison_id, g1_bams, g2_bams]
         }
         .set { ch_bams_by_comparison }
+
+    /*
+     * Per-comparison sample_ids in the same order used for b1.txt / b2.txt.
+     * The order in ch_bams_grouped (and therefore ch_bams_by_comparison) is
+     * deterministic — it comes from groupTuple over a channel that was
+     * emitted in the order INPUT_CHECK fed it, so this list is the
+     * ground-truth mapping from rMATS column index to sample_id.
+     */
+    ch_bams_grouped
+        .map { comparison_id, group, bam -> [comparison_id, group, bam.getName()] }
+        .groupTuple(by: 0)
+        .map { comparison_id, groups, names ->
+            def g1_ids = []
+            def g2_ids = []
+            groups.eachWithIndex { g, i ->
+                // Strip BAM/CRAM extension so the id matches the samplesheet
+                def sid = names[i].replaceAll(/\.(bam|cram)$/, '')
+                (g == 1 ? g1_ids : g2_ids).add(sid)
+            }
+            [comparison_id, g1_ids, g2_ids]
+        }
+        .set { ch_sample_ids_by_comparison }
     
     // Join .rmats files and BAMs for each comparison
     ch_rmats_files_by_comparison
@@ -110,6 +146,7 @@ workflow RMATS_ANALYSIS {
     )
     
     emit:
-    results  = RMATS_POST.out.results  // [comparison_id, results_dir]
-    versions = RMATS_PREP.out.versions.mix(RMATS_POST.out.versions)
+    results    = RMATS_POST.out.results        // [comparison_id, results_dir]
+    sample_ids = ch_sample_ids_by_comparison  // [comparison_id, g1_ids, g2_ids]
+    versions   = RMATS_PREP.out.versions.mix(RMATS_POST.out.versions)
 }

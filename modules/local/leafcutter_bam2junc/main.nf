@@ -10,9 +10,13 @@ process LEAFCUTTER_BAM2JUNC {
     path "versions.yml"                     , emit: versions
 
     script:
-    // Map strandedness to regtools -s flag: 0=unstranded, 1=first-strand, 2=second-strand
-    def strand_flag = params.strandedness == 'forward'  ? '1' :
-                      params.strandedness == 'reverse'  ? '2' : '0'
+    // Map strandedness to regtools -s flag:
+    //   0=XS (unstranded), 1=RF (first-strand, fr-firststrand, nf-core 'reverse'),
+    //   2=FR (second-strand, fr-secondstrand, nf-core 'forward')
+    // Source: regtools src/junctions/junctions_extractor.{h,cc} (RF/FR first/second-strand).
+    // Keep in sync with --libType mapping in modules/local/rmats_prep/main.nf.
+    def strand_flag = params.strandedness == 'forward'  ? '2' :
+                      params.strandedness == 'reverse'  ? '1' : '0'
     """
     regtools junctions extract \\
         -s ${strand_flag} \\

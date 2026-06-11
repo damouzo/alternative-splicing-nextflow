@@ -9,7 +9,7 @@ process RMATS_PREP {
     path gtf
     
     output:
-    tuple val(meta), path("${meta.id}_*.rmats"), emit: rmats_files
+    tuple val(meta), path("${meta.id}_*.rmats"), emit: rmats_files, optional: true
     path "versions.yml"                       , emit: versions
     
     script:

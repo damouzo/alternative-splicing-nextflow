@@ -81,22 +81,24 @@ workflow MAJIQ_ANALYSIS {
     ch_majiq_built
         .join(ch_sample_groups)
         .map { comparison_id, sj_files, splicegraph, sample_ids, groups, conditions ->
-            // Separate sj files by group (file names contain sample_id)
+            // Separate sj files by group using exact filename match — substring
+            // matching is unsafe (e.g. sample1 vs sample10 would collide).
             def g1_files = []
             def g2_files = []
             def g1_name  = null
             def g2_name  = null
 
             sample_ids.eachWithIndex { sid, idx ->
-                def sj_file = sj_files.find { sj_candidate -> sj_candidate.name.contains(sid) }
-                if (sj_file) {
-                    if (groups[idx] == 1) {
-                        g1_files.add(sj_file)
-                        if (!g1_name) g1_name = conditions[idx]
-                    } else {
-                        g2_files.add(sj_file)
-                        if (!g2_name) g2_name = conditions[idx]
-                    }
+                def sj_file = sj_files.find { it.name == "${sid}.sj" }
+                if (!sj_file) {
+                    error "[MAJIQ_ANALYSIS] No .sj file found for sample '${sid}' (expected: sj/${sid}.sj) in ${comparison_id}. MAJIQ_BUILD did not produce a junction file for this sample — check upstream BAM/annotation inputs."
+                }
+                if (groups[idx] == 1) {
+                    g1_files.add(sj_file)
+                    if (!g1_name) g1_name = conditions[idx]
+                } else {
+                    g2_files.add(sj_file)
+                    if (!g2_name) g2_name = conditions[idx]
                 }
             }
 

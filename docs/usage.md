@@ -558,12 +558,18 @@ Use `-profile <name>` to select execution environment:
 |---------|-------------|
 | `docker` | Run using Docker containers (recommended for local) |
 | `singularity` | Run using Singularity/Apptainer containers (HPC) |
-| `conda` | Use Conda environments (slower, not recommended) |
+| `apptainer` | Run using Apptainer containers (modern Singularity successor) |
+| `slurm` | Submit jobs to a SLURM cluster |
+| `lowmem` | Cap ISAR process concurrency to 1 and limit executor resources to 4 CPUs / 16 GB. Use on small workstations where the default uncapped ISAR parallelisation causes OOM. |
 | `test` | Run with minimal test data (for pipeline validation) |
+| `test_full` | Run with the full demo dataset |
 
-**Example**:
+Profiles can be combined. **Example**:
 ```bash
-nextflow run main.nf -profile singularity,cluster -params-file params.yaml
+nextflow run main.nf -profile singularity,slurm -params-file params.yaml
+
+# Low-memory workstation
+nextflow run main.nf -profile docker,lowmem -params-file params.yaml
 ```
 
 ## Best Practices
