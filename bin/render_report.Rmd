@@ -803,7 +803,7 @@ dotplot(ego, showCategory = 25) +
 
 ```{r go_table, eval=has_genes_for_enrichment && !is.null(ego) && nrow(ego) > 0}
 ego_df <- as.data.frame(ego) %>%
-  select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
+  dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
   mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
 
 datatable(
@@ -1099,7 +1099,7 @@ if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
     group_by(geneSymbol) %>%
     slice_min(FDR, n = 1, with_ties = FALSE) %>%
     ungroup() %>%
-    select(geneSymbol, EventType, FDR_AS = FDR,
+    dplyr::select(geneSymbol, EventType, FDR_AS = FDR,
            dPSI = IncLevelDifference, priority_score)
 
   dual_hits_ann <- dual_hits %>%

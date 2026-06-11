@@ -13,9 +13,9 @@
  * ========================================================================================
  */
 
-include { PEGASAS_PREPARE     } from '../../modules/local/pegasas_prepare/main'
-include { PEGASAS_PATHWAY     } from '../../modules/local/pegasas_pathway/main'
-include { PEGASAS_CORRELATION } from '../../modules/local/pegasas_correlation/main'
+include { PEGASAS_PREPARE     } from '../../../modules/local/pegasas_prepare/main'
+include { PEGASAS_PATHWAY     } from '../../../modules/local/pegasas_pathway/main'
+include { PEGASAS_CORRELATION } from '../../../modules/local/pegasas_correlation/main'
 
 workflow PEGASAS_ANALYSIS {
 
