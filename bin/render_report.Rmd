@@ -23,6 +23,8 @@ params:
   nfcore_multiqc_dir: NULL
   organism: "human"
   de_results: NULL
+  group1_sample_ids: []
+  group2_sample_ids: []
 ---
 
 ```{r setup, include=FALSE}
@@ -200,10 +202,12 @@ for (event_type in event_types) {
 if (length(rmats_results_list) > 0) {
   all_rmats <- bind_rows(rmats_results_list) %>%
     mutate(
+      FDR_plot       = pmax(FDR, 1e-300),
+      neglog10FDR    = -log10(FDR_plot),
       Significant    = FDR <= params$fdr_cutoff & abs(IncLevelDifference) >= params$dpsi_cutoff,
       # Priority score: combines -log10(FDR) with effect size.
       # Higher = more significant and larger PSI change.
-      priority_score = round(-log10(pmax(FDR, 1e-300)) * abs(IncLevelDifference), 3)
+      priority_score = round(neglog10FDR * abs(IncLevelDifference), 3)
     )
 }
 ```
@@ -224,31 +228,41 @@ kable(summary_table, caption = "rMATS Event Summary by Event Type")
 ```{r rmats_volcano, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=8}
 # Label top 5 events per event type (highest priority score)
 top_labels <- all_rmats %>%
-  filter(Significant, !is.na(geneSymbol)) %>%
+  filter(
+    Significant,
+    !is.na(geneSymbol), geneSymbol != "",
+    !is.na(IncLevelDifference),
+    !is.na(neglog10FDR)
+  ) %>%
   group_by(EventType) %>%
   slice_max(priority_score, n = 5) %>%
   ungroup()
 
 all_rmats %>%
-  filter(!is.na(FDR) & FDR > 0) %>%
-  ggplot(aes(x = IncLevelDifference, y = -log10(FDR), color = Significant)) +
+  filter(!is.na(IncLevelDifference), !is.na(neglog10FDR)) %>%
+  ggplot(aes(x = IncLevelDifference, y = neglog10FDR, color = Significant)) +
   geom_point(alpha = 0.4, size = 1) +
   geom_text_repel(
     data = top_labels,
-    aes(label = geneSymbol),
+    aes(y = neglog10FDR, label = geneSymbol),
     size = 2.5, max.overlaps = 10, color = "black"
   ) +
   facet_wrap(~EventType, scales = "free_y") +
   scale_color_manual(values = c("gray70", "firebrick")) +
   geom_hline(yintercept = -log10(params$fdr_cutoff),    linetype = "dashed", color = "navy", linewidth = 0.4) +
   geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "navy", linewidth = 0.4) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+  coord_cartesian(clip = "off") +
   theme_bw() +
   labs(
     title = "rMATS Volcano Plots",
     x     = "ΔΨ (IncLevelDifference)",
     y     = "-log10(FDR)"
   ) +
-  theme(legend.position = "bottom")
+  theme(
+    legend.position = "bottom",
+    plot.margin = margin(t = 5.5, r = 35, b = 5.5, l = 5.5)
+  )
 ```
 
 ```{r rmats_top_table, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
@@ -268,6 +282,212 @@ if (nrow(top_events) > 0) {
     formatRound(columns = c("FDR", "IncLevelDifference", "priority_score"), digits = 4)
 } else {
   cat("No significant events detected.\n")
+}
+```
+
+## PSI profile (derived from rMATS)
+
+### PCA of PSI profiles
+
+```{r psi_pca, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=6}
+# Build per-sample PSI matrix from rMATS IncLevel columns (SE events preferred; fallback to all).
+# IncLevel1/IncLevel2 are comma-separated PSI values per replicate in each group.
+
+parse_psi_vec <- function(x) {
+  if (is.na(x) || x == "NA" || x == "") return(NA_real_)
+  suppressWarnings(as.numeric(strsplit(as.character(x), ",")[[1]]))
+}
+
+resolve_sample_labels <- function(expected_n, ids, prefix) {
+  ids <- as.character(unlist(ids))
+  ids <- ids[!is.na(ids) & ids != ""]
+  if (length(ids) == expected_n) {
+    return(ids)
+  }
+  paste0(prefix, "_rep", seq_len(expected_n))
+}
+
+# Prefer SE events; fall back to the type with most quantifiable events.
+# Use the full event set (not only significant) so the PCA reflects the global
+# structure of PSI variability rather than only the contrast of interest.
+pca_event_type <- if ("SE" %in% all_rmats$EventType) "SE" else {
+  all_rmats %>% count(EventType) %>% slice_max(n, n = 1) %>% pull(EventType)
+}
+pca_events_raw <- if (length(pca_event_type) > 0) {
+  all_rmats %>%
+    filter(EventType == pca_event_type[1],
+           !is.na(IncLevel1), !is.na(IncLevel2),
+           IncLevel1 != "NA", IncLevel2 != "NA") %>%
+    head(2000)   # cap for performance
+} else data.frame()
+
+if (nrow(pca_events_raw) >= 10) {
+  psi_list <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
+    c(parse_psi_vec(pca_events_raw$IncLevel1[i]),
+      parse_psi_vec(pca_events_raw$IncLevel2[i]))
+  })
+
+  n_samples <- length(psi_list[[1]])
+
+  # Keep events with valid PSI in >= 3 samples; missing samples in the
+  # remaining positions are imputed per-event below.
+  valid_events <- sapply(psi_list, function(v) {
+    length(v) == n_samples && sum(!is.na(v)) >= 3
+  })
+  psi_list <- psi_list[valid_events]
+
+  if (length(psi_list) >= 10) {
+    psi_mat <- do.call(rbind, psi_list)   # events x samples
+
+    # Impute remaining NAs with the per-event median; preserves each event's
+    # central tendency without forcing a global mean across heterogeneous events.
+    psi_mat <- apply(psi_mat, 1, function(row) {
+      med <- median(row, na.rm = TRUE)
+      row[is.na(row)] <- med
+      row
+    }) %>% t()
+
+    n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[which(valid_events)[1]]))
+    n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[which(valid_events)[1]]))
+
+    sample_labels <- c(
+      resolve_sample_labels(n1, params$group1_sample_ids, "Group1"),
+      resolve_sample_labels(n2, params$group2_sample_ids, "Group2")
+    )
+    group_labels  <- c(rep("Group1", n1), rep("Group2", n2))
+
+    # PCA on transposed matrix (samples as rows). scale. = TRUE standardises
+    # each event so high-range events (PSI near 0/1) do not dominate the PCs.
+    pca_res <- tryCatch(
+      prcomp(t(psi_mat), center = TRUE, scale. = TRUE),
+      error = function(e) NULL
+    )
+
+    if (!is.null(pca_res)) {
+      var_exp <- round(summary(pca_res)$importance[2, 1:min(2, ncol(pca_res$x))] * 100, 1)
+      pca_df  <- as.data.frame(pca_res$x[, 1:min(2, ncol(pca_res$x))])
+      pca_df$Group  <- group_labels
+      pca_df$Sample <- sample_labels
+
+      ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
+        geom_point(size = 3) +
+        geom_text_repel(size = 3, max.overlaps = 20) +
+        theme_bw() +
+        scale_color_brewer(palette = "Set1") +
+        labs(
+          title = paste0(
+            "PCA of PSI profiles (", pca_event_type[1], " events, n=",
+            length(psi_list), ", per-event median imputation, scaled)"
+          ),
+          x = paste0("PC1 (", var_exp[1], "% variance)"),
+          y = paste0("PC2 (", var_exp[2], "% variance)")
+        )
+    }
+  } else {
+    cat("Insufficient events with valid PSI data for PCA (need >= 10).\n")
+  }
+} else {
+  cat("No rMATS events available for PCA.\n")
+}
+```
+
+### Splice junction coverage QC
+
+```{r junction_qc, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=5}
+# Per-sample mean inclusion junction count (IJC) as a proxy for splice junction coverage.
+# Low values flag samples with insufficient coverage for reliable AS detection.
+
+parse_sample_counts <- function(count_str, group_label) {
+  if (is.na(count_str) || count_str == "") return(NULL)
+  vals <- suppressWarnings(as.integer(strsplit(as.character(count_str), ",")[[1]]))
+  if (length(vals) == 0) return(NULL)
+  data.frame(
+    sample_idx = seq_along(vals),
+    count      = vals,
+    group      = group_label,
+    stringsAsFactors = FALSE
+  )
+}
+
+jq_events <- all_rmats %>%
+  filter(EventType == "SE", !is.na(IJC_SAMPLE_1), !is.na(IJC_SAMPLE_2)) %>%
+  head(500)
+
+if (nrow(jq_events) > 0) {
+  jq_raw <- bind_rows(lapply(seq_len(nrow(jq_events)), function(i) {
+    bind_rows(
+      parse_sample_counts(jq_events$IJC_SAMPLE_1[i], "Group1"),
+      parse_sample_counts(jq_events$IJC_SAMPLE_2[i], "Group2")
+    )
+  }))
+
+  if (nrow(jq_raw) > 0) {
+    jq_summary <- jq_raw %>%
+      group_by(group, sample_idx) %>%
+      summarise(mean_IJC = mean(count, na.rm = TRUE), .groups = "drop")
+
+    g1_ids <- resolve_sample_labels(
+      sum(jq_summary$group == "Group1"),
+      params$group1_sample_ids,
+      "Group1"
+    )
+    g2_ids <- resolve_sample_labels(
+      sum(jq_summary$group == "Group2"),
+      params$group2_sample_ids,
+      "Group2"
+    )
+
+    jq_summary <- jq_summary %>%
+      group_by(group) %>%
+      arrange(sample_idx, .by_group = TRUE) %>%
+      mutate(Sample = if_else(group == "Group1", g1_ids[sample_idx], g2_ids[sample_idx])) %>%
+      ungroup()
+
+    ggplot(jq_summary, aes(x = reorder(Sample, mean_IJC), y = mean_IJC, fill = group)) +
+      geom_col(alpha = 0.8) +
+      coord_flip() +
+      theme_bw() +
+      scale_fill_brewer(palette = "Set1") +
+      labs(
+        title = "Mean inclusion junction count per sample (SE events, top 500)",
+        subtitle = "Low values may indicate insufficient coverage for reliable AS detection",
+        x = NULL,
+        y = "Mean IJC"
+      )
+  }
+} else {
+  cat("No SE events with junction count data available.\n")
+}
+```
+
+## Sashimi plots (rMATS)
+
+```{r sashimi_section, eval=!is.null(params$sashimi_dir)}
+# List available sashimi plot PDFs
+sashimi_pdfs <- list.files(params$sashimi_dir, pattern = "\\.pdf$",
+                           recursive = TRUE, full.names = TRUE)
+
+if (length(sashimi_pdfs) > 0) {
+  cat(sprintf("Sashimi plots generated for %d events.\n\n", length(sashimi_pdfs)))
+  cat("PDFs are available in the sashimi_plots/ output directory.\n")
+
+  sashimi_table <- data.frame(
+    file = basename(sashimi_pdfs),
+    event_type = dplyr::case_when(
+      grepl("/(SE|A5SS|A3SS|MXE|RI)/", sashimi_pdfs) ~ sub(".*\\/(SE|A5SS|A3SS|MXE|RI)\\/.*", "\\1", sashimi_pdfs),
+      TRUE ~ NA_character_
+    ),
+    path = sashimi_pdfs,
+    stringsAsFactors = FALSE
+  )
+  datatable(
+    sashimi_table,
+    caption = "Sashimi plot files",
+    options = list(pageLength = 20, scrollX = TRUE),
+    rownames = FALSE
+  )
+} else {
+  cat("No sashimi plot PDFs found in the output directory.\n")
 }
 ```
 
@@ -295,6 +515,23 @@ if (!is.na(tsv_file) && file.exists(tsv_file)) {
   } else {
     majiq_results$Significant <- FALSE
   }
+
+  if (nrow(majiq_results) > 0) {
+    if ("gene_name" %in% colnames(majiq_results)) {
+      gene_name_clean <- trimws(as.character(majiq_results$gene_name))
+      gene_id_clean <- if ("gene_id" %in% colnames(majiq_results)) {
+        trimws(as.character(majiq_results$gene_id))
+      } else {
+        rep(NA_character_, nrow(majiq_results))
+      }
+
+      # Keep only symbol-like labels as informative genes; drop blanks and ID echoes.
+      majiq_results$InformativeGene <- !is.na(gene_name_clean) & gene_name_clean != "" &
+        (is.na(gene_id_clean) | gene_id_clean == "" | gene_name_clean != gene_id_clean)
+    } else {
+      majiq_results$InformativeGene <- TRUE
+    }
+  }
 }
 ```
 
@@ -307,6 +544,13 @@ if ("Significant" %in% colnames(majiq_results)) {
     params$majiq_dpsi_cutoff,
     sum(majiq_results$Significant, na.rm = TRUE)
   ))
+
+  if ("InformativeGene" %in% colnames(majiq_results)) {
+    sig_with_symbol <- sum(majiq_results$Significant & majiq_results$InformativeGene, na.rm = TRUE)
+    sig_without_symbol <- sum(majiq_results$Significant & !majiq_results$InformativeGene, na.rm = TRUE)
+    cat(sprintf("Significant LSVs with informative gene symbol: %d\n", sig_with_symbol))
+    cat(sprintf("Significant LSVs without informative gene symbol: %d\n\n", sig_without_symbol))
+  }
 }
 ```
 
@@ -333,7 +577,13 @@ cols_to_show <- intersect(
 
 if (length(cols_to_show) > 0) {
   top_lsvs <- majiq_results %>%
-    filter(Significant) %>%
+    filter(Significant)
+
+  if ("InformativeGene" %in% colnames(top_lsvs)) {
+    top_lsvs <- top_lsvs %>% filter(InformativeGene)
+  }
+
+  top_lsvs <- top_lsvs %>%
     arrange(desc(probability_changing), desc(abs(dpsi_mean))) %>%
     select(all_of(cols_to_show)) %>%
     head(100)
@@ -341,7 +591,7 @@ if (length(cols_to_show) > 0) {
   if (nrow(top_lsvs) > 0) {
     datatable(
       top_lsvs,
-      caption  = paste0("Top 100 significant MAJIQ junctions (P >= ",
+      caption  = paste0("Top 100 significant MAJIQ junctions with informative gene symbols (P >= ",
                         params$majiq_prob_threshold, ", |ΔΨ| >= ",
                         params$majiq_dpsi_cutoff, ")"),
       options  = list(pageLength = 10, scrollX = TRUE),
@@ -549,6 +799,7 @@ if (length(cols_to_show) > 0) {
 ```{r overlap_build}
 # Build per-tool gene sets of significant AS genes
 gene_sets <- list()
+active_tool_sig_sets <- list()
 
 rmats_sig_genes <- character(0)
 if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
@@ -557,14 +808,20 @@ if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
   ])
   if (length(rmats_sig_genes) > 0) gene_sets[["rMATS"]] <- rmats_sig_genes
 }
+if (!is.null(params$rmats_dir)) active_tool_sig_sets[["rMATS"]] <- rmats_sig_genes
 
 majiq_sig_genes <- character(0)
 if (nrow(majiq_results) > 0 && "gene_name" %in% colnames(majiq_results)) {
+  majiq_mask <- majiq_results$Significant & !is.na(majiq_results$gene_name) & trimws(majiq_results$gene_name) != ""
+  if ("InformativeGene" %in% colnames(majiq_results)) {
+    majiq_mask <- majiq_mask & majiq_results$InformativeGene
+  }
   majiq_sig_genes <- unique(majiq_results$gene_name[
-    majiq_results$Significant & !is.na(majiq_results$gene_name) & majiq_results$gene_name != ""
+    majiq_mask
   ])
   if (length(majiq_sig_genes) > 0) gene_sets[["MAJIQ"]] <- majiq_sig_genes
 }
+if (!is.null(params$majiq_dir)) active_tool_sig_sets[["MAJIQ"]] <- majiq_sig_genes
 
 isar_sig_genes <- character(0)
 if (nrow(isar_switches) > 0 && "gene_name" %in% colnames(isar_switches) &&
@@ -574,6 +831,7 @@ if (nrow(isar_switches) > 0 && "gene_name" %in% colnames(isar_switches) &&
   ])
   if (length(isar_sig_genes) > 0) gene_sets[["ISAR"]] <- isar_sig_genes
 }
+if (!is.null(params$isar_dir)) active_tool_sig_sets[["ISAR"]] <- isar_sig_genes
 
 leafcutter_sig_genes <- character(0)
 if (nrow(leafcutter_clusters) > 0 &&
@@ -585,6 +843,13 @@ if (nrow(leafcutter_clusters) > 0 &&
   leafcutter_sig_genes <- unique(trimws(unlist(strsplit(lc_genes_raw, ","))))
   leafcutter_sig_genes <- leafcutter_sig_genes[leafcutter_sig_genes != ""]
   if (length(leafcutter_sig_genes) > 0) gene_sets[["LeafCutter"]] <- leafcutter_sig_genes
+}
+if (!is.null(params$leafcutter_dir)) active_tool_sig_sets[["LeafCutter"]] <- leafcutter_sig_genes
+
+shared_sig_genes <- if (length(active_tool_sig_sets) >= 2) {
+  Reduce(intersect, active_tool_sig_sets)
+} else {
+  character(0)
 }
 ```
 
@@ -615,11 +880,11 @@ upset(
 )
 ```
 
-```{r overlap_summary, eval=length(gene_sets) >= 2}
+```{r overlap_summary, eval=length(active_tool_sig_sets) >= 2}
 # Genes found significant by all available tools
-all_tools_genes <- Reduce(intersect, gene_sets)
+all_tools_genes <- Reduce(intersect, active_tool_sig_sets)
 cat(sprintf("Genes significant in all %d active tools: %d\n\n",
-            length(gene_sets), length(all_tools_genes)))
+            length(active_tool_sig_sets), length(all_tools_genes)))
 
 if (length(all_tools_genes) > 0) {
   cat("Genes:", paste(sort(all_tools_genes), collapse = ", "), "\n")
@@ -642,149 +907,130 @@ kable(as.data.frame(overlap_mat),
       caption = "Pairwise gene overlap between tools (number of shared significant genes)")
 ```
 
----
+## Shared-genes ORA (intersection of active tools)
 
-# PSI Profile Analysis
-
-## PCA of splicing profiles
-
-```{r psi_pca, eval=nrow(all_rmats) > 0, fig.height=6}
-# Build per-sample PSI matrix from rMATS IncLevel columns (SE events preferred; fallback to all).
-# IncLevel1/IncLevel2 are comma-separated PSI values per replicate in each group.
-
-parse_psi_vec <- function(x) {
-  if (is.na(x) || x == "NA" || x == "") return(NA_real_)
-  suppressWarnings(as.numeric(strsplit(as.character(x), ",")[[1]]))
-}
-
-# Prefer SE events; fall back to the type with most quantifiable events.
-# Use the full event set (not only significant) so the PCA reflects the global
-# structure of PSI variability rather than only the contrast of interest.
-pca_event_type <- if ("SE" %in% all_rmats$EventType) "SE" else {
-  all_rmats %>% count(EventType) %>% slice_max(n, n=1) %>% pull(EventType)
-}
-pca_events_raw <- if (length(pca_event_type) > 0) {
-  all_rmats %>%
-    filter(EventType == pca_event_type[1],
-           !is.na(IncLevel1), !is.na(IncLevel2),
-           IncLevel1 != "NA", IncLevel2 != "NA") %>%
-    head(2000)   # cap for performance
-} else data.frame()
-
-if (nrow(pca_events_raw) >= 10) {
-  psi_list <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
-    c(parse_psi_vec(pca_events_raw$IncLevel1[i]),
-      parse_psi_vec(pca_events_raw$IncLevel2[i]))
-  })
-
-  n_samples <- length(psi_list[[1]])
-
-  # Keep events with valid PSI in >= 3 samples; missing samples in the
-  # remaining positions are imputed per-event below.
-  valid_events <- sapply(psi_list, function(v) {
-    length(v) == n_samples && sum(!is.na(v)) >= 3
-  })
-  psi_list <- psi_list[valid_events]
-
-  if (length(psi_list) >= 10) {
-    psi_mat <- do.call(rbind, psi_list)   # events × samples
-
-    # Impute remaining NAs with the per-event median — preserves the event's
-    # central tendency without forcing a global mean across heterogeneous events.
-    psi_mat <- apply(psi_mat, 1, function(row) {
-      med <- median(row, na.rm = TRUE)
-      row[is.na(row)] <- med
-      row
-    }) %>% t()
-
-    n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[which(valid_events)[1]]))
-    n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[which(valid_events)[1]]))
-
-    sample_labels <- c(paste0("Group1_rep", seq_len(n1)), paste0("Group2_rep", seq_len(n2)))
-    group_labels  <- c(rep("Group1", n1), rep("Group2", n2))
-
-    # PCA on transposed matrix (samples as rows). scale. = TRUE standardises
-    # each event so high-range events (PSI near 0/1) do not dominate the PCs.
-    pca_res <- tryCatch(
-      prcomp(t(psi_mat), center = TRUE, scale. = TRUE),
-      error = function(e) NULL
-    )
-
-    if (!is.null(pca_res)) {
-      var_exp  <- round(summary(pca_res)$importance[2, 1:min(2, ncol(pca_res$x))] * 100, 1)
-      pca_df   <- as.data.frame(pca_res$x[, 1:min(2, ncol(pca_res$x))])
-      pca_df$Group  <- group_labels
-      pca_df$Sample <- sample_labels
-
-      ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
-        geom_point(size = 3) +
-        geom_text_repel(size = 3, max.overlaps = 20) +
-        theme_bw() +
-        scale_color_brewer(palette = "Set1") +
-        labs(
-          title    = paste0("PCA of PSI profiles (", pca_event_type[1], " events, n=", length(psi_list), ", per-event median imputation, scaled)"),
-          x        = paste0("PC1 (", var_exp[1], "% variance)"),
-          y        = paste0("PC2 (", var_exp[2], "% variance)")
+```{r overlap_shared_ora, results='asis'}
+if (length(active_tool_sig_sets) < 2) {
+  cat("Shared-genes ORA requires at least two active tools.\n")
+} else if (length(shared_sig_genes) == 0) {
+  cat("No genes available for shared-genes ORA.\n")
+} else {
+  local_truncate_dt <- function(df, caption) {
+    geneid_col <- which(colnames(df) == "geneID")
+    dt_options <- list(pageLength = 15, scrollX = TRUE)
+    if (length(geneid_col) == 1) {
+      dt_options$columnDefs <- list(list(
+        targets = geneid_col - 1,
+        render = JS(
+          "function(data, type, row) {",
+          "  if (type !== 'display' || data === null || data === undefined) return data;",
+          "  if (data.length <= 80) return data;",
+          "  return '<span title=\"' + data + '\">' + data.substr(0, 80) + '... <em>(see more)</em></span>';",
+          "}"
         )
+      ))
     }
+    datatable(df, caption = caption, options = dt_options, rownames = FALSE, escape = FALSE)
+  }
+
+  shared_sig_genes <- unique(shared_sig_genes)
+  shared_sig_genes <- shared_sig_genes[!is.na(shared_sig_genes) & shared_sig_genes != ""]
+
+  cat(sprintf("Input significant genes: %d\n\n", length(shared_sig_genes)))
+
+  if (length(shared_sig_genes) < 10) {
+    cat(sprintf("Need at least 10 genes for shared-genes ORA; found %d.\n", length(shared_sig_genes)))
+  } else if (!requireNamespace("clusterProfiler", quietly = TRUE)) {
+    cat("clusterProfiler is not available in the report environment.\n")
   } else {
-    cat("Insufficient events with valid PSI data for PCA (need >= 10).\n")
-  }
-} else {
-  cat("No rMATS events available for PCA.\n")
-}
-```
+    orgdb_name <- if (identical(params$organism, "mouse")) "org.Mm.eg.db" else "org.Hs.eg.db"
+    if (!requireNamespace(orgdb_name, quietly = TRUE)) {
+      cat(sprintf("%s is not available in the report environment.\n", orgdb_name))
+    } else {
+      orgdb_obj <- get(orgdb_name, envir = asNamespace(orgdb_name))
 
-## Splice junction coverage QC
-
-```{r junction_qc, eval=nrow(all_rmats) > 0, fig.height=5}
-# Per-sample mean inclusion junction count (IJC) as a proxy for splice junction coverage.
-# Low values flag samples with insufficient coverage for reliable AS detection.
-
-parse_sample_counts <- function(count_str, group_label) {
-  if (is.na(count_str) || count_str == "") return(NULL)
-  vals <- suppressWarnings(as.integer(strsplit(as.character(count_str), ",")[[1]]))
-  if (length(vals) == 0) return(NULL)
-  data.frame(
-    sample_idx = seq_along(vals),
-    count      = vals,
-    group      = group_label,
-    stringsAsFactors = FALSE
-  )
-}
-
-jq_events <- all_rmats %>%
-  filter(EventType == "SE", !is.na(IJC_SAMPLE_1), !is.na(IJC_SAMPLE_2)) %>%
-  head(500)
-
-if (nrow(jq_events) > 0) {
-  jq_raw <- bind_rows(lapply(seq_len(nrow(jq_events)), function(i) {
-    bind_rows(
-      parse_sample_counts(jq_events$IJC_SAMPLE_1[i], "Group1"),
-      parse_sample_counts(jq_events$IJC_SAMPLE_2[i], "Group2")
-    )
-  }))
-
-  if (nrow(jq_raw) > 0) {
-    jq_summary <- jq_raw %>%
-      group_by(group, sample_idx) %>%
-      summarise(mean_IJC = mean(count, na.rm = TRUE), .groups = "drop") %>%
-      mutate(Sample = paste0(group, "_rep", sample_idx))
-
-    ggplot(jq_summary, aes(x = reorder(Sample, mean_IJC), y = mean_IJC, fill = group)) +
-      geom_col(alpha = 0.8) +
-      coord_flip() +
-      theme_bw() +
-      scale_fill_brewer(palette = "Set1") +
-      labs(
-        title = "Mean inclusion junction count per sample (SE events, top 500)",
-        subtitle = "Low values may indicate insufficient coverage for reliable AS detection",
-        x = NULL,
-        y = "Mean IJC"
+      ego_shared <- tryCatch(
+        clusterProfiler::enrichGO(
+          gene = shared_sig_genes,
+          OrgDb = orgdb_obj,
+          keyType = "SYMBOL",
+          ont = "BP",
+          pAdjustMethod = "BH",
+          pvalueCutoff = 0.05,
+          qvalueCutoff = 0.2,
+          readable = TRUE
+        ),
+        error = function(e) NULL
       )
+
+      cat("**GO Biological Process**\n\n")
+      if (!is.null(ego_shared) && nrow(as.data.frame(ego_shared)) > 0) {
+        print(
+          clusterProfiler::dotplot(ego_shared, showCategory = 20) +
+            labs(title = "GO BP enrichment (shared genes)") +
+            theme(axis.text.y = element_text(size = 9))
+        )
+
+        ego_shared_df <- as.data.frame(ego_shared) %>%
+          dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
+          mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
+
+        print(local_truncate_dt(
+          ego_shared_df,
+          caption = "GO BP enrichment table - shared genes"
+        ))
+      } else {
+        cat("No GO BP terms available for shared genes.\n\n")
+      }
+
+      shared_ids <- tryCatch(
+        clusterProfiler::bitr(
+          shared_sig_genes,
+          fromType = "SYMBOL",
+          toType = "ENTREZID",
+          OrgDb = orgdb_obj
+        ),
+        error = function(e) data.frame()
+      )
+      shared_ids <- unique(shared_ids$ENTREZID)
+      shared_ids <- shared_ids[!is.na(shared_ids) & shared_ids != ""]
+
+      cat("**KEGG pathways**\n\n")
+      if (length(shared_ids) >= 5) {
+        kegg_org <- if (identical(params$organism, "mouse")) "mmu" else "hsa"
+        ekegg_shared <- tryCatch(
+          clusterProfiler::enrichKEGG(
+            gene = shared_ids,
+            organism = kegg_org,
+            pAdjustMethod = "BH",
+            pvalueCutoff = 0.05
+          ),
+          error = function(e) NULL
+        )
+
+        if (!is.null(ekegg_shared) && nrow(as.data.frame(ekegg_shared)) > 0) {
+          print(
+            clusterProfiler::dotplot(ekegg_shared, showCategory = 20) +
+              labs(title = "KEGG enrichment (shared genes)") +
+              theme(axis.text.y = element_text(size = 9))
+          )
+
+          ekegg_shared_df <- as.data.frame(ekegg_shared) %>%
+            dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
+            mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
+
+          print(local_truncate_dt(
+            ekegg_shared_df,
+            caption = "KEGG enrichment table - shared genes"
+          ))
+        } else {
+          cat("No KEGG pathways available for shared genes.\n\n")
+        }
+      } else {
+        cat("Insufficient SYMBOL-to-ENTREZ mapping for KEGG (need at least 5 genes).\n\n")
+      }
+    }
   }
-} else {
-  cat("No SE events with junction count data available.\n")
 }
 ```
 
@@ -792,122 +1038,197 @@ if (nrow(jq_events) > 0) {
 
 # Pathway Enrichment
 
-```{r enrichment_setup}
-# Pool significant genes from all active tools (rMATS, MAJIQ, ISAR, LeafCutter).
-# Keeping all 4 maximises statistical power for over-representation analysis;
-# clusterProfiler tests the query set against the OrgDb background, so excluding
-# a tool's hits would only reduce sensitivity.
-all_sig_genes <- unique(c(rmats_sig_genes, majiq_sig_genes,
-                          isar_sig_genes, leafcutter_sig_genes))
-has_genes_for_enrichment <- length(all_sig_genes) >= 10
-```
+```{r enrichment_helpers}
+get_orgdb_name <- function(organism) {
+  if (identical(organism, "mouse")) "org.Mm.eg.db" else "org.Hs.eg.db"
+}
 
-```{r go_enrichment, eval=has_genes_for_enrichment}
-suppressPackageStartupMessages(library(clusterProfiler))
+truncate_geneid_datatable <- function(df, caption) {
+  geneid_col <- which(colnames(df) == "geneID")
 
-# Select annotation database based on organism param
-orgdb_name <- switch(
-  params$organism,
-  "mouse" = "org.Mm.eg.db",
-  "org.Hs.eg.db"   # default: human
-)
-suppressPackageStartupMessages(library(orgdb_name, character.only = TRUE))
-
-ego <- tryCatch(
-  enrichGO(
-    gene          = all_sig_genes,
-    OrgDb         = get(orgdb_name),
-    keyType       = "SYMBOL",
-    ont           = "BP",
-    pAdjustMethod = "BH",
-    pvalueCutoff  = 0.05,
-    qvalueCutoff  = 0.2,
-    readable      = TRUE
-  ),
-  error = function(e) {
-    message("GO enrichment failed: ", conditionMessage(e))
-    NULL
+  dt_options <- list(pageLength = 15, scrollX = TRUE)
+  if (length(geneid_col) == 1) {
+    dt_options$columnDefs <- list(list(
+      targets = geneid_col - 1,
+      render = JS(
+        "function(data, type, row) {",
+        "  if (type !== 'display' || data === null || data === undefined) return data;",
+        "  if (data.length <= 80) return data;",
+        "  return '<span title=\"' + data + '\">' + data.substr(0, 80) + '... <em>(see more)</em></span>';",
+        "}"
+      )
+    ))
   }
-)
-```
 
-```{r go_dotplot, eval=has_genes_for_enrichment && !is.null(ego) && nrow(ego) > 0, fig.height=8}
-dotplot(ego, showCategory = 25) +
-  labs(title = paste0("GO Biological Process enrichment (n=", length(all_sig_genes), " AS genes)")) +
-  theme(axis.text.y = element_text(size = 9))
-```
+  datatable(
+    df,
+    caption = caption,
+    options = dt_options,
+    rownames = FALSE,
+    escape = FALSE
+  )
+}
 
-```{r go_table, eval=has_genes_for_enrichment && !is.null(ego) && nrow(ego) > 0}
-ego_df <- as.data.frame(ego) %>%
-  dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
-  mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
+run_ora_for_set <- function(genes, set_name, min_genes = 10) {
+  genes <- unique(as.character(genes))
+  genes <- genes[!is.na(genes) & genes != ""]
 
-datatable(
-  ego_df,
-  caption  = "GO Biological Process enrichment (p.adjust < 0.05)",
-  options  = list(pageLength = 15, scrollX = TRUE),
-  rownames = FALSE
-)
-```
+  res <- list(
+    set_name = set_name,
+    n_genes = length(genes),
+    message = NULL,
+    notes = character(0),
+    go = NULL,
+    go_df = data.frame(),
+    kegg = NULL,
+    kegg_df = data.frame()
+  )
 
-```{r kegg_enrichment, eval=has_genes_for_enrichment}
-# KEGG enrichment — requires gene symbol → Entrez ID mapping
-gene_ids <- tryCatch(
-  bitr(all_sig_genes, fromType = "SYMBOL", toType = "ENTREZID",
-       OrgDb = get(orgdb_name)),
-  error = function(e) data.frame()
-)
+  if (length(genes) < min_genes) {
+    res$message <- sprintf("Need at least %d genes for ORA; found %d.", min_genes, length(genes))
+    return(res)
+  }
 
-ekegg <- NULL
-if (nrow(gene_ids) >= 5) {
-  kegg_organism <- switch(params$organism, "mouse" = "mmu", "hsa")
-  ekegg <- tryCatch(
-    enrichKEGG(
-      gene          = gene_ids$ENTREZID,
-      organism      = kegg_organism,
+  orgdb_name <- get_orgdb_name(params$organism)
+  if (!requireNamespace("clusterProfiler", quietly = TRUE)) {
+    res$message <- "clusterProfiler is not available in the report environment."
+    return(res)
+  }
+  if (!requireNamespace(orgdb_name, quietly = TRUE)) {
+    res$message <- sprintf("%s is not available in the report environment.", orgdb_name)
+    return(res)
+  }
+
+  orgdb_obj <- get(orgdb_name, envir = asNamespace(orgdb_name))
+
+  res$go <- tryCatch(
+    clusterProfiler::enrichGO(
+      gene = genes,
+      OrgDb = orgdb_obj,
+      keyType = "SYMBOL",
+      ont = "BP",
       pAdjustMethod = "BH",
-      pvalueCutoff  = 0.05
+      pvalueCutoff = 0.05,
+      qvalueCutoff = 0.2,
+      readable = TRUE
     ),
     error = function(e) NULL
   )
-}
-```
 
-```{r kegg_dotplot, eval=has_genes_for_enrichment && !is.null(ekegg) && nrow(ekegg) > 0, fig.height=6}
-dotplot(ekegg, showCategory = 20) +
-  labs(title = "KEGG pathway enrichment (AS genes)") +
-  theme(axis.text.y = element_text(size = 9))
-```
+  if (!is.null(res$go) && nrow(as.data.frame(res$go)) > 0) {
+    res$go_df <- as.data.frame(res$go) %>%
+      dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
+      mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
+  } else {
+    res$notes <- c(res$notes, "No GO BP terms passed enrichment thresholds.")
+  }
 
-```{r no_enrichment_msg, eval=!has_genes_for_enrichment}
-cat("Pathway enrichment requires at least 10 significant AS genes across tools.",
-    "Increase the number of significant events or lower the FDR / |ΔΨ| cutoffs.\n")
-```
-
----
-
-# Sashimi Plots
-
-```{r sashimi_section, eval=!is.null(params$sashimi_dir)}
-# List available sashimi plot PDFs
-sashimi_pdfs <- list.files(params$sashimi_dir, pattern = "\\.pdf$",
-                           recursive = TRUE, full.names = TRUE)
-
-if (length(sashimi_pdfs) > 0) {
-  cat(sprintf("Sashimi plots generated for %d events.\n\n", length(sashimi_pdfs)))
-  cat("PDFs are available in the sashimi_plots/ output directory.\n")
-
-  # Build a summary table of plotted events
-  sashimi_table <- data.frame(
-    file = basename(sashimi_pdfs),
-    path = sashimi_pdfs,
-    stringsAsFactors = FALSE
+  gene_ids <- tryCatch(
+    clusterProfiler::bitr(
+      genes,
+      fromType = "SYMBOL",
+      toType = "ENTREZID",
+      OrgDb = orgdb_obj
+    ),
+    error = function(e) data.frame()
   )
-  datatable(sashimi_table, caption = "Sashimi plot files",
-            options = list(pageLength = 20), rownames = FALSE)
-} else {
-  cat("No sashimi plot PDFs found in the output directory.\n")
+  gene_ids <- unique(gene_ids$ENTREZID)
+  gene_ids <- gene_ids[!is.na(gene_ids) & gene_ids != ""]
+
+  if (length(gene_ids) >= 5) {
+    kegg_org <- if (identical(params$organism, "mouse")) "mmu" else "hsa"
+    res$kegg <- tryCatch(
+      clusterProfiler::enrichKEGG(
+        gene = gene_ids,
+        organism = kegg_org,
+        pAdjustMethod = "BH",
+        pvalueCutoff = 0.05
+      ),
+      error = function(e) NULL
+    )
+
+    if (!is.null(res$kegg) && nrow(as.data.frame(res$kegg)) > 0) {
+      res$kegg_df <- as.data.frame(res$kegg) %>%
+        dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
+        mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
+    } else {
+      res$notes <- c(res$notes, "No KEGG pathways passed enrichment thresholds.")
+    }
+  } else {
+    res$notes <- c(res$notes, "Insufficient SYMBOL-to-ENTREZ mapping for KEGG (need at least 5 genes).")
+  }
+
+  res
 }
+
+render_ora_result <- function(ora_res, heading_level = 3) {
+  heading_prefix <- paste(rep("#", heading_level), collapse = "")
+  cat(sprintf("%s %s\n\n", heading_prefix, ora_res$set_name))
+  cat(sprintf("Input significant genes: %d\n\n", ora_res$n_genes))
+
+  if (!is.null(ora_res$message)) {
+    cat(ora_res$message, "\n\n")
+    return(invisible(NULL))
+  }
+
+  cat("**GO Biological Process**\n\n")
+  if (!is.null(ora_res$go) && nrow(ora_res$go_df) > 0) {
+    print(
+      clusterProfiler::dotplot(ora_res$go, showCategory = 25) +
+        labs(title = paste0("GO BP enrichment (", ora_res$set_name, ")")) +
+        theme(axis.text.y = element_text(size = 9))
+    )
+    print(truncate_geneid_datatable(
+      ora_res$go_df,
+      caption = paste0("GO BP enrichment table — ", ora_res$set_name)
+    ))
+  } else {
+    cat("No GO BP terms available for this gene set.\n\n")
+  }
+
+  cat("**KEGG pathways**\n\n")
+  if (!is.null(ora_res$kegg) && nrow(ora_res$kegg_df) > 0) {
+    print(
+      clusterProfiler::dotplot(ora_res$kegg, showCategory = 20) +
+        labs(title = paste0("KEGG enrichment (", ora_res$set_name, ")")) +
+        theme(axis.text.y = element_text(size = 9))
+    )
+    print(truncate_geneid_datatable(
+      ora_res$kegg_df,
+      caption = paste0("KEGG enrichment table — ", ora_res$set_name)
+    ))
+  } else {
+    cat("No KEGG pathways available for this gene set.\n\n")
+  }
+
+  if (length(ora_res$notes) > 0) {
+    cat(paste0("Notes: ", paste(ora_res$notes, collapse = " ")), "\n\n")
+  }
+}
+```
+
+## ORA by tool
+
+```{r enrichment_by_tool, results='asis'}
+if (length(active_tool_sig_sets) == 0) {
+  cat("No active tools available for tool-specific ORA.\n")
+} else {
+  for (tool_name in names(active_tool_sig_sets)) {
+    tool_res <- run_ora_for_set(
+      active_tool_sig_sets[[tool_name]],
+      paste0(tool_name, " significant genes")
+    )
+    render_ora_result(tool_res, heading_level = 3)
+  }
+}
+```
+
+## ORA global (union of active tools)
+
+```{r enrichment_global, results='asis'}
+global_sig_genes <- unique(unlist(active_tool_sig_sets, use.names = FALSE))
+global_res <- run_ora_for_set(global_sig_genes, "Global AS genes (union across active tools)")
+render_ora_result(global_res, heading_level = 3)
 ```
 
 ---

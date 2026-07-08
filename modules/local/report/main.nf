@@ -16,7 +16,9 @@ process RENDER_REPORT {
           val(isar_name),        path(isar_dir,        stageAs: 'isar_in'),
           val(sashimi_name),     path(sashimi_dir,     stageAs: 'sashimi_in'),
           val(pegasas_name),     path(pegasas_dir,     stageAs: 'pegasas_in'),
-          val(leafcutter_name),  path(leafcutter_dir,  stageAs: 'leafcutter_in')
+          val(leafcutter_name),  path(leafcutter_dir,  stageAs: 'leafcutter_in'),
+          val(group1_sample_ids),
+          val(group2_sample_ids)
     path report_rmd
 
     output:
@@ -35,6 +37,8 @@ process RENDER_REPORT {
     // the Rmd can use file.exists() without staging them into the work directory
     def mqc_arg = params.nfcore_multiqc_dir ? "\"${params.nfcore_multiqc_dir}\"" : 'null'
     def de_arg  = params.de_results         ? "\"${params.de_results}\""         : 'null'
+    def group1_ids_json = groovy.json.JsonOutput.toJson(group1_sample_ids ?: [])
+    def group2_ids_json = groovy.json.JsonOutput.toJson(group2_sample_ids ?: [])
 
     """
     # Write report params to JSON — avoids shell injection from paths with special chars
@@ -53,7 +57,9 @@ process RENDER_REPORT {
       "majiq_dpsi_cutoff":      ${params.majiq_delta_psi_threshold},
       "nfcore_multiqc_dir":     ${mqc_arg},
       "organism":               "${params.organism}",
-      "de_results":             ${de_arg}
+      "de_results":             ${de_arg},
+      "group1_sample_ids":      ${group1_ids_json},
+      "group2_sample_ids":      ${group2_ids_json}
     }
     JSONEOF
 

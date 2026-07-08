@@ -13,14 +13,14 @@ process LEAFCUTTER_CLUSTER {
     script:
     """
     # Write the list of junction files
-    printf '%s\\n' ${junc_files.join(' ')} | tr ' ' '\\n' > junc_file_list.txt
+    printf '%s\n' ${junc_files.join(' ')} | tr ' ' '\n' > junc_file_list.txt
 
-    python3 /opt/leafcutter-src/clustering/leafcutter_cluster_regtools.py \\
-        --junc_files junc_file_list.txt \\
-        --output_prefix ${comparison_id} \\
-        --min_cov 1 \\
-        --seq_error_rate 0.05 \\
-        --checkchrom
+    # leafcutter_cluster_regtools.py in the pinned container expects
+    # short/legacy options (-j/-o/-m).
+    python3 /opt/leafcutter-src/clustering/leafcutter_cluster_regtools.py \
+        -j junc_file_list.txt \
+        -o ${comparison_id} \
+        -m 1
 
     # Rename outputs to include comparison_id prefix
     [ -f "${comparison_id}_perind_numers.counts.gz" ] || \

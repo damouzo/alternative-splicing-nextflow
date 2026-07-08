@@ -2,8 +2,6 @@ process SASHIMI_PLOTS {
     tag "$comparison_id"
     label 'process_medium'
 
-    container 'docker.io/xinglab/rmats2sashimiplot:v2.0.4'
-
     publishDir "${params.outdir}/sashimi/${comparison_id}", mode: params.publish_dir_mode
 
     input:

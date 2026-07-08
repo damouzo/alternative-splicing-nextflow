@@ -64,6 +64,7 @@ workflow ALTERNATIVE_SPLICING {
     ch_rmats_for_report   = channel.empty()
     ch_rmats_for_sashimi  = channel.empty()
     ch_rmats_for_pegasas  = channel.empty()
+    ch_sample_ids_for_report = channel.empty()
 
     if (params.run_rmats) {
         RMATS_ANALYSIS(
@@ -73,10 +74,15 @@ workflow ALTERNATIVE_SPLICING {
         ch_rmats_for_report  = RMATS_ANALYSIS.out.results
         ch_rmats_for_sashimi = RMATS_ANALYSIS.out.results
         ch_rmats_for_pegasas = RMATS_ANALYSIS.out.results
+        ch_sample_ids_for_report = RMATS_ANALYSIS.out.sample_ids
     } else {
         ch_ids_split.rmats
             .map { comp_id -> [comp_id, no_rmats_dir] }
             .set { ch_rmats_for_report }
+
+        ch_ids_split.rmats
+            .map { comp_id -> [comp_id, [], []] }
+            .set { ch_sample_ids_for_report }
     }
 
     /*
@@ -118,8 +124,7 @@ workflow ALTERNATIVE_SPLICING {
     if (params.run_sashimi && params.run_rmats) {
         SASHIMI_ANALYSIS(
             ch_rmats_for_sashimi,
-            ch_samples_bam,
-            ch_comparisons_meta
+            ch_samples_bam
         )
         ch_sashimi_for_report = SASHIMI_ANALYSIS.out.results
     } else {
@@ -176,14 +181,16 @@ workflow ALTERNATIVE_SPLICING {
         .join(ch_sashimi_for_report,    by: 0)
         .join(ch_pegasas_for_report,    by: 0)
         .join(ch_leafcutter_for_report, by: 0)
-        .map { comp_id, rdir, mdir, idir, sdir, pdir, ldir ->
+        .join(ch_sample_ids_for_report, by: 0)
+        .map { comp_id, rdir, mdir, idir, sdir, pdir, ldir, g1_ids, g2_ids ->
             [comp_id,
              rdir.name, rdir,
              mdir.name, mdir,
              idir.name, idir,
              sdir.name, sdir,
              pdir.name, pdir,
-             ldir.name, ldir]
+             ldir.name, ldir,
+             g1_ids, g2_ids]
         }
         .set { ch_report_inputs }
 

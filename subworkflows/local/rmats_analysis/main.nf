@@ -37,7 +37,7 @@ workflow RMATS_ANALYSIS {
     // Also group BAM files for POST
     samples_bam
         .map { meta, bam, _bai ->
-            [meta.comparison_id, meta.group, bam]
+            [meta.comparison_id, meta.group, meta.id, bam]
         }
         .set { ch_bams_grouped }
     
@@ -86,7 +86,7 @@ workflow RMATS_ANALYSIS {
     // Similarly for BAMs
     ch_bams_grouped
         .groupTuple(by: 0)  // Group by comparison_id
-        .map { comparison_id, groups, bams ->
+        .map { comparison_id, groups, sample_ids, bams ->
             def g1_bams = []
             def g2_bams = []
 
@@ -111,14 +111,12 @@ workflow RMATS_ANALYSIS {
      * ground-truth mapping from rMATS column index to sample_id.
      */
     ch_bams_grouped
-        .map { comparison_id, group, bam -> [comparison_id, group, bam.getName()] }
         .groupTuple(by: 0)
-        .map { comparison_id, groups, names ->
+        .map { comparison_id, groups, sample_ids, _bams ->
             def g1_ids = []
             def g2_ids = []
             groups.eachWithIndex { g, i ->
-                // Strip BAM/CRAM extension so the id matches the samplesheet
-                def sid = names[i].replaceAll(/\.(bam|cram)$/, '')
+                def sid = sample_ids[i]
                 (g == 1 ? g1_ids : g2_ids).add(sid)
             }
             [comparison_id, g1_ids, g2_ids]

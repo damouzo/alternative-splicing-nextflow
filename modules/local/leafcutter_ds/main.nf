@@ -13,6 +13,11 @@ process LEAFCUTTER_DS {
     path "versions.yml"                               , emit: versions
 
     script:
+    // Adapt LeafCutter thresholds to available replicates per group.
+    def group_sizes = conditions.countBy { it }.values() as List
+    def min_group_size = group_sizes ? group_sizes.min() as int : 1
+    def min_samples_per_intron = Math.max(1, Math.min(5, min_group_size))
+    def min_samples_per_group  = Math.max(1, Math.min(3, min_group_size))
     """
     mkdir -p ${comparison_id}
 
@@ -26,42 +31,29 @@ with open('groups.txt', 'w') as fh:
         fh.write(f'{sid}\\t{cond}\\n')
 PYEOF
 
-    # Generate per-comparison exon annotation from GTF for gene labeling
-    Rscript - <<'REOF'
-    suppressPackageStartupMessages({
-        library(dplyr)
-    })
-    # Parse GTF to build exon table expected by leafcutter_ds.R
-    gtf_lines <- readLines("${gtf}")
-    gtf_data  <- gtf_lines[!startsWith(gtf_lines, '#') & nchar(gtf_lines) > 0]
-    gtf_df    <- read.delim(text = paste(gtf_data, collapse = '\\n'),
-                             header = FALSE, stringsAsFactors = FALSE,
-                             col.names = c('seqname','source','feature','start','end',
-                                           'score','strand','frame','attribute'))
-    exons <- gtf_df[gtf_df\$feature == 'exon', ]
-    if (nrow(exons) > 0) {
-        # Extract gene_id and transcript_id from attribute column
-        exons\$gene_id <- sub('.*gene_id "([^"]+)".*', '\\\\1', exons\$attribute)
-        exons\$gene_name <- ifelse(
-            grepl('gene_name', exons\$attribute),
-            sub('.*gene_name "([^"]+)".*', '\\\\1', exons\$attribute),
-            exons\$gene_id
-        )
-        exon_tbl <- exons[, c('seqname','start','end','strand','gene_name')]
-        colnames(exon_tbl) <- c('chr','start','end','strand','gene_name')
-        write.table(exon_tbl, 'exons.txt', sep = '\\t', row.names = FALSE, quote = FALSE)
-    }
-    REOF
+    # Build exon table expected by leafcutter_ds.R without loading full GTF in memory.
+    awk 'BEGIN{FS="\t"; OFS="\t"; print "chr","start","end","strand","gene_name"}
+         !/^#/ && \$3=="exon" {
+             attr=\$9; gene_name="";
+             if (match(attr, /gene_name "[^"]+"/)) {
+                 gene_name=substr(attr, RSTART+11, RLENGTH-12)
+             } else if (match(attr, /gene_id "[^"]+"/)) {
+                 gene_name=substr(attr, RSTART+9, RLENGTH-10)
+             }
+             if (gene_name != "") print \$1, \$4, \$5, \$7, gene_name
+         }' ${gtf} > exons.txt
 
     EXON_ARG=""
-    [ -f "exons.txt" ] && EXON_ARG="--exon_file exons.txt"
+    [ -s exons.txt ] && [ "\$(wc -l < exons.txt)" -gt 1 ] && EXON_ARG="--exon_file exons.txt"
 
     # leafcutter_ds.R lives in the repo's scripts/ dir, not installed in the R package
-    Rscript /opt/leafcutter-src/scripts/leafcutter_ds.R \\
-        --num_threads ${task.cpus} \\
-        --output_prefix ${comparison_id}/${comparison_id} \\
-        \$EXON_ARG \\
-        ${counts_gz} \\
+    Rscript /opt/leafcutter-src/scripts/leafcutter_ds.R \
+        --num_threads ${task.cpus} \
+        --output_prefix ${comparison_id}/${comparison_id} \
+        --min_samples_per_intron ${min_samples_per_intron} \
+        --min_samples_per_group ${min_samples_per_group} \
+        \$EXON_ARG \
+        ${counts_gz} \
         groups.txt
 
     cat <<-END_VERSIONS > versions.yml
