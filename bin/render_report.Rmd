@@ -486,26 +486,118 @@ sashimi_pdfs <- list.files(params$sashimi_dir, pattern = "\\.pdf$",
 
 if (length(sashimi_pdfs) > 0) {
   cat(sprintf("Sashimi plots generated for %d events.\n\n", length(sashimi_pdfs)))
-  cat("PDFs are available in the sashimi_plots/ output directory.\n")
+  cat("Use the selectors to browse by event type and gene. The selected plot is shown directly below.\n\n")
+
+  event_from_path <- function(paths) {
+    rel <- basename(dirname(dirname(paths)))
+    ifelse(rel %in% c("SE", "A5SS", "A3SS", "MXE", "RI"), rel, NA_character_)
+  }
+
+  extract_gene_symbol <- function(x) {
+    has_prefix <- grepl("^[0-9]+_[^_]+_", x)
+    out <- ifelse(has_prefix, sub("^[0-9]+_([^_]+)_.*$", "\\1", x), NA_character_)
+    out
+  }
+
+  # Embed PDFs as data URIs so report stays self-contained.
+  sashimi_data_uris <- vapply(sashimi_pdfs, function(pdf_path) {
+    pdf_size <- file.info(pdf_path)$size
+    if (is.na(pdf_size) || pdf_size <= 0) {
+      return(NA_character_)
+    }
+    raw_pdf <- readBin(pdf_path, what = "raw", n = pdf_size)
+    encoded <- jsonlite::base64_enc(raw_pdf)
+    paste0("data:application/pdf;base64,", encoded)
+  }, character(1))
 
   sashimi_table <- data.frame(
     file = basename(sashimi_pdfs),
-    event_type = dplyr::case_when(
-      grepl("/(SE|A5SS|A3SS|MXE|RI)/", sashimi_pdfs) ~ sub(".*\\/(SE|A5SS|A3SS|MXE|RI)\\/.*", "\\1", sashimi_pdfs),
-      TRUE ~ NA_character_
-    ),
-    path = sashimi_pdfs,
+    event_type = event_from_path(sashimi_pdfs),
+    gene = extract_gene_symbol(basename(sashimi_pdfs)),
+    data_uri = sashimi_data_uris,
     stringsAsFactors = FALSE
-  )
-  datatable(
-    sashimi_table,
-    caption = "Sashimi plot files",
-    options = list(pageLength = 20, scrollX = TRUE),
-    rownames = FALSE
-  )
+  ) %>%
+    dplyr::arrange(event_type, gene, file)
+
+  sashimi_table <- sashimi_table %>%
+    dplyr::filter(!is.na(data_uri) & nzchar(data_uri))
+
+  if (nrow(sashimi_table) == 0) {
+    cat("No embeddable sashimi PDFs found in the output directory.\n")
+  }
 } else {
   cat("No sashimi plot PDFs found in the output directory.\n")
 }
+```
+
+```{r sashimi_browser, eval=!is.null(params$sashimi_dir) && exists("sashimi_table") && nrow(sashimi_table) > 0, results='asis'}
+browser_data <- sashimi_table %>%
+  dplyr::group_by(event_type, gene) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(event_type, gene) %>%
+  dplyr::transmute(
+    event_type = ifelse(is.na(event_type), "UNKNOWN", event_type),
+    gene = ifelse(is.na(gene), "UNKNOWN", gene),
+    file = file,
+    data_uri = data_uri
+  )
+
+widget_id <- paste0(
+  "sashimi_browser_",
+  gsub("[^A-Za-z0-9]+", "_", params$comparison_id)
+)
+
+browser_json <- jsonlite::toJSON(browser_data, dataframe = "rows", auto_unbox = TRUE)
+
+cat(
+  paste0(
+    '<div id="', widget_id, '" style="border:1px solid #d9d9d9; border-radius:8px; padding:12px; margin:12px 0 20px 0;">',
+    '<div style="font-weight:600; margin-bottom:8px;">Sashimi browser</div>',
+    '<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:10px;">',
+    '<label style="font-size:0.9em;">Event type<br><select id="', widget_id, '_event"></select></label>',
+    '<label style="font-size:0.9em;">Gene<br><select id="', widget_id, '_gene"></select></label>',
+    '</div>',
+    '<object id="', widget_id, '_frame" type="application/pdf" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px;">',
+    '<p style="padding:10px;">Inline PDF preview is not available in this browser. Use the file selector and open the report directory directly from filesystem, or use a browser with PDF support.</p>',
+    '</object>',
+    '</div>'
+  )
+)
+
+cat(
+  paste0(
+    '<script>(function(){',
+    'const data = ', browser_json, ';',
+    'const root = document.getElementById("', widget_id, '");',
+    'if(!root || !Array.isArray(data) || data.length===0){return;}',
+    'const eventSel = document.getElementById("', widget_id, '_event");',
+    'const geneSel = document.getElementById("', widget_id, '_gene");',
+    'const frame = document.getElementById("', widget_id, '_frame");',
+    'const uniq = (arr) => Array.from(new Set(arr));',
+    'const sortText = (arr) => arr.sort((a,b) => String(a).localeCompare(String(b)));',
+    'const setOptions = (sel, values) => {',
+    '  sel.innerHTML = "";',
+    '  values.forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });',
+    '};',
+    'const eventValues = sortText(uniq(data.map(d => d.event_type)));',
+    'setOptions(eventSel, eventValues);',
+    'const currentRows = () => data.filter(d => d.event_type === eventSel.value);',
+    'const refreshGenes = () => {',
+    '  const genes = sortText(uniq(currentRows().map(d => d.gene)));',
+    '  setOptions(geneSel, genes);',
+    '};',
+    'const refreshPreview = () => {',
+    '  const row = currentRows().find(d => d.gene === geneSel.value);',
+    '  if(!row){ return; }',
+    '  frame.data = row.data_uri;',
+    '};',
+    'eventSel.addEventListener("change", () => { refreshGenes(); refreshPreview(); });',
+    'geneSel.addEventListener("change", refreshPreview);',
+    'refreshGenes(); refreshPreview();',
+    '})();</script>'
+  )
+)
 ```
 
 ---
