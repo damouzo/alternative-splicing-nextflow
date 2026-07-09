@@ -466,15 +466,15 @@ nextflow run main.nf \
 
 ### Sashimi Plots
 
-Requires `--run_sashimi true`. Generates arc plots via rmats2sashimiplot for top rMATS SE events.
+Requires `--run_sashimi true`. Generates arc plots via rmats2sashimiplot for top rMATS events across SE, A5SS, A3SS, MXE, and RI.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--run_sashimi` | boolean | `false` | Enable sashimi plot generation |
+| `--run_sashimi` | boolean | `true` | Enable sashimi plot generation |
 | `--sashimi_top_n` | integer | `10` | Number of top events to plot |
-| `--sashimi_group1_label` | string | `'Group1'` | Label for group1 in plots |
-| `--sashimi_group2_label` | string | `'Group2'` | Label for group2 in plots |
-| `--sashimi_exon_scale` | integer | `25` | Exon scale factor |
+| `--sashimi_group1_label` | string | `'group1'` | Label for group1 in plots |
+| `--sashimi_group2_label` | string | `'group2'` | Label for group2 in plots |
+| `--sashimi_exon_scale` | integer | `1` | Exon scale factor |
 | `--sashimi_intron_scale` | integer | `5` | Intron scale factor |
 
 ```bash

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build ISAR and report containers as Apptainer SIF files.
+# Build ISAR, report, and sashimi containers as Apptainer SIF files.
 #
 # Usage:
 #   sbatch containers/build_sifs.sh                         # default output dir
@@ -11,7 +11,8 @@
 #
 # After building, add to your params.yaml:
 #   isar_container:   <CONTAINERS_DIR>/isar-1.0.0.sif
-#   report_container: <CONTAINERS_DIR>/report-1.0.0.sif
+#   report_container:  <CONTAINERS_DIR>/report-1.0.0.sif
+#   sashimi_container: <CONTAINERS_DIR>/sashimi-1.0.0.sif
 
 #SBATCH --job-name=build_sifs
 #SBATCH --partition=compute
@@ -37,14 +38,22 @@ echo "Output: ${CONTAINERS_DIR}/report-1.0.0.sif"
 apptainer build "${CONTAINERS_DIR}/report-1.0.0.sif" "${SCRIPT_DIR}/report/report.def"
 
 echo ""
+echo "=== Building sashimi SIF ==="
+echo "Output: ${CONTAINERS_DIR}/sashimi-1.0.0.sif"
+apptainer build "${CONTAINERS_DIR}/sashimi-1.0.0.sif" "${SCRIPT_DIR}/sashimi/sashimi.def"
+
+echo ""
 echo "=== Verification ==="
 apptainer exec "${CONTAINERS_DIR}/isar-1.0.0.sif" \
     Rscript -e "library(IsoformSwitchAnalyzeR); cat('ISAR OK\n')"
 apptainer exec "${CONTAINERS_DIR}/report-1.0.0.sif" \
     Rscript -e "library(DT); library(plotly); cat('Report OK\n')"
+apptainer exec "${CONTAINERS_DIR}/sashimi-1.0.0.sif" \
+    /bin/bash -lc "command -v rmats2sashimiplot >/dev/null && command -v samtools >/dev/null && echo 'Sashimi OK'"
 
 echo ""
 echo "=== Done ==="
 echo "Add to your params.yaml:"
 echo "  isar_container:   ${CONTAINERS_DIR}/isar-1.0.0.sif"
 echo "  report_container: ${CONTAINERS_DIR}/report-1.0.0.sif"
+echo "  sashimi_container: ${CONTAINERS_DIR}/sashimi-1.0.0.sif"

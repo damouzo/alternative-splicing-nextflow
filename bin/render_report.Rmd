@@ -23,8 +23,10 @@ params:
   nfcore_multiqc_dir: NULL
   organism: "human"
   de_results: NULL
-  group1_sample_ids: []
-  group2_sample_ids: []
+  group1_sample_ids:
+    value: !r character()
+  group2_sample_ids:
+    value: !r character()
 ---
 
 ```{r setup, include=FALSE}
@@ -47,6 +49,21 @@ majiq_results     <- data.frame()
 isar_switches     <- data.frame()
 isar_consequences <- data.frame()
 leafcutter_clusters <- data.frame()
+
+wrap_axis_labels <- function(x, width = 55) {
+  vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
+}
+
+style_ora_dotplot <- function(p, title) {
+  p +
+    labs(title = title) +
+    scale_y_discrete(labels = function(lbl) wrap_axis_labels(lbl, width = 55)) +
+    theme_bw(base_size = 11) +
+    theme(
+      axis.text.y = element_text(size = 8, lineheight = 0.9),
+      plot.margin = margin(5.5, 5.5, 5.5, 25)
+    )
+}
 ```
 
 # Summary
@@ -965,11 +982,10 @@ if (length(active_tool_sig_sets) < 2) {
 
       cat("**GO Biological Process**\n\n")
       if (!is.null(ego_shared) && nrow(as.data.frame(ego_shared)) > 0) {
-        print(
-          clusterProfiler::dotplot(ego_shared, showCategory = 20) +
-            labs(title = "GO BP enrichment (shared genes)") +
-            theme(axis.text.y = element_text(size = 9))
-        )
+          print(style_ora_dotplot(
+            clusterProfiler::dotplot(ego_shared, showCategory = 15),
+            "GO BP enrichment (shared genes)"
+          ))
 
         ego_shared_df <- as.data.frame(ego_shared) %>%
           dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
@@ -1009,11 +1025,10 @@ if (length(active_tool_sig_sets) < 2) {
         )
 
         if (!is.null(ekegg_shared) && nrow(as.data.frame(ekegg_shared)) > 0) {
-          print(
-            clusterProfiler::dotplot(ekegg_shared, showCategory = 20) +
-              labs(title = "KEGG enrichment (shared genes)") +
-              theme(axis.text.y = element_text(size = 9))
-          )
+          print(style_ora_dotplot(
+            clusterProfiler::dotplot(ekegg_shared, showCategory = 15),
+            "KEGG enrichment (shared genes)"
+          ))
 
           ekegg_shared_df <- as.data.frame(ekegg_shared) %>%
             dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
@@ -1173,11 +1188,10 @@ render_ora_result <- function(ora_res, heading_level = 3) {
 
   cat("**GO Biological Process**\n\n")
   if (!is.null(ora_res$go) && nrow(ora_res$go_df) > 0) {
-    print(
-      clusterProfiler::dotplot(ora_res$go, showCategory = 25) +
-        labs(title = paste0("GO BP enrichment (", ora_res$set_name, ")")) +
-        theme(axis.text.y = element_text(size = 9))
-    )
+    print(style_ora_dotplot(
+      clusterProfiler::dotplot(ora_res$go, showCategory = 15),
+      paste0("GO BP enrichment (", ora_res$set_name, ")")
+    ))
     print(truncate_geneid_datatable(
       ora_res$go_df,
       caption = paste0("GO BP enrichment table — ", ora_res$set_name)
@@ -1188,11 +1202,10 @@ render_ora_result <- function(ora_res, heading_level = 3) {
 
   cat("**KEGG pathways**\n\n")
   if (!is.null(ora_res$kegg) && nrow(ora_res$kegg_df) > 0) {
-    print(
-      clusterProfiler::dotplot(ora_res$kegg, showCategory = 20) +
-        labs(title = paste0("KEGG enrichment (", ora_res$set_name, ")")) +
-        theme(axis.text.y = element_text(size = 9))
-    )
+    print(style_ora_dotplot(
+      clusterProfiler::dotplot(ora_res$kegg, showCategory = 15),
+      paste0("KEGG enrichment (", ora_res$set_name, ")")
+    ))
     print(truncate_geneid_datatable(
       ora_res$kegg_df,
       caption = paste0("KEGG enrichment table — ", ora_res$set_name)

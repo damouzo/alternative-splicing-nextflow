@@ -1,0 +1,29 @@
+# Apptainer / Singularity definition for rmats2sashimiplot
+# Build: apptainer build /data/BCI-KRP/containers/sashimi-1.0.0.sif containers/sashimi/sashimi.def
+# Then pass --sashimi_container /path/to/sashimi-1.0.0.sif to the pipeline
+
+Bootstrap: docker
+From: docker.io/xinglab/rmats2sashimiplot:latest
+
+%labels
+    org.opencontainers.image.description "rmats2sashimiplot runtime with samtools for alternative-splicing-nextflow"
+    org.opencontainers.image.source      "https://github.com/BCI-KRP/alternative-splicing-nextflow"
+
+%post
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends samtools ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    TOOL_BIN="$(command -v rmats2sashimiplot || true)"
+    if [ -z "${TOOL_BIN}" ] && [ -x /rmats2sashimiplot/conda_env/bin/rmats2sashimiplot ]; then
+        TOOL_BIN=/rmats2sashimiplot/conda_env/bin/rmats2sashimiplot
+    fi
+    [ -n "${TOOL_BIN}" ]
+    "${TOOL_BIN}" -h >/dev/null 2>&1 || "${TOOL_BIN}" --help >/dev/null 2>&1
+    command -v samtools >/dev/null 2>&1
+
+%runscript
+    exec "$@"
