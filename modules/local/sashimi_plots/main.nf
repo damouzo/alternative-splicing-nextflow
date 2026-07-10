@@ -101,10 +101,13 @@ process SASHIMI_PLOTS {
     GROUP_FILE="sample_groups.gf"
     {
         for i in "\${!B1_IDS[@]}"; do
-            printf '%s: %d\n' "\${B1_IDS[i]}" "$((i+1))"
+            idx=\$(( i + 1 ))
+            printf '%s: %d\n' "\${B1_IDS[i]}" "\$idx"
         done
         for i in "\${!B2_IDS[@]}"; do
-            printf '%s: %d\n' "\${B2_IDS[i]}" "$((\${#B1_IDS[@]} + i + 1))"
+            base=\${#B1_IDS[@]}
+            idx=\$(( base + i + 1 ))
+            printf '%s: %d\n' "\${B2_IDS[i]}" "\$idx"
         done
     } > "\$GROUP_FILE"
 
