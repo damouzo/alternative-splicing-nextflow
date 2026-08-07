@@ -1,36 +1,31 @@
+/*
+ * PEGASAS_PREPARE — shared gene expression matrix for the pathway (KS) step.
+ *
+ * The KS enrichment score of a sample is a function of that sample's expression
+ * and the gene set only, so pathway scores are computed ONCE for the whole
+ * cohort and subset per contrast downstream. This process builds the shared
+ * gene expression matrix (samples x genes) and the global group info.
+ */
 process PEGASAS_PREPARE {
-    tag "$comparison_id"
+    tag "shared"
     label 'process_low'
 
+    container 'local/pegasas:latest'
+
     input:
-    tuple val(comparison_id),
-          path(salmon_tpm),
-          path(rmats_se),
-          path(group_info),
-          val(g1_ids),
-          val(g2_ids)
+    path salmon_tpm
+    path group_info
 
     output:
-    tuple val(comparison_id),
-          path("pegasas_inputs/gene_exp_bySample.tsv"),
-          path("pegasas_inputs/PSI_bySample.tsv"),
-          path("pegasas_inputs/group_info.tsv"),
-          path("pegasas_inputs/group_order.txt"),
-          emit: inputs
-    path "versions.yml", emit: versions
+    path "pegasas_inputs/gene_exp_bySample.tsv", emit: gene_exp
+    path "pegasas_inputs/group_info.tsv",        emit: group_info
+    path "versions.yml",                          emit: versions
 
     script:
-    // Pass sample_ids as comma-separated lists; the script splits and validates
-    // them against the per-event column counts in SE.MATS.JC.txt.
-    def g1_arg = g1_ids instanceof List ? g1_ids.join(',') : g1_ids
-    def g2_arg = g2_ids instanceof List ? g2_ids.join(',') : g2_ids
     """
-    prepare_pegasas_inputs.py \\
+    prepare_pegasas_gene_matrix.py \\
         ${salmon_tpm} \\
-        ${rmats_se} \\
         ${group_info} \\
-        --g1-ids "${g1_arg}" \\
-        --g2-ids "${g2_arg}" \\
         --out-dir pegasas_inputs/
 
     cat <<-END_VERSIONS > versions.yml

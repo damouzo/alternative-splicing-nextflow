@@ -52,8 +52,19 @@ apptainer exec "${CONTAINERS_DIR}/sashimi-1.0.0.sif" \
     /bin/bash -lc "command -v rmats2sashimiplot >/dev/null && command -v samtools >/dev/null && echo 'Sashimi OK'"
 
 echo ""
+echo "=== Building PEGASAS SIF ==="
+echo "Output: ${CONTAINERS_DIR}/pegasas-1.0.0.sif"
+apptainer build "${CONTAINERS_DIR}/pegasas-1.0.0.sif" docker://ghcr.io/damouzo/alternative-splicing-nextflow/pegasas:latest
+
+echo ""
+echo "=== PEGASAS Verification ==="
+apptainer exec "${CONTAINERS_DIR}/pegasas-1.0.0.sif" \
+    PEGASAS --version
+
+echo ""
 echo "=== Done ==="
 echo "Add to your params.yaml:"
 echo "  isar_container:   ${CONTAINERS_DIR}/isar-1.0.0.sif"
 echo "  report_container: ${CONTAINERS_DIR}/report-1.0.0.sif"
 echo "  sashimi_container: ${CONTAINERS_DIR}/sashimi-1.0.0.sif"
+echo "  pegasas_container: ${CONTAINERS_DIR}/pegasas-1.0.0.sif"

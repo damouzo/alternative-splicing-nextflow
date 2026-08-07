@@ -57,6 +57,7 @@ process RENDER_REPORT {
       "majiq_dpsi_cutoff":      ${params.majiq_delta_psi_threshold},
       "nfcore_multiqc_dir":     ${mqc_arg},
       "organism":               "${params.organism}",
+      "run_de_as":              ${params.run_de_as ? 'true' : 'false'},
       "de_results":             ${de_arg},
       "group1_sample_ids":      ${group1_ids_json},
       "group2_sample_ids":      ${group2_ids_json}

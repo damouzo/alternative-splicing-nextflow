@@ -36,6 +36,7 @@ build/
 # IDE
 .vscode/
 .idea/
+.kilo/
 AGENTS.md
 *.swp
 *.swo

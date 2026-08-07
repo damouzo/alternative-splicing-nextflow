@@ -23,7 +23,8 @@ import os
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("salmon_tpm",     help="salmon.merged.gene_tpm.tsv (genes × samples)")
+    p.add_argument("--salmon-tpm", dest="salmon_tpm", default=None,
+                   help="salmon.merged.gene_tpm.tsv (optional)")
     p.add_argument("rmats_se",       help="SE.MATS.JC.txt from rMATS output")
     p.add_argument("group_info_in",  help="TSV: sample_id<TAB>group (one row per sample)")
     p.add_argument("--g1-ids",       dest="g1_ids", default="",
@@ -32,6 +33,9 @@ def parse_args() -> argparse.Namespace:
                    help="Comma-separated sample_ids in the order rMATS POST wrote b2.txt")
     p.add_argument("--out-dir",      default=".", dest="out_dir",
                    help="Output directory [.]")
+    p.add_argument("--fdr-cutoff",    type=float, default=0.0, dest="fdr_cutoff",
+                   help="Skip events with FDR above this threshold (0 = no filter). "
+                        "Set to e.g. 0.05 to keep only significant events [0.0]")
     p.add_argument("--min-samples",  type=int, default=3, dest="min_samples",
                    help="Min samples with valid PSI per event [3]")
     return p.parse_args()
@@ -98,10 +102,12 @@ def transpose_tpm(fin: str, sample_order: list, out_path: str) -> None:
     print(f"[INFO] Gene expression matrix: {len(valid_samples)} samples × {len(genes)} genes → {out_path}")
 
 
-def build_psi_matrix(fin: str, g1_ids: list, g2_ids: list, out_path: str,
-                     min_samples: int) -> None:
+def build_psi_matrix(fin, g1_ids, g2_ids, out_path,
+                     min_samples, fdr_cutoff):
     """
     Parse SE.MATS.JC.txt and output PSI matrix (events × samples).
+    When fdr_cutoff > 0, events with FDR >= cutoff (or missing/NA FDR) are
+    skipped to keep only statistically significant splicing events.
 
     Sample ids are taken from --g1-ids / --g2-ids (the order rMATS POST used
     for b1.txt / b2.txt) and validated against the per-event IncLevel1 /
@@ -138,11 +144,24 @@ def build_psi_matrix(fin: str, g1_ids: list, g2_ids: list, out_path: str,
     header_cols = ["AC", "GeneName", "chr", "strand",
                    "exonStart", "exonEnd", "upstreamEE", "downstreamES"]
 
+    total_events  = 0
+    skipped_fdr   = 0
     events_written = 0
     with open(out_path, "w") as fh:
         writer = csv.writer(fh, delimiter="\t")
         writer.writerow(header_cols + all_samples)
         for row in rows:
+            total_events += 1
+
+            if fdr_cutoff > 0:
+                fdr_str = row.get("FDR", "")
+                try:
+                    fdr = float(fdr_str) if fdr_str not in ("", "NA", "na", "NaN") else None
+                except ValueError:
+                    fdr = None
+                if fdr is None or fdr >= fdr_cutoff:
+                    skipped_fdr += 1
+                    continue
             psi_vals1 = row["IncLevel1"].split(",")
             psi_vals2 = row["IncLevel2"].split(",")
             psi_all   = psi_vals1 + psi_vals2
@@ -177,7 +196,7 @@ def build_psi_matrix(fin: str, g1_ids: list, g2_ids: list, out_path: str,
 
             meta = [
                 event_id,
-                row.get("GeneID", ""),
+                row.get("geneSymbol", row.get("GeneID", "")),
                 row.get("chr", ""),
                 row.get("strand", ""),
                 row.get("exonStart_0base", row.get("exonStart", "")),
@@ -188,7 +207,11 @@ def build_psi_matrix(fin: str, g1_ids: list, g2_ids: list, out_path: str,
             writer.writerow(meta + psi_clean)
             events_written += 1
 
-    print(f"[INFO] PSI matrix: {events_written} events × {len(all_samples)} samples → {out_path}")
+    if fdr_cutoff > 0:
+        print(f"[INFO] PSI matrix: {events_written} events × {len(all_samples)} samples "
+              f"(filtered: {skipped_fdr}/{total_events} removed by FDR >= {fdr_cutoff}) → {out_path}")
+    else:
+        print(f"[INFO] PSI matrix: {events_written} events × {len(all_samples)} samples → {out_path}")
 
 
 def write_group_info(sample_order: list, group_map: dict, out_path: str) -> None:
@@ -238,18 +261,28 @@ def main() -> None:
         )
 
     sample_order = list(group_map.keys())
+    contrast_samples = set(g1_ids + g2_ids)
 
-    tpm_out = os.path.join(args.out_dir, "gene_exp_bySample.tsv")
-    transpose_tpm(args.salmon_tpm, sample_order, tpm_out)
+    if args.salmon_tpm:
+        tpm_out = os.path.join(args.out_dir, "gene_exp_bySample.tsv")
+        transpose_tpm(args.salmon_tpm, sample_order, tpm_out)
 
     psi_out = os.path.join(args.out_dir, "PSI_bySample.tsv")
-    build_psi_matrix(args.rmats_se, g1_ids, g2_ids, psi_out, args.min_samples)
+    build_psi_matrix(args.rmats_se, g1_ids, g2_ids, psi_out, args.min_samples, args.fdr_cutoff)
 
     grp_out = os.path.join(args.out_dir, "group_info.tsv")
     write_group_info(sample_order, group_map, grp_out)
 
+    # Restrict group_order to only the contrast samples so downstream steps
+    # (prepareGeneMatrixOrdered.py) subset pathway scores to these samples.
+    contrast_group_map = {s: g for s, g in group_map.items() if s in contrast_samples}
     ord_out = os.path.join(args.out_dir, "group_order.txt")
-    write_group_order(group_map, ord_out)
+    write_group_order(contrast_group_map, ord_out)
+
+    # Write contrast sample list so downstream steps can subset pathway scores.
+    samples_out = os.path.join(args.out_dir, "contrast_samples.txt")
+    with open(samples_out, "w") as fh:
+        fh.write(",".join(g1_ids + g2_ids) + "\n")
 
 
 if __name__ == "__main__":

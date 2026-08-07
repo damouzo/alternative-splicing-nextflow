@@ -15,6 +15,7 @@ include { LEAFCUTTER_ANALYSIS     } from '../subworkflows/local/leafcutter_analy
 
 // Import modules
 include { RENDER_REPORT } from '../modules/local/report/main'
+include { PEGASAS_GROUPS } from '../modules/local/pegasas_groups/main'
 
 workflow ALTERNATIVE_SPLICING {
 
@@ -137,17 +138,24 @@ workflow ALTERNATIVE_SPLICING {
      * SUBWORKFLOW: PEGASAS pathway-splicing correlation (optional; requires run_rmats = true)
      */
     ch_pegasas_for_report = channel.empty()
-    if (params.run_pegasas && params.run_rmats && params.salmon_merged_tpm && params.pegasas_groups) {
+    if (params.run_pegasas && params.run_rmats && params.salmon_merged_tpm) {
         ch_salmon_tpm = channel.fromPath(params.salmon_merged_tpm, checkIfExists: true).first()
-        ch_gmt        = channel.fromPath(params.pathway_gmt ?: error(
-            '--pathway_gmt is required when --run_pegasas is true'
-        ), checkIfExists: true).first()
+
+        def gmt_path = params.pathway_gmt ?: "${workflow.projectDir}/assets/hallmarks50.gmt.txt"
+        ch_gmt = channel.fromPath(gmt_path, checkIfExists: true).first()
+
+        if (params.pegasas_groups) {
+            ch_pegasas_groups = channel.fromPath(params.pegasas_groups, checkIfExists: true)
+        } else {
+            ch_pegasas_groups = PEGASAS_GROUPS(channel.fromPath(params.input, checkIfExists: true))
+        }
 
         PEGASAS_ANALYSIS(
             ch_rmats_for_pegasas,
             ch_salmon_tpm,
             ch_gmt,
-            RMATS_ANALYSIS.out.sample_ids
+            RMATS_ANALYSIS.out.sample_ids,
+            ch_pegasas_groups
         )
         ch_pegasas_for_report = PEGASAS_ANALYSIS.out.results
     } else {

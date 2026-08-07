@@ -23,6 +23,7 @@ params:
   nfcore_multiqc_dir: NULL
   organism: "human"
   de_results: NULL
+  run_de_as: false
   group1_sample_ids:
     value: !r character()
   group2_sample_ids:
@@ -1344,111 +1345,241 @@ render_ora_result(global_res, heading_level = 3)
 run_pegasas_section <- !is.null(params$pegasas_dir)
 ```
 
-```{r pegasas_scores, eval=run_pegasas_section}
-# Load per-sample KS enrichment scores produced by PEGASAS pathway step.
-# Each subdirectory under pegasas_dir/correlation_out/ corresponds to one gene signature.
-corr_dirs <- list.dirs(file.path(params$pegasas_dir), recursive = FALSE, full.names = TRUE)
+```{r pegasas_load, eval=run_pegasas_section}
+# PEGASAS runs pathway enrichment once for the whole cohort and subsets per
+# contrast. The per-contrast pegasas directory holds:
+#   all_pathways_scores.tsv  — long pathway x sample KS scores (for the plots)
+#   correlation_out/<pathway>/<pathway>_global_cor_matrix.txt — ALL events (r, p, significant)
 
-pegasas_score_plots <- list()
-pegasas_cor_tables  <- list()
+scores_file <- file.path(params$pegasas_dir, "all_pathways_scores.tsv")
+corr_base   <- file.path(params$pegasas_dir, "correlation_out")
+corr_items  <- if (dir.exists(corr_base)) list.files(corr_base, full.names = TRUE, no.. = TRUE) else character(0)
+corr_dirs   <- corr_items[dir.exists(corr_items)]   # only directories (reliable with symlinks)
 
+score_df <- data.frame()
+if (file.exists(scores_file)) {
+  score_df <- tryCatch(
+    read.table(scores_file, sep = "\t", header = TRUE, quote = "",
+               stringsAsFactors = FALSE, check.names = FALSE),
+    error = function(e) data.frame()
+  )
+}
+if (nrow(score_df) > 0) {
+  # Safe -log10(p): guard against p == 0 (Inf). KS p-values are always numeric.
+  score_df$neglogp <- -log10(pmax(as.numeric(score_df$p_value), .Machine$double.xmin))
+}
+
+# Per-pathway correlation tables (ALL events, including non-significant, so the
+# section is never empty and it is clear which pathways were tested).
+cor_list <- list()
 for (cdir in corr_dirs) {
   sig_name <- basename(cdir)
-
-  # Pathway scores file: <sig>.sorted.txt (sample × score, 2-row: header + values)
-  scores_file <- file.path(cdir, paste0(sig_name, ".sorted.txt"))
-  if (!file.exists(scores_file)) next
-
-  scores_raw <- read.table(scores_file, sep = "\t", header = FALSE,
-                           stringsAsFactors = FALSE)
-  # Row 1 = sample IDs; Row 2 = KS scores
-  if (nrow(scores_raw) < 2) next
-  samples    <- unlist(scores_raw[1, -1])
-  ks_scores  <- as.numeric(unlist(scores_raw[2, -1]))
-  score_df   <- data.frame(sample = samples, ks_score = ks_scores,
-                            stringsAsFactors = FALSE)
-
-  p <- ggplot(score_df, aes(x = reorder(sample, ks_score), y = ks_score)) +
-    geom_col(fill = "steelblue") +
-    coord_flip() +
-    labs(title = sig_name,
-         x = NULL,
-         y = "KS enrichment score") +
-    theme_bw(base_size = 11)
-  pegasas_score_plots[[sig_name]] <- p
-
-  # High-correlation matrix
-  high_cor_file <- file.path(cdir, paste0(sig_name, "_high_cor_matrix.txt"))
-  if (file.exists(high_cor_file)) {
-    cor_df <- tryCatch(
-      read.table(high_cor_file, sep = "\t", header = TRUE,
-                 stringsAsFactors = FALSE),
-      error = function(e) NULL
-    )
-    if (!is.null(cor_df) && nrow(cor_df) > 0) {
-      pegasas_cor_tables[[sig_name]] <- cor_df
-    }
-  }
-}
-
-if (length(pegasas_score_plots) == 0) {
-  cat("No PEGASAS pathway score files found.\n")
-}
-```
-
-```{r pegasas_score_plots, eval=run_pegasas_section && length(pegasas_score_plots) > 0, results='asis'}
-cat("## Pathway KS Enrichment Scores\n\n")
-cat("Per-sample KS enrichment scores (higher = stronger pathway activity).\n\n")
-for (sig in names(pegasas_score_plots)) {
-  cat(sprintf("### %s\n\n", sig))
-  print(pegasas_score_plots[[sig]])
-  cat("\n\n")
-}
-```
-
-```{r pegasas_cor_tables, eval=run_pegasas_section && length(pegasas_cor_tables) > 0, results='asis'}
-cat("## Pathway-Correlated Splicing Events\n\n")
-cat("Events with |Pearson r| > 0.3 and permutation p < 0.0002.\n\n")
-for (sig in names(pegasas_cor_tables)) {
-  cat(sprintf("### %s\n\n", sig))
-  print(
-    datatable(
-      pegasas_cor_tables[[sig]],
-      caption   = paste("High-correlation splicing events:", sig),
-      rownames  = FALSE,
-      filter    = "top",
-      options   = list(pageLength = 15, scrollX = TRUE)
-    )
+  gfile <- file.path(cdir, paste0(sig_name, "_global_cor_matrix.txt"))
+  if (!file.exists(gfile)) next
+  d <- tryCatch(
+    read.table(gfile, sep = "\t", header = TRUE, quote = "", fill = TRUE,
+               stringsAsFactors = FALSE, check.names = FALSE),
+    error = function(e) NULL
   )
-  cat("\n\n")
+  if (is.null(d) || nrow(d) == 0) next
+  d$pathway <- sig_name
+  d$significant <- as.logical(d$significant)
+  cor_list[[sig_name]] <- d
 }
+
+# Keep the most informative rows per pathway (top by |r|) for an HTML that stays
+# responsive. The complete, unfiltered table is on disk in correlation_out/.
+TOP_N <- 500
+cor_display <-
+  if (length(cor_list) > 0) do.call(rbind, lapply(cor_list, function(d) {
+    d <- d[order(-abs(d$pearson_r)), , drop = FALSE]
+    if (nrow(d) > TOP_N) d <- d[seq_len(TOP_N), , drop = FALSE]
+    d
+  })) else data.frame()
+
+if (nrow(cor_display) > 0) {
+  cor_display$event <-
+    paste0(cor_display$GeneName, ":",
+           cor_display$chr, ":", cor_display$strand, ":",
+           cor_display$exonStart, "-", cor_display$exonEnd)
+}
+
+# Compact overview: events tested / significant / strongest correlation per pathway.
+pathway_summary <- if (length(cor_list) > 0) {
+  do.call(rbind, lapply(names(cor_list), function(p) {
+    d <- cor_list[[p]]
+    ar <- abs(d$pearson_r)
+    pv <- d$p_value
+    data.frame(
+      pathway      = p,
+      n_events     = nrow(d),
+      n_significant = sum(d$significant, na.rm = TRUE),
+      max_abs_r    = if (any(is.finite(ar))) max(ar, na.rm = TRUE) else NA_real_,
+      min_p        = if (any(is.finite(pv))) min(pv, na.rm = TRUE) else NA_real_,
+      stringsAsFactors = FALSE, check.names = FALSE
+    )
+  }))
+} else data.frame()
+```
+
+```{r pegasas_score_plotA, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
+# Heatmap of points (bubble heatmap): pathways x samples, sized by KS score,
+# coloured by -log10(p). Samples are faceted by group so the activity pattern
+# can be compared across the two contrast groups at a glance.
+plot_df <- score_df
+plot_df$group  <- factor(plot_df$group, levels = unique(plot_df$group))
+sample_order <- unique(plot_df[order(plot_df$group, plot_df$sample), "sample"])
+plot_df$sample <- factor(plot_df$sample, levels = sample_order)
+path_levels <- names(sort(tapply(plot_df$KS_score, plot_df$pathway, mean)))
+plot_df$pathway <- factor(plot_df$pathway, levels = path_levels)
+
+ggplot(plot_df, aes(x = sample, y = pathway,
+                    size = KS_score, color = neglogp)) +
+  geom_point() +
+  scale_size_continuous(range = c(1, 6), name = "KS score") +
+  scale_color_gradient(low = "#deebf7", high = "#08306b", name = "-log10(p)") +
+  facet_grid(~ group, scales = "free_x", space = "free_x", switch = "x") +
+  labs(title = "Pathway KS activity per sample",
+       x = NULL, y = NULL) +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        panel.grid = element_blank(),
+        strip.background = element_rect(fill = "grey90", color = NA))
+```
+
+```{r pegasas_score_plotB, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
+# Ranked dot-plot (GSEA-style): one axis, pathways ordered by mean KS score;
+# colour = mean KS, size = mean -log10(p). Compact summary of pathway activity.
+rank_df <- aggregate(cbind(KS_score, neglogp) ~ pathway,
+                     data = score_df, FUN = mean, na.rm = TRUE)
+rank_df <- rank_df[order(rank_df$KS_score), , drop = FALSE]
+rank_df$pathway <- factor(rank_df$pathway, levels = rank_df$pathway)
+
+ggplot(rank_df, aes(x = KS_score, y = pathway, color = KS_score, size = neglogp)) +
+  geom_point() +
+  scale_color_gradient(low = "#deebf7", high = "#08306b", name = "mean KS") +
+  scale_size_continuous(range = c(2, 7), name = "mean -log10(p)") +
+  labs(title = "Pathway activity ranking (mean KS score)",
+       x = "Mean KS enrichment score", y = NULL) +
+  theme_bw(base_size = 9) +
+  theme(panel.grid.major.y = element_line(color = "grey90"))
+```
+
+```{r pegasas_no_scores, eval=run_pegasas_section && nrow(score_df) == 0}
+cat("No PEGASAS pathway scores available for this contrast.\n")
+```
+
+```{r pegasas_cor_header, eval=run_pegasas_section && nrow(cor_display) > 0, results='asis'}
+cat("## Pathway–Correlated Splicing Events\n\n")
+cat("All tested events are shown (including non-significant ones), ranked by |Pearson r|.")
+cat(sprintf(" For responsiveness each pathway is capped at the top %d events; the complete, unfiltered table is in `correlation_out/<pathway>/<pathway>_global_cor_matrix.txt`.\n\n", TOP_N))
+cat("Significance: |Pearson r| > 0.3 AND permutation p == 0 within the resolution of the test (p < 1/N_perms). This means the observed correlation is more extreme than ALL permutations. The permutation p is computed only for |r| > 0.3, so p is NA for weaker correlations.\n\n")
+```
+
+```{r pegasas_cor_table, eval=run_pegasas_section && nrow(cor_display) > 0}
+datatable(
+  cor_display[, c("pathway", "event", "GeneName", "chr", "strand",
+                  "exonStart", "exonEnd", "pearson_r", "p_value", "significant")],
+  caption = "Splicing events correlated with pathway activity (all events, top by |r|)",
+  rownames = FALSE, filter = "top",
+  options = list(pageLength = 15, scrollX = TRUE)
+) |>
+  formatRound(c("pearson_r", "p_value"), digits = 4) |>
+  formatStyle("significant", target = "row",
+              backgroundColor = styleEqual(c(TRUE, FALSE), c("#d9f2d9", "#ffffff")))
+```
+
+```{r pegasas_summary_header, eval=run_pegasas_section && nrow(pathway_summary) > 0, results='asis'}
+cat("### Pathway summary\n\n")
+```
+
+```{r pegasas_summary_table, eval=run_pegasas_section && nrow(pathway_summary) > 0}
+datatable(
+  pathway_summary,
+  caption = "Events tested, significant, and strongest correlation per pathway",
+  rownames = FALSE, options = list(pageLength = 15, scrollX = TRUE)
+) |>
+  formatRound(c("max_abs_r", "min_p"), digits = 4)
+```
+
+```{r pegasas_no_cor, eval=run_pegasas_section && nrow(cor_display) == 0, results='asis'}
+cat("No PEGASAS correlation results available for this contrast.\n")
 ```
 
 ---
 
+
+
 # DE + AS Integration
 
 ```{r de_load}
-# Load differential expression results.
-# Expected format: TSV with columns gene_id, log2FC, padj.
-# gene_id should match gene symbols used by rMATS (geneSymbol), MAJIQ (gene_name), and ISAR.
-run_de_section <- !is.null(params$de_results) && file.exists(params$de_results)
-de_results     <- data.frame()
-de_sig_genes   <- character(0)
+# Differential expression results. Gated by run_de_as and de_results.
+# de_results should point to a DGE output directory structured as:
+#   de_results/<DGE_comparison>/<DGE_comparison>_DESeq2_results.csv
+# Pipeline comparison IDs (e.g. NB4_Scramble_vs_NB4_DDX41_sh1) are
+# auto-matched to DGE directory names (e.g. NB4_DDX41_sh1_vs_Scramble)
+# by reversing group order and stripping the shared cell-type prefix.
+# Expected CSV columns: gene_name (HUGO), log2FoldChange, padj.
+# gene_name is used as gene_id to cross-reference with AS gene symbols.
+run_de_section <- isTRUE(params$run_de_as) &&
+                  !is.null(params$de_results) && nzchar(params$de_results) &&
+                  dir.exists(params$de_results)
+de_file     <- NULL
+de_results  <- data.frame()
+de_sig_genes <- character(0)
 
 if (run_de_section) {
-  de_results <- tryCatch(
-    read.delim(params$de_results, stringsAsFactors = FALSE),
-    error = function(e) {
-      message("Could not load DE results: ", conditionMessage(e))
-      data.frame()
+  # Build reverse DGE name from pipeline comparison_id.
+  # e.g. NB4_Scramble_vs_NB4_DDX41_sh1 → NB4_DDX41_sh1_vs_Scramble
+  parts   <- strsplit(params$comparison_id, "_vs_")[[1L]]
+  prefix  <- sub("_.*$", "", parts[1L])               # cell-type prefix (NB4, MSCline, MNC, MSC)
+  g1_clean <- sub(paste0("^", prefix, "_"), "", parts[1L])
+  g2_clean <- sub(paste0("^", prefix, "_"), "", parts[2L])
+  dge_name <- paste0(prefix, "_", g2_clean, "_vs_", g1_clean)
+
+  dge_subdirs <- list.dirs(params$de_results, recursive = FALSE, full.names = TRUE)
+  # Try: (1) exact DGE name, (2) reversed DGE name, (3) any dir containing both
+  # group names
+  for (d in dge_subdirs) {
+    dn <- basename(d)
+    if (dn == dge_name || dn == params$comparison_id ||
+        (grepl(g1_clean, dn, fixed = TRUE) && grepl(g2_clean, dn, fixed = TRUE))) {
+      csvs <- list.files(d, pattern = "\\.csv$", full.names = TRUE, ignore.case = TRUE)
+      if (length(csvs) > 0L) {
+        de_file <- csvs[1L]
+        break
+      }
     }
-  )
+  }
+
+  if (!is.null(de_file)) {
+    de_results <- tryCatch(
+      read.csv(de_file, stringsAsFactors = FALSE),
+      error = function(e) {
+        message("Could not load DE results: ", conditionMessage(e))
+        data.frame()
+      }
+    )
+  }
+}
+
+# Normalise column names: DESeq2 outputs gene_name, log2FoldChange; the report
+# expects gene_id, log2FC, padj.
+if (run_de_section && nrow(de_results) > 0L) {
+  n <- colnames(de_results)
+  # Prefer HUGO gene names for cross-referencing with AS gene symbols.
+  # DGE CSVs often have both gene_id (ENSG) and gene_name (HUGO).
+  # Drop ENSG gene_id first, then rename gene_name → gene_id to avoid dups.
+  if ("gene_name" %in% n && "gene_id" %in% n) {
+    de_results[["gene_id"]] <- NULL   # drop ENSG column
+  }
+  if ("gene_name" %in% n) colnames(de_results)[colnames(de_results) == "gene_name"] <- "gene_id"
+  if ("log2FoldChange" %in% n && !"log2FC" %in% n) colnames(de_results)[colnames(de_results) == "log2FoldChange"] <- "log2FC"
 
   # Validate required columns
   required_cols <- c("gene_id", "log2FC", "padj")
   missing_cols  <- setdiff(required_cols, colnames(de_results))
-  if (length(missing_cols) > 0) {
+  if (length(missing_cols) > 0L) {
     warning("DE results file is missing columns: ", paste(missing_cols, collapse = ", "),
             ". DE+AS section will be skipped.")
     run_de_section <- FALSE
@@ -1607,8 +1738,10 @@ if ("EventType" %in% colnames(dual_hits_ann) && any(!is.na(dual_hits_ann$EventTy
 ```
 
 ```{r de_as_skip_msg, eval=!run_de_section}
-cat("DE+AS integration requires a `--de_results` TSV file with columns: gene_id, log2FC, padj.  \n")
-cat("Pass the path via `--de_results` to enable this section.\n")
+cat("DE+AS integration is disabled.\n")
+cat("Enable with two lines in params.yaml:\n")
+cat("- `run_de_as: true`\n")
+cat("- `de_results: /path/to/dge/`  (directory with subdirs per DGE comparison, each containing `*DESeq2_results.csv`)\n")
 ```
 
 ---
