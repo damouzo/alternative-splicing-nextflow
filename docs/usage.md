@@ -210,6 +210,8 @@ ERROR: Chromosome naming mismatch detected
 - Workaround: Use more lenient significance thresholds (e.g., FDR < 0.1) but report as exploratory
 - **Do not**: Pool technical replicates as biological replicates
 
+The report automatically shows a **Low replication warning** when either group has `n < 4` samples.
+
 ---
 
 ### MAJIQ License Missing
@@ -431,7 +433,7 @@ nextflow run main.nf \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--rmats_novel_ss` | boolean | `false` | Enable novel splice site detection (increases runtime ~3-5×) |
+| `--rmats_novel_ss` | boolean | `true` | Detect unannotated (de novo) splice sites. Relevant for spliceosome mutants (e.g. DDX41/DHX34); increases runtime ~3-5×. MAJIQ covers de novo natively, so rMATS adds a second statistical method (binomial/LRT). De novo events are flagged as "de novo" in the report and excluded from sashimi plots |
 | `--rmats_cstat` | float | `0.0001` | rMATS Cstat significance threshold |
 | `--rmats_min_intron_length` | integer | `50` | Minimum intron length |
 | `--rmats_max_exon_length` | integer | `500` | Maximum exon length for filtering |
@@ -470,12 +472,13 @@ Requires `--run_sashimi true`. Generates arc plots via rmats2sashimiplot for top
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--run_sashimi` | boolean | `true` | Enable sashimi plot generation |
+| `--run_sashimi` | boolean | `false` | Enable sashimi plot generation |
 | `--sashimi_top_n` | integer | `10` | Number of top events to plot |
 | `--sashimi_group1_label` | string | `'group1'` | Label for group1 in plots |
 | `--sashimi_group2_label` | string | `'group2'` | Label for group2 in plots |
 | `--sashimi_exon_scale` | integer | `1` | Exon scale factor |
 | `--sashimi_intron_scale` | integer | `5` | Intron scale factor |
+| `--sashimi_png_dpi` | integer | `150` | Resolution of the PNGs embedded in the HTML report. Vector PDFs are still published under `sashimi/<comparison_id>/` |
 
 ```bash
 nextflow run main.nf -profile docker \
@@ -533,6 +536,8 @@ nextflow run main.nf -profile docker \
 |-----------|------|---------|-------------|
 | `--nfcore_multiqc_dir` | path | `null` | Path to nf-core/rnaseq MultiQC output directory |
 | `--organism` | string | `'human'` | Organism for GO/KEGG enrichment (`human` or `mouse`) |
+| `--report_fdr_cutoff` | float | `0.05` | FDR cutoff for rMATS/ISAR significance in the report |
+| `--report_dpsi_cutoff` | float | `0.1` | |ΔΨ| / |dIF| cutoff for rMATS/ISAR significance in the report |
 
 ### Container Overrides
 
@@ -594,6 +599,22 @@ nextflow run alternative-splicing-nextflow -r v1.0.0 -params-file params.yaml
 # Or use a specific git commit
 nextflow run alternative-splicing-nextflow -r a1b2c3d -params-file params.yaml
 ```
+
+### Experimental design and batch structure
+
+Each contrast (e.g. WT vs KO of the same cell line) is intended to be generated
+within a single experiment / technical batch. Because the batch is **nested
+inside the contrast**, it does not confound that comparison: the two groups
+being tested share the same batch, so any batch effect is common to both arms
+and does not bias the differential call. This is worth stating explicitly in a
+paper, e.g. *"each comparison was performed within a single sequencing
+batch/experiment, avoiding batch confounding"*.
+
+Note that the library-size normalisation performed by nf-core/rnaseq (STAR +
+Salmon) does **not** substitute for explicit batch adjustment. Batch adjustment
+(e.g. ComBat-seq or including batch as a covariate) only matters when samples
+come from multiple batches that overlap across groups; it is not required here
+thanks to the nested design.
 
 ### Parameter Files vs Command Line
 

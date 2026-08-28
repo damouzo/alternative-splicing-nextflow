@@ -140,6 +140,50 @@ Effort: low.
 
 ---
 
+## Iteración de robustez (revisión PI) — DONE
+
+- [x] rMATS `--rmats_novel_ss` default `true` (de novo splice site detection)
+- [x] Report HTML ligero: sashimi PDFs → PNG embebido (`--sashimi_png_dpi`, default 150)
+- [x] Aviso automático de baja replicación (n < 4 por grupo) en el report
+- [x] Disclaimer de validación ortogonal por sección
+- [x] PCA de PSI: top-2000 por varianza (no `head(2000)`)
+- [x] Overlap robusto: normalización de símbolos (case/trim) + mapeo a ENSG vía diccionario rMATS
+- [x] Documentación (batch/confusores, params, CHANGELOG)
+
+---
+
+## New ideas / futuro (no implementado)
+
+### F1 — Test de significancia del solapamiento cross-tool
+`phyper`/Fisher para pares + `SuperExactTest` para intersecciones múltiples.
+Background = intersección de los universos **testados** de cada herramienta:
+rMATS = genes con FDR válido; MAJIQ = gene_name únicos; ISAR = genes de
+`top_isoform_switches.csv`; LeafCutter = genes en clusters con `status == "OK"`.
+Requiere añadir `SuperExactTest` al contenedor report.
+
+### F2 — Matching por coordenadas de evento
+Solo gen no basta si se quiere reivindicar concordancia cross-tool a nivel de
+evento: emparejar por coordenadas genómicas en el subconjunto de top hits.
+
+### F3 — Estratificación por tamaño de efecto
+Tiers |ΔΨ| ≥ 0.1 "candidate" y ≥ 0.3 "high confidence" en tablas rMATS/MAJIQ/ISAR.
+
+### F4 — SpliceAI/Pangolin
+Interpretación mecanística de novo sobre regiones de eventos significativos
+(no solapamiento con rMATS/MAJIQ).
+
+### F5 — Recurrencia cross-contraste (punto 1 del PI)
+Si se monta una "lista maestra" de genes splicing-afectados en ≥N contrastes,
+testar si la recurrencia es mayor de lo esperado por azar con
+binomial/hipergeométrico sobre el número de contrastes (no sobre p-valores
+agrupados). Los FDR internos por comparación se mantienen como están.
+
+### F6 — Revisar disponibilidad de `gene_id`
+(Opcional) Revisar si `gene_id` está disponible y consistente en los 4 outputs
+para cruces por ENSG.
+
+---
+
 ## Notes (kept from previous task.todo)
 
 - PEGASAS container must be built from containers/pegasas/Dockerfile and pushed to

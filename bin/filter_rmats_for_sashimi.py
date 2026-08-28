@@ -17,11 +17,35 @@ import sys
 
 EVENT_TYPES = ["SE", "A5SS", "A3SS", "MXE", "RI"]
 
+# Coordinate columns that must be non-negative for sashimi plotting. Novel
+# splice sites (--novelSS) can yield negative coordinates that
+# rmats2sashimiplot cannot populate; those events are excluded here.
+COORD_COLS = [
+    "exonStart_0base", "exonEnd",
+    "upstreamES", "upstreamEE", "downstreamES", "downstreamEE",
+    "longExonStart_0base", "longExonEnd", "shortES", "shortEE",
+    "flankingES", "flankingEE",
+    "1stExonStart_0base", "1stExonEnd", "2ndExonStart_0base", "2ndExonEnd",
+    "riExonStart_0base", "riExonEnd",
+    "intronStart", "intronEnd",
+]
+
 
 def priority_score(fdr: float, dpsi: float) -> float:
     """Higher is more significant + larger effect."""
     fdr_clamped = max(fdr, 1e-300)
     return -math.log10(fdr_clamped) * abs(dpsi)
+
+
+def has_novel_coord(parts: list, coord_idx: list) -> bool:
+    """True if any coordinate column for this event is negative (de novo site)."""
+    for idx in coord_idx:
+        try:
+            if idx < len(parts) and float(parts[idx]) < 0:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def filter_events(rmats_dir: str, out_dir: str, top_n: int,
@@ -45,7 +69,11 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
                   file=sys.stderr)
             continue
 
+        # Indices of coordinate columns actually present in this file
+        coord_idx = [header.index(c) for c in COORD_COLS if c in header]
+
         candidates = []
+        excluded_novel = 0
         with open(jc_file) as fh:
             fh.readline()  # skip header
             for line in fh:
@@ -58,9 +86,19 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
                 except ValueError:
                     continue
 
+                # Skip unannotated (de novo) splice-site events: negative
+                # coordinates cannot be drawn by rmats2sashimiplot.
+                if has_novel_coord(parts, coord_idx):
+                    excluded_novel += 1
+                    continue
+
                 if fdr_val <= fdr_cutoff and abs(dpsi_val) >= dpsi_cutoff:
                     score = priority_score(fdr_val, dpsi_val)
                     candidates.append((score, line))
+
+        if excluded_novel > 0:
+            print(f"[WARN] {event_type}: excluded {excluded_novel} novel-splice-site events "
+                  "with negative coordinates", file=sys.stderr)
 
         if not candidates:
             continue

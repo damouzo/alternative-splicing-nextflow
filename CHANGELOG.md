@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- `rmats_novel_ss` now defaults to `true`: rMATS detects unannotated (de novo)
+  splice sites. Relevant for spliceosome mutants (DDX41/DHX34); increases
+  runtime ~3-5x. De novo events are flagged as "de novo" in the report and
+  excluded from sashimi plots (negative coordinates cannot be drawn).
+- The HTML report now embeds sashimi plots as PNGs (`data:image/png` at
+  `--sashimi_png_dpi`, default 150) instead of base64 PDFs, making the report
+  light and self-contained. Vector PDFs are still published under
+  `sashimi/<comparison_id>/`. Falls back to embedded PDFs when `pdftoppm` is
+  unavailable (older report container).
+- Added automatic quality notices in the report: a low-replication warning
+  (n < 4 per group) and an orthogonal-validation disclaimer at the end of each
+  tool section.
+- PSI PCA now selects the top 2000 events by per-event variance instead of the
+  first `head(2000)`, better reflecting global PSI variability.
+- Cross-tool overlap now normalises gene symbols (trim/case) and maps symbols
+  to unique ENSG IDs via the rMATS geneSymbol→GeneID dictionary, making the
+  UpSet/pairwise overlap robust to case and alias mismatches.
+- `--report_fdr_cutoff` / `--report_dpsi_cutoff` documented as configurable
+  report thresholds.
+- `run_sashimi` and `run_leafcutter` now default to `false` in `nextflow.config`.
+  They must now be enabled explicitly via `--run_sashimi true` /
+  `--run_leafcutter true` or the params file.
+- Updated `assets/params.yaml` template to document the optional tool toggles and
+  their required inputs (`--salmon_merged_tpm` for PEGASAS, `--de_results` for
+  the DE + AS integration).
+
+### Added
+- `--sashimi_png_dpi` parameter (default `150`) for the resolution of sashimi
+  PNGs embedded in the HTML report.
+- `docs/usage.md`: "Experimental design and batch structure" best-practices
+  subsection and low-replication note under Common Issues.
+
+### Deferred
+- Cross-tool overlap significance testing (`phyper`/`SuperExactTest`),
+  event-coordinate matching, effect-size tiers, and SpliceAI/Pangolin are
+  tracked in `task.todo` for a future iteration.
+
 ## [1.0.0] - 2024-04-09
 
 Initial stable release of alternative-splicing-nextflow - a modular Nextflow pipeline for comprehensive differential alternative splicing analysis from nf-core/rnaseq outputs.

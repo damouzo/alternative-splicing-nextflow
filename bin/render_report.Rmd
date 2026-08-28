@@ -20,6 +20,7 @@ params:
   dpsi_cutoff: 0.1
   majiq_prob_threshold: 0.95
   majiq_dpsi_cutoff: 0.2
+  sashimi_png_dpi: 150
   nfcore_multiqc_dir: NULL
   organism: "human"
   de_results: NULL
@@ -50,6 +51,22 @@ majiq_results     <- data.frame()
 isar_switches     <- data.frame()
 isar_consequences <- data.frame()
 leafcutter_clusters <- data.frame()
+
+# Replication sizes per group (empty arrays when a tool is disabled).
+n1_samples <- length(as.character(unlist(params$group1_sample_ids)))
+n2_samples <- length(as.character(unlist(params$group2_sample_ids)))
+low_rep    <- (n1_samples > 0 && n1_samples < 4) ||
+              (n2_samples > 0 && n2_samples < 4)
+
+# Orthogonal validation disclaimer (shown in Summary and at the end of each
+# tool section so section-level readers do not miss it).
+validation_note <- paste0(
+  "<em>All splicing calls in this report are computational predictions from ",
+  "short-read RNA-seq. Top candidates intended for downstream biological ",
+  "interpretation or publication should be orthogonally validated ",
+  "(e.g., RT-PCR/qPCR across the relevant junctions, or long-read sequencing) ",
+  "before being reported as confirmed splicing events.</em>"
+)
 
 wrap_axis_labels <- function(x, width = 55) {
   vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
@@ -83,6 +100,20 @@ This report presents differential alternative splicing analysis results for comp
 - rMATS / ISAR |ΔΨ| / |dIF| cutoff: `r params$dpsi_cutoff`
 - MAJIQ P(|ΔΨ| > threshold) cutoff: `r params$majiq_prob_threshold`
 - MAJIQ |ΔΨ| cutoff: `r params$majiq_dpsi_cutoff`
+
+```{r summary_warnings, results='asis'}
+if (low_rep) {
+  cat(sprintf(
+    "**Low replication warning:** this comparison has n=%d vs n=%d (groups 1/2). ",
+    n1_samples, n2_samples
+  ))
+  cat(
+    "Statistical power for detecting moderate ΔΨ is limited; ",
+    "interpret borderline calls with caution.\n\n"
+  )
+}
+cat(sprintf("%s\n\n", validation_note))
+```
 
 ---
 
@@ -206,12 +237,34 @@ qc_combined %>%
 event_types <- c("SE", "A5SS", "A3SS", "MXE", "RI")
 rmats_results_list <- list()
 
+# Coordinate columns per event type (rMATS MATS.JC.txt naming). A negative
+# value marks an unannotated (de novo) splice site from --novelSS.
+coord_cols <- list(
+  SE    = c("exonStart_0base", "exonEnd", "upstreamES", "upstreamEE", "downstreamES", "downstreamEE"),
+  A5SS  = c("longExonStart_0base", "longExonEnd", "shortES", "shortEE", "flankingES", "flankingEE"),
+  A3SS  = c("longExonStart_0base", "longExonEnd", "shortES", "shortEE", "flankingES", "flankingEE"),
+  MXE   = c("1stExonStart_0base", "1stExonEnd", "2ndExonStart_0base", "2ndExonEnd",
+            "upstreamES", "upstreamEE", "downstreamES", "downstreamEE"),
+  RI    = c("riExonStart_0base", "riExonEnd", "upstreamES", "upstreamEE", "downstreamES", "downstreamEE")
+)
+
+marker_novel_sites <- function(df, event_type) {
+  cols <- coord_cols[[event_type]]
+  cols <- intersect(cols, colnames(df))
+  if (length(cols) == 0) return(rep(FALSE, nrow(df)))
+  sapply(seq_len(nrow(df)), function(i) {
+    vals <- suppressWarnings(as.numeric(df[i, cols]))
+    any(vals < 0, na.rm = TRUE)
+  })
+}
+
 for (event_type in event_types) {
   jc_file <- file.path(params$rmats_dir, paste0(event_type, ".MATS.JC.txt"))
   if (file.exists(jc_file)) {
     df <- read.delim(jc_file, stringsAsFactors = FALSE)
     if (nrow(df) > 0) {
       df$EventType <- event_type
+      df$NovelSite <- marker_novel_sites(df, event_type)
       rmats_results_list[[event_type]] <- df
     }
   }
@@ -241,6 +294,14 @@ summary_table <- all_rmats %>%
   )
 
 kable(summary_table, caption = "rMATS Event Summary by Event Type")
+
+n_novel <- sum(all_rmats$NovelSite, na.rm = TRUE)
+if (n_novel > 0) {
+  cat(sprintf(
+    "\n\n%d events involve unannotated (de novo) splice sites — see rMATS table.\n",
+    n_novel
+  ))
+}
 ```
 
 ```{r rmats_volcano, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=8}
@@ -287,12 +348,15 @@ all_rmats %>%
 top_events <- all_rmats %>%
   filter(Significant) %>%
   arrange(desc(priority_score)) %>%
-  select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference, priority_score) %>%
-  head(50)
+  select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference, priority_score, NovelSite) %>%
+  head(50) %>%
+  mutate(
+    SiteType = ifelse(NovelSite, "de novo", "annotated")
+  )
 
 if (nrow(top_events) > 0) {
   datatable(
-    top_events,
+    top_events %>% select(-NovelSite),
     caption  = "Top 50 significant rMATS events ranked by priority score",
     options  = list(pageLength = 10, scrollX = TRUE),
     rownames = FALSE
@@ -335,26 +399,30 @@ pca_events_raw <- if (length(pca_event_type) > 0) {
   all_rmats %>%
     filter(EventType == pca_event_type[1],
            !is.na(IncLevel1), !is.na(IncLevel2),
-           IncLevel1 != "NA", IncLevel2 != "NA") %>%
-    head(2000)   # cap for performance
+           IncLevel1 != "NA", IncLevel2 != "NA")
 } else data.frame()
 
 if (nrow(pca_events_raw) >= 10) {
-  psi_list <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
+  # Parse the full per-event PSI vector once so we can rank by variance.
+  psi_all <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
     c(parse_psi_vec(pca_events_raw$IncLevel1[i]),
       parse_psi_vec(pca_events_raw$IncLevel2[i]))
   })
 
-  n_samples <- length(psi_list[[1]])
+  n_samples <- length(psi_all[[1]])
 
-  # Keep events with valid PSI in >= 3 samples; missing samples in the
-  # remaining positions are imputed per-event below.
-  valid_events <- sapply(psi_list, function(v) {
+  # Keep events with valid PSI in >= 3 samples, then rank by per-event variance
+  # across samples and take the 2000 most variable events (not head(2000)).
+  valid_events <- sapply(psi_all, function(v) {
     length(v) == n_samples && sum(!is.na(v)) >= 3
   })
-  psi_list <- psi_list[valid_events]
+  psi_all <- psi_all[valid_events]
 
-  if (length(psi_list) >= 10) {
+  if (length(psi_all) >= 10) {
+    event_variance <- sapply(psi_all, function(v) var(v, na.rm = TRUE))
+    keep_idx <- order(event_variance, decreasing = TRUE)[seq_len(min(2000, length(psi_all)))]
+    psi_list <- psi_all[keep_idx]
+
     psi_mat <- do.call(rbind, psi_list)   # events x samples
 
     # Impute remaining NAs with the per-event median; preserves each event's
@@ -365,8 +433,9 @@ if (nrow(pca_events_raw) >= 10) {
       row
     }) %>% t()
 
-    n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[which(valid_events)[1]]))
-    n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[which(valid_events)[1]]))
+    keep_row <- which(valid_events)[keep_idx[1]]
+    n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[keep_row]))
+    n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[keep_row]))
 
     sample_labels <- c(
       resolve_sample_labels(n1, params$group1_sample_ids, "Group1"),
@@ -500,22 +569,43 @@ if (length(sashimi_pdfs) > 0) {
     out
   }
 
-  # Embed PDFs as data URIs so report stays self-contained.
-  sashimi_data_uris <- vapply(sashimi_pdfs, function(pdf_path) {
+  # Convert each PDF to a PNG (~150 dpi) so the HTML stays light and
+  # self-contained. Falls back to embedding the PDF when pdftoppm is missing
+  # (older report container).
+  has_pdftoppm <- nzchar(Sys.which("pdftoppm"))
+
+  embed_sashimi <- function(pdf_path) {
     pdf_size <- file.info(pdf_path)$size
-    if (is.na(pdf_size) || pdf_size <= 0) {
-      return(NA_character_)
+    if (is.na(pdf_size) || pdf_size <= 0) return(NA_character_)
+
+    if (has_pdftoppm) {
+      tmpdir <- tempfile("sashimi_png_")
+      dir.create(tmpdir, showWarnings = FALSE)
+      out_stem <- file.path(tmpdir, "plot")
+      status <- system2("pdftoppm", c("-png", "-r", as.character(params$sashimi_png_dpi),
+                                      shQuote(pdf_path), shQuote(out_stem)),
+                        stdout = FALSE, stderr = FALSE)
+      png_files <- list.files(tmpdir, pattern = "\\.png$", full.names = TRUE)
+      if (status == 0 && length(png_files) > 0) {
+        png_size <- file.info(png_files[1])$size
+        raw_png  <- readBin(png_files[1], what = "raw", n = png_size)
+        return(paste0("data:image/png;base64,", jsonlite::base64_enc(raw_png)))
+      }
     }
+
+    # Fallback: embed the vector PDF directly
     raw_pdf <- readBin(pdf_path, what = "raw", n = pdf_size)
-    encoded <- jsonlite::base64_enc(raw_pdf)
-    paste0("data:application/pdf;base64,", encoded)
-  }, character(1))
+    paste0("data:application/pdf;base64,", jsonlite::base64_enc(raw_pdf))
+  }
+
+  sashimi_data_uris <- vapply(sashimi_pdfs, embed_sashimi, character(1))
 
   sashimi_table <- data.frame(
     file = basename(sashimi_pdfs),
     event_type = event_from_path(sashimi_pdfs),
     gene = extract_gene_symbol(basename(sashimi_pdfs)),
     data_uri = sashimi_data_uris,
+    mime = ifelse(grepl("^data:image/png", sashimi_data_uris), "image/png", "application/pdf"),
     stringsAsFactors = FALSE
   ) %>%
     dplyr::arrange(event_type, gene, file)
@@ -541,7 +631,8 @@ browser_data <- sashimi_table %>%
     event_type = ifelse(is.na(event_type), "UNKNOWN", event_type),
     gene = ifelse(is.na(gene), "UNKNOWN", gene),
     file = file,
-    data_uri = data_uri
+    data_uri = data_uri,
+    mime = ifelse(is.na(mime), "application/pdf", mime)
   )
 
 widget_id <- paste0(
@@ -559,9 +650,9 @@ cat(
     '<label style="font-size:0.9em;">Event type<br><select id="', widget_id, '_event"></select></label>',
     '<label style="font-size:0.9em;">Gene<br><select id="', widget_id, '_gene"></select></label>',
     '</div>',
-    '<object id="', widget_id, '_frame" type="application/pdf" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px;">',
-    '<p style="padding:10px;">Inline PDF preview is not available in this browser. Use the file selector and open the report directory directly from filesystem, or use a browser with PDF support.</p>',
-    '</object>',
+    '<div class="', widget_id, '_holder" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px; overflow:auto; background:#fafafa;">',
+    '<p style="padding:10px;">Select an event type and gene above to preview the sashimi plot.</p>',
+    '</div>',
     '</div>'
   )
 )
@@ -574,12 +665,31 @@ cat(
     'if(!root || !Array.isArray(data) || data.length===0){return;}',
     'const eventSel = document.getElementById("', widget_id, '_event");',
     'const geneSel = document.getElementById("', widget_id, '_gene");',
-    'const frame = document.getElementById("', widget_id, '_frame");',
+    'const holder = root.getElementsByClassName("', widget_id, '_holder")[0];',
     'const uniq = (arr) => Array.from(new Set(arr));',
     'const sortText = (arr) => arr.sort((a,b) => String(a).localeCompare(String(b)));',
     'const setOptions = (sel, values) => {',
     '  sel.innerHTML = "";',
     '  values.forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });',
+    '};',
+    'const renderPreview = (row) => {',
+    '  holder.innerHTML = "";',
+    '  if(!row){ holder.innerHTML = "<p style=\\"padding:10px;\\">No plot available.</p>"; return; }',
+    '  if(row.mime === "image/png"){',
+    '    const img = document.createElement("img");',
+    '    img.src = row.data_uri;',
+    '    img.style.maxWidth = "100%";',
+    '    img.style.display = "block";',
+    '    img.style.margin = "0 auto";',
+    '    holder.appendChild(img);',
+    '  } else {',
+    '    const obj = document.createElement("object");',
+    '    obj.type = "application/pdf";',
+    '    obj.data = row.data_uri;',
+    '    obj.style.width = "100%";',
+    '    obj.style.height = "760px";',
+    '    holder.appendChild(obj);',
+    '  }',
     '};',
     'const eventValues = sortText(uniq(data.map(d => d.event_type)));',
     'setOptions(eventSel, eventValues);',
@@ -590,8 +700,7 @@ cat(
     '};',
     'const refreshPreview = () => {',
     '  const row = currentRows().find(d => d.gene === geneSel.value);',
-    '  if(!row){ return; }',
-    '  frame.data = row.data_uri;',
+    '  renderPreview(row);',
     '};',
     'eventSel.addEventListener("change", () => { refreshGenes(); refreshPreview(); });',
     'geneSel.addEventListener("change", refreshPreview);',
@@ -599,6 +708,12 @@ cat(
     '})();</script>'
   )
 )
+```
+
+Vector PDFs for publication are published under `outdir/sashimi/<comparison_id>/`.
+
+```{r validation_note_rmats, results='asis', eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
+cat(sprintf("%s\n\n", validation_note))
 ```
 
 ---
@@ -714,6 +829,10 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
+```{r validation_note_majiq, results='asis', eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
+cat(sprintf("%s\n\n", validation_note))
+```
+
 ---
 
 # IsoformSwitchAnalyzeR Results
@@ -804,6 +923,10 @@ if (length(cols_to_show) > 0) {
   }
   dt
 }
+```
+
+```{r validation_note_isar, results='asis', eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
+cat(sprintf("%s\n\n", validation_note))
 ```
 
 ---
@@ -902,48 +1025,123 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
+```{r validation_note_leafcutter, results='asis', eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
+cat(sprintf("%s\n\n", validation_note))
+```
+
 ---
 
 # Cross-Tool Overlap
 
 ```{r overlap_build}
-# Build per-tool gene sets of significant AS genes
+# Build per-tool gene sets of significant AS genes.
+# Symbols are normalised (trim/case) and, when a symbol maps to a unique ENSG,
+# the ENSG is used as the canonical key so that case/alias mismatches across
+# tools do not inflate (or deflate) the apparent overlap.
 gene_sets <- list()
 active_tool_sig_sets <- list()
+active_tool_sig_symbols <- list()
 
+# --- symbol -> ENSG dictionary (unique mappings only) ---
+pair_list <- list()
+if (nrow(all_rmats) > 0 && all(c("geneSymbol", "GeneID") %in% colnames(all_rmats))) {
+  pair_list[["rMATS"]] <- data.frame(sym = as.character(all_rmats$geneSymbol),
+                                     gid = as.character(all_rmats$GeneID),
+                                     stringsAsFactors = FALSE)
+}
+if (nrow(majiq_results) > 0 && all(c("gene_name", "gene_id") %in% colnames(majiq_results))) {
+  pair_list[["MAJIQ"]] <- data.frame(sym = as.character(majiq_results$gene_name),
+                                     gid = as.character(majiq_results$gene_id),
+                                     stringsAsFactors = FALSE)
+}
+if (nrow(isar_switches) > 0 && all(c("gene_name", "gene_id") %in% colnames(isar_switches))) {
+  pair_list[["ISAR"]] <- data.frame(sym = as.character(isar_switches$gene_name),
+                                    gid = as.character(isar_switches$gene_id),
+                                    stringsAsFactors = FALSE)
+}
+pairs <- if (length(pair_list) > 0) {
+  do.call(rbind, pair_list)
+} else {
+  data.frame(sym = character(), gid = character(), stringsAsFactors = FALSE)
+}
+pairs$sym <- toupper(trimws(pairs$sym))
+pairs$gid <- trimws(as.character(pairs$gid))
+pairs <- pairs[!is.na(pairs$sym) & pairs$sym != "" & !is.na(pairs$gid) &
+               pairs$gid != "" & grepl("^ENS", pairs$gid), , drop = FALSE]
+
+sym_to_ensg <- list()
+ensg_to_sym <- list()
+if (nrow(pairs) > 0) {
+  n_uniq <- tapply(pairs$gid, pairs$sym, function(x) length(unique(x)))
+  pairs <- pairs[pairs$sym %in% names(n_uniq)[n_uniq == 1], , drop = FALSE]
+  pairs <- pairs[!duplicated(pairs$sym), , drop = FALSE]
+  sym_to_ensg <- as.list(setNames(pairs$gid, pairs$sym))
+  ensg_to_sym <- as.list(setNames(pairs$sym, pairs$gid))
+}
+
+canonical_key <- function(x) {
+  s <- toupper(trimws(as.character(x)))
+  vapply(s, function(k) {
+    if (nzchar(k) && !is.null(sym_to_ensg[[k]])) sym_to_ensg[[k]] else k
+  }, character(1))
+}
+key_to_display <- function(k) {
+  vapply(as.character(k), function(z) {
+    if (!is.null(ensg_to_sym[[z]])) ensg_to_sym[[z]] else toupper(trimws(z))
+  }, character(1))
+}
+
+# rMATS
 rmats_sig_genes <- character(0)
+rmats_sig_keys <- character(0)
 if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
   rmats_sig_genes <- unique(all_rmats$geneSymbol[
     all_rmats$Significant & !is.na(all_rmats$geneSymbol) & all_rmats$geneSymbol != ""
   ])
-  if (length(rmats_sig_genes) > 0) gene_sets[["rMATS"]] <- rmats_sig_genes
+  if (length(rmats_sig_genes) > 0) {
+    rmats_sig_keys <- canonical_key(rmats_sig_genes)
+    gene_sets[["rMATS"]] <- rmats_sig_keys
+    active_tool_sig_symbols[["rMATS"]] <- toupper(trimws(rmats_sig_genes))
+  }
 }
-if (!is.null(params$rmats_dir)) active_tool_sig_sets[["rMATS"]] <- rmats_sig_genes
+if (!is.null(params$rmats_dir)) active_tool_sig_sets[["rMATS"]] <- rmats_sig_keys
 
+# MAJIQ
 majiq_sig_genes <- character(0)
+majiq_sig_keys <- character(0)
 if (nrow(majiq_results) > 0 && "gene_name" %in% colnames(majiq_results)) {
   majiq_mask <- majiq_results$Significant & !is.na(majiq_results$gene_name) & trimws(majiq_results$gene_name) != ""
   if ("InformativeGene" %in% colnames(majiq_results)) {
     majiq_mask <- majiq_mask & majiq_results$InformativeGene
   }
-  majiq_sig_genes <- unique(majiq_results$gene_name[
-    majiq_mask
-  ])
-  if (length(majiq_sig_genes) > 0) gene_sets[["MAJIQ"]] <- majiq_sig_genes
+  majiq_sig_genes <- unique(majiq_results$gene_name[majiq_mask])
+  if (length(majiq_sig_genes) > 0) {
+    majiq_sig_keys <- canonical_key(majiq_sig_genes)
+    gene_sets[["MAJIQ"]] <- majiq_sig_keys
+    active_tool_sig_symbols[["MAJIQ"]] <- toupper(trimws(majiq_sig_genes))
+  }
 }
-if (!is.null(params$majiq_dir)) active_tool_sig_sets[["MAJIQ"]] <- majiq_sig_genes
+if (!is.null(params$majiq_dir)) active_tool_sig_sets[["MAJIQ"]] <- majiq_sig_keys
 
+# ISAR
 isar_sig_genes <- character(0)
+isar_sig_keys <- character(0)
 if (nrow(isar_switches) > 0 && "gene_name" %in% colnames(isar_switches) &&
     "significant" %in% colnames(isar_switches)) {
   isar_sig_genes <- unique(isar_switches$gene_name[
     isar_switches$significant & !is.na(isar_switches$gene_name)
   ])
-  if (length(isar_sig_genes) > 0) gene_sets[["ISAR"]] <- isar_sig_genes
+  if (length(isar_sig_genes) > 0) {
+    isar_sig_keys <- canonical_key(isar_sig_genes)
+    gene_sets[["ISAR"]] <- isar_sig_keys
+    active_tool_sig_symbols[["ISAR"]] <- toupper(trimws(isar_sig_genes))
+  }
 }
-if (!is.null(params$isar_dir)) active_tool_sig_sets[["ISAR"]] <- isar_sig_genes
+if (!is.null(params$isar_dir)) active_tool_sig_sets[["ISAR"]] <- isar_sig_keys
 
+# LeafCutter (no ENSG) — normalise symbols and map through the dictionary when they match
 leafcutter_sig_genes <- character(0)
+leafcutter_sig_keys <- character(0)
 if (nrow(leafcutter_clusters) > 0 &&
     "genes" %in% colnames(leafcutter_clusters) &&
     "Significant" %in% colnames(leafcutter_clusters)) {
@@ -952,12 +1150,22 @@ if (nrow(leafcutter_clusters) > 0 &&
   ]
   leafcutter_sig_genes <- unique(trimws(unlist(strsplit(lc_genes_raw, ","))))
   leafcutter_sig_genes <- leafcutter_sig_genes[leafcutter_sig_genes != ""]
-  if (length(leafcutter_sig_genes) > 0) gene_sets[["LeafCutter"]] <- leafcutter_sig_genes
+  if (length(leafcutter_sig_genes) > 0) {
+    leafcutter_sig_keys <- canonical_key(leafcutter_sig_genes)
+    gene_sets[["LeafCutter"]] <- leafcutter_sig_keys
+    active_tool_sig_symbols[["LeafCutter"]] <- toupper(trimws(leafcutter_sig_genes))
+  }
 }
-if (!is.null(params$leafcutter_dir)) active_tool_sig_sets[["LeafCutter"]] <- leafcutter_sig_genes
+if (!is.null(params$leafcutter_dir)) active_tool_sig_sets[["LeafCutter"]] <- leafcutter_sig_keys
 
-shared_sig_genes <- if (length(active_tool_sig_sets) >= 2) {
+# Robust cross-tool core: intersect canonical keys; report display symbols
+shared_sig_keys <- if (length(active_tool_sig_sets) >= 2) {
   Reduce(intersect, active_tool_sig_sets)
+} else {
+  character(0)
+}
+shared_sig_genes <- if (length(shared_sig_keys) > 0) {
+  unique(key_to_display(shared_sig_keys))
 } else {
   character(0)
 }
@@ -991,13 +1199,13 @@ upset(
 ```
 
 ```{r overlap_summary, eval=length(active_tool_sig_sets) >= 2}
-# Genes found significant by all available tools
-all_tools_genes <- Reduce(intersect, active_tool_sig_sets)
+# Genes found significant by all available tools (canonical keys), shown as symbols
+all_tools_genes_keys <- Reduce(intersect, active_tool_sig_sets)
 cat(sprintf("Genes significant in all %d active tools: %d\n\n",
-            length(active_tool_sig_sets), length(all_tools_genes)))
+            length(active_tool_sig_sets), length(all_tools_genes_keys)))
 
-if (length(all_tools_genes) > 0) {
-  cat("Genes:", paste(sort(all_tools_genes), collapse = ", "), "\n")
+if (length(all_tools_genes_keys) > 0) {
+  cat("Genes:", paste(sort(key_to_display(all_tools_genes_keys)), collapse = ", "), "\n")
 }
 ```
 
@@ -1320,8 +1528,13 @@ if (length(active_tool_sig_sets) == 0) {
   cat("No active tools available for tool-specific ORA.\n")
 } else {
   for (tool_name in names(active_tool_sig_sets)) {
+    tool_genes <- if (!is.null(active_tool_sig_symbols[[tool_name]])) {
+      active_tool_sig_symbols[[tool_name]]
+    } else {
+      character(0)
+    }
     tool_res <- run_ora_for_set(
-      active_tool_sig_sets[[tool_name]],
+      tool_genes,
       paste0(tool_name, " significant genes")
     )
     render_ora_result(tool_res, heading_level = 3)
@@ -1332,7 +1545,7 @@ if (length(active_tool_sig_sets) == 0) {
 ## ORA global (union of active tools)
 
 ```{r enrichment_global, results='asis'}
-global_sig_genes <- unique(unlist(active_tool_sig_sets, use.names = FALSE))
+global_sig_genes <- unique(unlist(active_tool_sig_symbols, use.names = FALSE))
 global_res <- run_ora_for_set(global_sig_genes, "Global AS genes (union across active tools)")
 render_ora_result(global_res, heading_level = 3)
 ```

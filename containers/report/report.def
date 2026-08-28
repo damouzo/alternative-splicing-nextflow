@@ -10,6 +10,9 @@ From: rocker/verse:4.4.2
     org.opencontainers.image.source      "https://github.com/BCI-KRP/alternative-splicing-nextflow"
 
 %post
+    # poppler-utils provides pdftoppm to embed sashimi PDFs as PNGs in the report
+    apt-get update && apt-get install -y --no-install-recommends poppler-utils
+
     # Interactive table and plot packages not bundled in rocker/verse
     R -e " \
         install.packages(c( \

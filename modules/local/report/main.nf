@@ -55,6 +55,7 @@ process RENDER_REPORT {
       "dpsi_cutoff":            ${params.report_dpsi_cutoff},
       "majiq_prob_threshold":   ${params.majiq_probability_threshold},
       "majiq_dpsi_cutoff":      ${params.majiq_delta_psi_threshold},
+      "sashimi_png_dpi":        ${params.sashimi_png_dpi},
       "nfcore_multiqc_dir":     ${mqc_arg},
       "organism":               "${params.organism}",
       "run_de_as":              ${params.run_de_as ? 'true' : 'false'},

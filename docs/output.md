@@ -428,6 +428,13 @@ Interactive HTML report integrating all three tools' results with visualizations
 - **Collapsible sections**: Show/hide detailed results
 - **Download buttons**: Export filtered data as CSV
 
+The report is self-contained: sashimi plots are embedded as PNGs
+(resolution controlled by `--sashimi_png_dpi`, default 150) so the HTML opens
+offline with no companion files. The vector PDFs are still published under
+`results/sashimi/<comparison_id>/` for publication-quality figures. If the
+report container has no `pdftoppm`, sashimi PDFs fall back to being embedded
+directly (functional, but heavier).
+
 ---
 
 ## MultiQC Report

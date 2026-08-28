@@ -10,8 +10,9 @@ LABEL org.opencontainers.image.description="R Markdown report renderer for alter
 LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# pandoc is required by rmarkdown for HTML rendering
-RUN apt-get update && apt-get install -y --no-install-recommends pandoc \
+# pandoc is required by rmarkdown for HTML rendering;
+# poppler-utils provides pdftoppm to embed sashimi PDFs as PNGs in the report
+RUN apt-get update && apt-get install -y --no-install-recommends pandoc poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # R Markdown stack + visualization packages

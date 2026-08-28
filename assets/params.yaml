@@ -25,9 +25,33 @@ strandedness: reverse
 read_length: 150
 
 # Tool toggles
+# Core tools (enabled by default in nextflow.config):
 run_rmats: true
 run_majiq: true
 run_isar: true
+
+# Optional tools (DISABLED by default in nextflow.config).
+# Set any of these to true to enable the corresponding analysis.
+# - run_leafcutter : intron-excision differential splicing (LeafCutter)
+# - run_sashimi    : Sashimi plots for the top rMATS events (requires run_rmats: true)
+# - run_pegasas    : pathway activity x PSI correlation (requires run_rmats: true
+#                    and --salmon_merged_tpm pointing to the nf-core/rnaseq gene TPM file)
+# - run_de_as      : DE + AS dual-hit integration in the report (requires --de_results)
+run_leafcutter: false
+run_sashimi:    false
+run_pegasas:    false
+run_de_as:      false
+
+# Optional inputs required by the optional tools.
+# Only needed when the matching toggle above is set to true:
+
+# PEGASAS — merged gene-level TPM table from nf-core/rnaseq
+# (results/star_salmon/salmon.merged.gene_tpm.tsv)
+salmon_merged_tpm: /path/to/nfcore_rnaseq/results/star_salmon/salmon.merged.gene_tpm.tsv
+
+# DE + AS integration — directory of DESeq2 results (one subdir per DGE
+# comparison, each containing a *_DESeq2_results.csv), e.g. from bulkAnnex.
+de_results: /path/to/bulk/de/results/dge
 
 # MAJIQ license key path.
 # If MAJIQ_LICENSE_FILE is exported in your environment,

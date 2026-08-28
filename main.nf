@@ -44,6 +44,9 @@ def helpMessage() {
     
     MAJIQ Options:
       --majiq_license      Path to MAJIQ license file (required if --run_majiq true)
+
+    rMATS Options:
+      --rmats_novel_ss     Detect unannotated (de novo) splice sites [default: true]
     
     Output:
       --outdir             Output directory [default: ./results]
