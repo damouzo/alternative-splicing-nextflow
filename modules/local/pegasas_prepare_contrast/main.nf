@@ -33,7 +33,8 @@ process PEGASAS_PREPARE_CONTRAST {
     script:
     def g1_arg = g1_ids instanceof List ? g1_ids.join(',') : g1_ids
     def g2_arg = g2_ids instanceof List ? g2_ids.join(',') : g2_ids
-    def fdr_flag = params.pegasas_fdr_cutoff > 0 ? "--fdr-cutoff ${params.pegasas_fdr_cutoff}" : ""
+    def fdr_flag  = params.pegasas_fdr_cutoff  > 0 ? "--fdr-cutoff  ${params.pegasas_fdr_cutoff}"  : ""
+    def dpsi_flag = params.pegasas_dpsi_cutoff > 0 ? "--dpsi-cutoff ${params.pegasas_dpsi_cutoff}" : ""
     """
     ${projectDir}/bin/prepare_pegasas_inputs.py \\
         ${rmats_se} \\
@@ -41,7 +42,7 @@ process PEGASAS_PREPARE_CONTRAST {
         --g1-ids "${g1_arg}" \\
         --g2-ids "${g2_arg}" \\
         --out-dir pegasas_inputs/ \\
-        ${fdr_flag}
+        ${fdr_flag} ${dpsi_flag}
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

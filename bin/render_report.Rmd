@@ -1753,6 +1753,10 @@ datatable(
 
 ```{r pegasas_summary_header, eval=run_pegasas_section && nrow(pathway_summary) > 0, results='asis'}
 cat("### Pathway summary\n\n")
+cat("Candidate splicing events are restricted to rMATS-significant events ",
+    "(FDR < 0.05, |ΔΨ| ≥ 0.1). This analysis is exploratory and ",
+    "hypothesis-generating: it highlights candidate pathway–splicing ",
+    "couplings for follow-up, not a primary statistical claim.\n\n")
 ```
 
 ```{r pegasas_summary_table, eval=run_pegasas_section && nrow(pathway_summary) > 0}

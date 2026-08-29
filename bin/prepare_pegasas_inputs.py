@@ -33,9 +33,13 @@ def parse_args() -> argparse.Namespace:
                    help="Comma-separated sample_ids in the order rMATS POST wrote b2.txt")
     p.add_argument("--out-dir",      default=".", dest="out_dir",
                    help="Output directory [.]")
-    p.add_argument("--fdr-cutoff",    type=float, default=0.0, dest="fdr_cutoff",
+    p.add_argument("--fdr-cutoff",   type=float, default=0.0, dest="fdr_cutoff",
                    help="Skip events with FDR above this threshold (0 = no filter). "
                         "Set to e.g. 0.05 to keep only significant events [0.0]")
+    p.add_argument("--dpsi-cutoff",  type=float, default=0.0, dest="dpsi_cutoff",
+                   help="Skip events with |IncLevelDifference| below this threshold "
+                        "(0 = no filter). Set with --fdr-cutoff to mirror the "
+                        "rMATS Significant flag (FDR < x AND |dPSI| >= y) [0.0]")
     p.add_argument("--min-samples",  type=int, default=3, dest="min_samples",
                    help="Min samples with valid PSI per event [3]")
     return p.parse_args()
@@ -103,11 +107,13 @@ def transpose_tpm(fin: str, sample_order: list, out_path: str) -> None:
 
 
 def build_psi_matrix(fin, g1_ids, g2_ids, out_path,
-                     min_samples, fdr_cutoff):
+                     min_samples, fdr_cutoff, dpsi_cutoff):
     """
     Parse SE.MATS.JC.txt and output PSI matrix (events × samples).
     When fdr_cutoff > 0, events with FDR >= cutoff (or missing/NA FDR) are
     skipped to keep only statistically significant splicing events.
+    When dpsi_cutoff > 0, events with |IncLevelDifference| < cutoff (or
+    missing/NA) are additionally skipped, mirroring the rMATS Significant flag.
 
     Sample ids are taken from --g1-ids / --g2-ids (the order rMATS POST used
     for b1.txt / b2.txt) and validated against the per-event IncLevel1 /
@@ -146,6 +152,7 @@ def build_psi_matrix(fin, g1_ids, g2_ids, out_path,
 
     total_events  = 0
     skipped_fdr   = 0
+    skipped_dpsi  = 0
     events_written = 0
     with open(out_path, "w") as fh:
         writer = csv.writer(fh, delimiter="\t")
@@ -161,6 +168,15 @@ def build_psi_matrix(fin, g1_ids, g2_ids, out_path,
                     fdr = None
                 if fdr is None or fdr >= fdr_cutoff:
                     skipped_fdr += 1
+                    continue
+            if dpsi_cutoff > 0:
+                dpsi_str = row.get("IncLevelDifference", "")
+                try:
+                    dpsi = float(dpsi_str) if dpsi_str not in ("", "NA", "na", "NaN") else None
+                except ValueError:
+                    dpsi = None
+                if dpsi is None or abs(dpsi) < dpsi_cutoff:
+                    skipped_dpsi += 1
                     continue
             psi_vals1 = row["IncLevel1"].split(",")
             psi_vals2 = row["IncLevel2"].split(",")
@@ -207,9 +223,14 @@ def build_psi_matrix(fin, g1_ids, g2_ids, out_path,
             writer.writerow(meta + psi_clean)
             events_written += 1
 
-    if fdr_cutoff > 0:
+    if fdr_cutoff > 0 or dpsi_cutoff > 0:
+        filters = []
+        if fdr_cutoff > 0:
+            filters.append(f"{skipped_fdr}/{total_events} by FDR >= {fdr_cutoff}")
+        if dpsi_cutoff > 0:
+            filters.append(f"{skipped_dpsi}/{total_events} by |dPSI| < {dpsi_cutoff}")
         print(f"[INFO] PSI matrix: {events_written} events × {len(all_samples)} samples "
-              f"(filtered: {skipped_fdr}/{total_events} removed by FDR >= {fdr_cutoff}) → {out_path}")
+              f"(removed: {'; '.join(filters)}) → {out_path}")
     else:
         print(f"[INFO] PSI matrix: {events_written} events × {len(all_samples)} samples → {out_path}")
 
@@ -268,7 +289,8 @@ def main() -> None:
         transpose_tpm(args.salmon_tpm, sample_order, tpm_out)
 
     psi_out = os.path.join(args.out_dir, "PSI_bySample.tsv")
-    build_psi_matrix(args.rmats_se, g1_ids, g2_ids, psi_out, args.min_samples, args.fdr_cutoff)
+    build_psi_matrix(args.rmats_se, g1_ids, g2_ids, psi_out,
+                     args.min_samples, args.fdr_cutoff, args.dpsi_cutoff)
 
     grp_out = os.path.join(args.out_dir, "group_info.tsv")
     write_group_info(sample_order, group_map, grp_out)
