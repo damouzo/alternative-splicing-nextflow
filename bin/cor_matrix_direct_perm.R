@@ -86,15 +86,20 @@ make.cor.perm.test <- function(x_c, permX200, permX1000, permXN, N_MAX) {
     obs <- sum(x_c * y_c, na.rm = TRUE) / (sum(!is.na(x_c) & !is.na(y_c)) - 1)
     reps <- fast.cor(permX200, y_c)
     p <- min(mean(obs >= reps, na.rm = TRUE), mean(obs <= reps, na.rm = TRUE))
+    n_used <- 200L
     if (N_MAX > 200L && p < 0.2) {
       reps <- fast.cor(permX1000, y_c)
       p <- min(mean(obs >= reps, na.rm = TRUE), mean(obs <= reps, na.rm = TRUE))
+      n_used <- 1000L
     }
     if (N_MAX > 1000L && p < 0.04) {
       reps <- fast.cor(permXN, y_c)
       p <- min(mean(obs >= reps, na.rm = TRUE), mean(obs <= reps, na.rm = TRUE))
+      n_used <- N_MAX
     }
-    p
+    # Laplace (+1/N+1) estimator: no exact p == 0, so the report's BH step has
+    # a meaningful lower resolution (1/(N+1)) instead of many ties at zero.
+    (p * n_used + 1) / (n_used + 1)
   }
 }
 

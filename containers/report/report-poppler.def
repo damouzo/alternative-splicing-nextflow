@@ -1,0 +1,16 @@
+# Add poppler-utils (pdftoppm) on top of the existing GHCR report image.
+# The published image (as of Jun 2026) lacks poppler-utils, so sashimi PDFs
+# were embedded base64 in the HTML. This SIF adds the binary so the report
+# falls back to PNG embedding.
+
+Bootstrap: localimage
+From: /data/BCI-KRP/containers/apptainer_cache/ghcr.io-damouzo-alternative-splicing-nextflow-report-latest.img
+
+%post
+    # poppler-utils provides pdftoppm to embed sashimi PDFs as PNGs in the report
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends poppler-utils
+    rm -rf /var/lib/apt/lists/*
+
+%runscript
+    exec "$@"

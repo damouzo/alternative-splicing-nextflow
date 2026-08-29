@@ -237,34 +237,24 @@ qc_combined %>%
 event_types <- c("SE", "A5SS", "A3SS", "MXE", "RI")
 rmats_results_list <- list()
 
-# Coordinate columns per event type (rMATS MATS.JC.txt naming). A negative
-# value marks an unannotated (de novo) splice site from --novelSS.
-coord_cols <- list(
-  SE    = c("exonStart_0base", "exonEnd", "upstreamES", "upstreamEE", "downstreamES", "downstreamEE"),
-  A5SS  = c("longExonStart_0base", "longExonEnd", "shortES", "shortEE", "flankingES", "flankingEE"),
-  A3SS  = c("longExonStart_0base", "longExonEnd", "shortES", "shortEE", "flankingES", "flankingEE"),
-  MXE   = c("1stExonStart_0base", "1stExonEnd", "2ndExonStart_0base", "2ndExonEnd",
-            "upstreamES", "upstreamEE", "downstreamES", "downstreamEE"),
-  RI    = c("riExonStart_0base", "riExonEnd", "upstreamES", "upstreamEE", "downstreamES", "downstreamEE")
-)
-
-marker_novel_sites <- function(df, event_type) {
-  cols <- coord_cols[[event_type]]
-  cols <- intersect(cols, colnames(df))
-  if (length(cols) == 0) return(rep(FALSE, nrow(df)))
-  sapply(seq_len(nrow(df)), function(i) {
-    vals <- suppressWarnings(as.numeric(df[i, cols]))
-    any(vals < 0, na.rm = TRUE)
-  })
-}
-
 for (event_type in event_types) {
   jc_file <- file.path(params$rmats_dir, paste0(event_type, ".MATS.JC.txt"))
   if (file.exists(jc_file)) {
+    # De novo (unannotated) splice sites: rMATS 4.3 no longer encodes them as
+    # negative coordinates, so match event IDs against fromGTF.novelSpliceSite.
+    # The rMATS 4.3 SE header duplicates the ID column; df$ID is always the
+    # first (event) ID because read.delim renames the duplicate to ID.1.
+    novel_ids <- character(0)
+    novel_file <- file.path(params$rmats_dir,
+                            paste0("fromGTF.novelSpliceSite.", event_type, ".txt"))
+    if (file.exists(novel_file)) {
+      novel_ids <- read.delim(novel_file, stringsAsFactors = FALSE)$ID
+    }
+
     df <- read.delim(jc_file, stringsAsFactors = FALSE)
     if (nrow(df) > 0) {
       df$EventType <- event_type
-      df$NovelSite <- marker_novel_sites(df, event_type)
+      df$NovelSite <- df$ID %in% novel_ids
       rmats_results_list[[event_type]] <- df
     }
   }
@@ -273,7 +263,7 @@ for (event_type in event_types) {
 if (length(rmats_results_list) > 0) {
   all_rmats <- bind_rows(rmats_results_list) %>%
     mutate(
-      FDR_plot       = pmax(FDR, 1e-300),
+      FDR_plot       = pmax(FDR, .Machine$double.xmin),
       neglog10FDR    = -log10(FDR_plot),
       Significant    = FDR <= params$fdr_cutoff & abs(IncLevelDifference) >= params$dpsi_cutoff,
       # Priority score: combines -log10(FDR) with effect size.
@@ -330,6 +320,9 @@ all_rmats %>%
   scale_color_manual(values = c("gray70", "firebrick")) +
   geom_hline(yintercept = -log10(params$fdr_cutoff),    linetype = "dashed", color = "navy", linewidth = 0.4) +
   geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "navy", linewidth = 0.4) +
+  annotate("text", x = -1, y = 300,
+           label = "FDR < 1e-300 (suelo del test, --cstat)",
+           hjust = 0, size = 3, color = "grey40") +
   scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
   coord_cartesian(clip = "off") +
   theme_bw() +
@@ -351,17 +344,19 @@ top_events <- all_rmats %>%
   select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference, priority_score, NovelSite) %>%
   head(50) %>%
   mutate(
-    SiteType = ifelse(NovelSite, "de novo", "annotated")
+    SiteType     = ifelse(NovelSite, "de novo", "annotated"),
+    # Keep underflowed --cstat p-values readable instead of rounding them to 0.
+    FDR_display  = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
   )
 
 if (nrow(top_events) > 0) {
   datatable(
-    top_events %>% select(-NovelSite),
+    top_events %>% select(-NovelSite, -FDR),
     caption  = "Top 50 significant rMATS events ranked by priority score",
     options  = list(pageLength = 10, scrollX = TRUE),
-    rownames = FALSE
+    rownames = FALSE, escape = FALSE
   ) %>%
-    formatRound(columns = c("FDR", "IncLevelDifference", "priority_score"), digits = 4)
+    formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4)
 } else {
   cat("No significant events detected.\n")
 }
@@ -847,7 +842,7 @@ isar_switches     <- read_csv_safe(file.path(params$isar_dir, "top_isoform_switc
 isar_consequences <- read_csv_safe(file.path(params$isar_dir, "consequence_summary.csv"))
 ```
 
-```{r isar_summary, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
+```{r isar_summary, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0, results='asis'}
 if ("isoform_switch_q_value" %in% colnames(isar_switches) &&
     "dIF" %in% colnames(isar_switches)) {
   isar_switches$significant <- (
@@ -871,6 +866,19 @@ if ("gene_name" %in% colnames(isar_switches)) {
     sig_genes_isar_n <- length(unique(isar_switches$gene_name[isar_switches$significant]))
     cat("Genes with significant switches:", sig_genes_isar_n, "\n")
   }
+}
+
+# Auto-warning for a saturated test: q-values pinned in a narrow band while
+# large dIF exist often signals a satuRn convergence failure rather than a
+# genuinely empty contrast (see plans/report_bugs_fix_plan.md, P1-1).
+q_vals <- isar_switches$isoform_switch_q_value[!is.na(isar_switches$isoform_switch_q_value)]
+d_vals <- isar_switches$dIF[!is.na(isar_switches$dIF)]
+if (length(q_vals) > 10 && IQR(q_vals) < 0.05 && max(abs(d_vals)) >= 0.1) {
+  cat(paste0(
+    "<p style='color:#b30000'>ADVERTENCIA: los q-values de satuRn están pinneados en un rango estrecho ",
+    "(IQR &lt; 0.05) mientras que hay isoformas con |dIF| >= 0.1. Esto suele indicar un fallo ",
+    "de convergencia/orden del test (ver P1-1), no un contraste genuinamente vacío.</p>\n\n"
+  ))
 }
 ```
 
@@ -952,8 +960,15 @@ if (!is.na(sig_file) && file.exists(sig_file)) {
   )
   if (nrow(leafcutter_clusters) > 0 && "p.adjust" %in% colnames(leafcutter_clusters)) {
     leafcutter_clusters <- leafcutter_clusters %>%
-      mutate(Significant = p.adjust < params$fdr_cutoff & status == "OK")
+      mutate(Significant = p.adjust < params$fdr_cutoff & status == "Success")
   }
+}
+
+# Sanity check: leafcutter_ds.R writes status = "Success"; flag silently on any
+# future vocabulary change so a mismatch cannot pass unnoticed.
+if (nrow(leafcutter_clusters) > 0 &&
+    sum(leafcutter_clusters$status %in% c("OK", "Success"), na.rm = TRUE) == 0) {
+  warning("LeafCutter: no hay clusters con status OK/Success — posible cambio de vocabulario en leafcutter_ds.R")
 }
 
 leafcutter_effects <- data.frame()
@@ -967,11 +982,11 @@ if (!is.na(eff_file) && file.exists(eff_file)) {
 
 ```{r leafcutter_summary, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
 n_clusters <- nrow(leafcutter_clusters)
-n_ok       <- sum(leafcutter_clusters$status == "OK", na.rm = TRUE)
+n_ok       <- sum(leafcutter_clusters$status == "Success", na.rm = TRUE)
 n_sig      <- sum(leafcutter_clusters$Significant, na.rm = TRUE)
 
 cat(sprintf("Total clusters tested: %d  \n", n_clusters))
-cat(sprintf("Clusters passing noise filter (status = OK): %d  \n", n_ok))
+cat(sprintf("Clusters passing noise filter (status = Success): %d  \n", n_ok))
 cat(sprintf("Significant clusters (FDR < %.2f): %d\n\n", params$fdr_cutoff, n_sig))
 
 if ("genes" %in% colnames(leafcutter_clusters)) {
@@ -1005,7 +1020,7 @@ cols_to_show <- intersect(
 
 if (length(cols_to_show) > 0) {
   top_clusters <- leafcutter_clusters %>%
-    filter(status == "OK") %>%
+    filter(status == "Success") %>%
     arrange(p.adjust) %>%
     select(all_of(cols_to_show)) %>%
     head(100)
@@ -1013,7 +1028,7 @@ if (length(cols_to_show) > 0) {
   if (nrow(top_clusters) > 0) {
     datatable(
       top_clusters,
-      caption  = paste0("Top 100 LeafCutter clusters (status = OK), sorted by FDR. ",
+      caption  = paste0("Top 100 LeafCutter clusters (status = Success), sorted by FDR. ",
                         n_sig, " pass FDR < ", params$fdr_cutoff, "."),
       options  = list(pageLength = 15, scrollX = TRUE),
       rownames = FALSE
@@ -1169,9 +1184,13 @@ shared_sig_genes <- if (length(shared_sig_keys) > 0) {
 } else {
   character(0)
 }
+
+# Tools with data analysed but no significant gene set — flagged so a silent
+# drop from the UpSet is never mistaken for a missing tool.
+empty_tool_sets <- setdiff(names(active_tool_sig_sets), names(gene_sets))
 ```
 
-```{r overlap_note}
+```{r overlap_note, results='asis'}
 # The UpSet plot below is a gene-level overlap, not an event-level one.
 # rMATS reports exon-level events, MAJIQ reports local splice variations
 # (LSVs, junction-level), IsoformSwitchAnalyzeR reports whole isoform
@@ -1179,6 +1198,14 @@ shared_sig_genes <- if (length(shared_sig_keys) > 0) {
 # gene does NOT mean they detected the same event — they may be capturing
 # distinct aspects of the same gene's regulation. For event-level
 # concordance, downstream matching by genomic coordinates is required.
+
+# Warn when a tool ran but contributed no significant genes to the UpSet.
+if (length(empty_tool_sets) > 0) {
+  cat(sprintf(
+    "<p style='color:#b30000'>ADVERTENCIA: %d herramienta(s) con datos analizados no aportan genes significativos y quedan fuera del UpSet: %s.</p>\n\n",
+    length(empty_tool_sets), paste(empty_tool_sets, collapse = ", ")
+  ))
+}
 ```
 
 ```{r overlap_set_sizes, eval=length(gene_sets) >= 1}
@@ -1199,10 +1226,12 @@ upset(
 ```
 
 ```{r overlap_summary, eval=length(active_tool_sig_sets) >= 2}
-# Genes found significant by all available tools (canonical keys), shown as symbols
-all_tools_genes_keys <- Reduce(intersect, active_tool_sig_sets)
-cat(sprintf("Genes significant in all %d active tools: %d\n\n",
-            length(active_tool_sig_sets), length(all_tools_genes_keys)))
+# Genes found significant by all available tools (canonical keys), shown as symbols.
+# Count over gene_sets (tools that actually contribute signal), not
+# active_tool_sig_sets (tools that ran), so the denominator is not inflated.
+all_tools_genes_keys <- Reduce(intersect, gene_sets)
+cat(sprintf("Genes significant in all %d tools with signal: %d\n\n",
+            length(gene_sets), length(all_tools_genes_keys)))
 
 if (length(all_tools_genes_keys) > 0) {
   cat("Genes:", paste(sort(key_to_display(all_tools_genes_keys)), collapse = ", "), "\n")
@@ -1600,9 +1629,21 @@ for (cdir in corr_dirs) {
   cor_list[[sig_name]] <- d
 }
 
+# BH over the permutation p-values of each pathway. p is NA where the
+# permutation was not run (|r| <= 0.3); p.adjust() would propagate those NAs,
+# so adjust only over the tested rows and keep NA for the untested ones.
+cor_list <- lapply(cor_list, function(d) {
+  d$p_adj <- NA_real_
+  tested  <- !is.na(d$p_value)
+  if (any(tested)) {
+    d$p_adj[tested] <- p.adjust(d$p_value[tested], method = "BH")
+  }
+  d
+})
+
 # Keep the most informative rows per pathway (top by |r|) for an HTML that stays
 # responsive. The complete, unfiltered table is on disk in correlation_out/.
-TOP_N <- 500
+TOP_N <- 100
 cor_display <-
   if (length(cor_list) > 0) do.call(rbind, lapply(cor_list, function(d) {
     d <- d[order(-abs(d$pearson_r)), , drop = FALSE]
@@ -1623,12 +1664,17 @@ pathway_summary <- if (length(cor_list) > 0) {
     d <- cor_list[[p]]
     ar <- abs(d$pearson_r)
     pv <- d$p_value
+    pa <- d$p_adj
     data.frame(
       pathway      = p,
       n_events     = nrow(d),
       n_significant = sum(d$significant, na.rm = TRUE),
       max_abs_r    = if (any(is.finite(ar))) max(ar, na.rm = TRUE) else NA_real_,
       min_p        = if (any(is.finite(pv))) min(pv, na.rm = TRUE) else NA_real_,
+      # BH-adjusted p: only the tested events are counted, so NAs in p_value
+      # never inflate (or deflate) the per-pathway statistics.
+      min_p_adj    = if (any(is.finite(pa))) min(pa, na.rm = TRUE) else NA_real_,
+      n_sig_adj    = if (any(!is.na(pa))) sum(pa < 0.05, na.rm = TRUE) else 0L,
       stringsAsFactors = FALSE, check.names = FALSE
     )
   }))
@@ -1686,18 +1732,21 @@ cat("No PEGASAS pathway scores available for this contrast.\n")
 cat("## Pathway–Correlated Splicing Events\n\n")
 cat("All tested events are shown (including non-significant ones), ranked by |Pearson r|.")
 cat(sprintf(" For responsiveness each pathway is capped at the top %d events; the complete, unfiltered table is in `correlation_out/<pathway>/<pathway>_global_cor_matrix.txt`.\n\n", TOP_N))
-cat("Significance: |Pearson r| > 0.3 AND permutation p == 0 within the resolution of the test (p < 1/N_perms). This means the observed correlation is more extreme than ALL permutations. The permutation p is computed only for |r| > 0.3, so p is NA for weaker correlations.\n\n")
+cat("**Two distinct p-values are reported in this section, do not confuse them:**\n\n")
+cat("* The **heatmap p-value** is the KS enrichment of the pathway gene set per sample (can reach very small values because of the gene-set size), not a correlation test. It belongs to the pathway activity plots above.\n\n")
+cat("* The **correlation p-value** (`p_value` in the tables below) is the permutation p of each event's Pearson r against the pathway score, computed only for |r| > 0.3 (otherwise it is NA). With 1000 permutations p == 0 means 'more extreme than all permutations'; `p_adj` is its Benjamini–Hochberg correction across all events of that pathway.\n\n")
+cat("Significance: |Pearson r| > 0.3 AND permutation p == 0 within the resolution of the test (p < 1/N_perms). This means the observed correlation is more extreme than ALL permutations.\n\n")
 ```
 
 ```{r pegasas_cor_table, eval=run_pegasas_section && nrow(cor_display) > 0}
 datatable(
   cor_display[, c("pathway", "event", "GeneName", "chr", "strand",
-                  "exonStart", "exonEnd", "pearson_r", "p_value", "significant")],
+                  "exonStart", "exonEnd", "pearson_r", "p_value", "p_adj", "significant")],
   caption = "Splicing events correlated with pathway activity (all events, top by |r|)",
   rownames = FALSE, filter = "top",
   options = list(pageLength = 15, scrollX = TRUE)
 ) |>
-  formatRound(c("pearson_r", "p_value"), digits = 4) |>
+  formatRound(c("pearson_r", "p_value", "p_adj"), digits = 4) |>
   formatStyle("significant", target = "row",
               backgroundColor = styleEqual(c(TRUE, FALSE), c("#d9f2d9", "#ffffff")))
 ```
@@ -1709,10 +1758,10 @@ cat("### Pathway summary\n\n")
 ```{r pegasas_summary_table, eval=run_pegasas_section && nrow(pathway_summary) > 0}
 datatable(
   pathway_summary,
-  caption = "Events tested, significant, and strongest correlation per pathway",
+  caption = "Events tested, significant, and strongest correlation per pathway (BH-adjusted)",
   rownames = FALSE, options = list(pageLength = 15, scrollX = TRUE)
 ) |>
-  formatRound(c("max_abs_r", "min_p"), digits = 4)
+  formatRound(c("max_abs_r", "min_p", "min_p_adj"), digits = 4)
 ```
 
 ```{r pegasas_no_cor, eval=run_pegasas_section && nrow(cor_display) == 0, results='asis'}

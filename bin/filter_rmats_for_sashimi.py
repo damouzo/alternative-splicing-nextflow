@@ -17,35 +17,11 @@ import sys
 
 EVENT_TYPES = ["SE", "A5SS", "A3SS", "MXE", "RI"]
 
-# Coordinate columns that must be non-negative for sashimi plotting. Novel
-# splice sites (--novelSS) can yield negative coordinates that
-# rmats2sashimiplot cannot populate; those events are excluded here.
-COORD_COLS = [
-    "exonStart_0base", "exonEnd",
-    "upstreamES", "upstreamEE", "downstreamES", "downstreamEE",
-    "longExonStart_0base", "longExonEnd", "shortES", "shortEE",
-    "flankingES", "flankingEE",
-    "1stExonStart_0base", "1stExonEnd", "2ndExonStart_0base", "2ndExonEnd",
-    "riExonStart_0base", "riExonEnd",
-    "intronStart", "intronEnd",
-]
-
 
 def priority_score(fdr: float, dpsi: float) -> float:
     """Higher is more significant + larger effect."""
     fdr_clamped = max(fdr, 1e-300)
     return -math.log10(fdr_clamped) * abs(dpsi)
-
-
-def has_novel_coord(parts: list, coord_idx: list) -> bool:
-    """True if any coordinate column for this event is negative (de novo site)."""
-    for idx in coord_idx:
-        try:
-            if idx < len(parts) and float(parts[idx]) < 0:
-                return True
-        except ValueError:
-            continue
-    return False
 
 
 def filter_events(rmats_dir: str, out_dir: str, top_n: int,
@@ -58,6 +34,18 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
         if not os.path.isfile(jc_file):
             continue
 
+        # De novo (unannotated) splice sites: rMATS 4.3 no longer encodes them
+        # as negative coordinates, so match IDs against fromGTF.novelSpliceSite.
+        # The event ID is always column 0 (the SE header repeats "ID", but the
+        # first one is the event id).
+        novel_ids = set()
+        nf = os.path.join(rmats_dir, f"fromGTF.novelSpliceSite.{event_type}.txt")
+        if os.path.isfile(nf):
+            with open(nf) as fh:
+                fh.readline()  # header
+                for ln in fh:
+                    novel_ids.add(ln.rstrip("\n").split("\t")[0])
+
         with open(jc_file) as fh:
             header = fh.readline().rstrip("\n").split("\t")
 
@@ -68,9 +56,6 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
             print(f"[WARN] {event_type}: missing FDR or IncLevelDifference column — skipping",
                   file=sys.stderr)
             continue
-
-        # Indices of coordinate columns actually present in this file
-        coord_idx = [header.index(c) for c in COORD_COLS if c in header]
 
         candidates = []
         excluded_novel = 0
@@ -88,7 +73,7 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
 
                 # Skip unannotated (de novo) splice-site events: negative
                 # coordinates cannot be drawn by rmats2sashimiplot.
-                if has_novel_coord(parts, coord_idx):
+                if parts[0] in novel_ids:
                     excluded_novel += 1
                     continue
 
@@ -97,8 +82,8 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
                     candidates.append((score, line))
 
         if excluded_novel > 0:
-            print(f"[WARN] {event_type}: excluded {excluded_novel} novel-splice-site events "
-                  "with negative coordinates", file=sys.stderr)
+            print(f"[WARN] {event_type}: excluded {excluded_novel} novel-splice-site events (ID)",
+                  file=sys.stderr)
 
         if not candidates:
             continue
