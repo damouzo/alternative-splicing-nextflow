@@ -463,6 +463,7 @@ nextflow run main.nf \
 | `--isar_dif_cutoff` | float | `0.1` | Minimum isoform fraction difference |
 | `--isar_gene_expr_cutoff` | float | `1` | Minimum gene TPM |
 | `--isar_iso_expr_cutoff` | float | `1` | Minimum isoform TPM |
+| `--isar_test_method` | string | `'auto'` | Switch-test engine, selected per contrast: `auto` (default) uses DEXSeq when the smallest condition has ≤5 replicates and satuRn otherwise, mirroring ISAR's adequacy rule; `dexseq` and `satuRn` force a specific engine. DEXSeq avoids the locfdr empirical-FDR step in satuRn that can pin all q-values to one value in high-isoform runs. |
 | `--run_isar_full_annotation` | boolean | `false` | Enable Tier A annotation: PFAM + IUPred3 IDR |
 | `--pfam_hmm` | file | `null` | Path to Pfam-A.hmm database file (~500 MB) |
 
@@ -530,11 +531,10 @@ nextflow run main.nf -profile docker \
   -params-file params.yaml
 ```
 
-### QC / Report
+### Report
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--nfcore_multiqc_dir` | path | `null` | Path to nf-core/rnaseq MultiQC output directory |
 | `--organism` | string | `'human'` | Organism for GO/KEGG enrichment (`human` or `mouse`) |
 | `--report_fdr_cutoff` | float | `0.05` | FDR cutoff for rMATS/ISAR significance in the report |
 | `--report_dpsi_cutoff` | float | `0.1` | |ΔΨ| / |dIF| cutoff for rMATS/ISAR significance in the report |

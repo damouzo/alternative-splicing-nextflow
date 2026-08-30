@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Removed the **QC Metrics** section from the HTML report and the now-dead
+  `--nfcore_multiqc_dir` parameter. QC output (MultiQC) is already delivered by
+  the upstream nf-core/rnaseq pipeline.
+- Sashimi plots: raised `--sashimi_top_n` default from 10 to 30 events per
+  event type (up to 150 plots) since reports embed PNGs rather than PDFs.
+- rMATS top-events table now shows the top 100 (was 50) by priority score, and
+  removed the "FDR < 1e-300 (suelo del test)" annotation from the volcano.
+- rMATS de novo (unannotated) splice-site events are now shown in a dedicated
+  searchable table of significant events instead of an inline note.
+- MAJIQ and LeafCutter summaries are now rendered as tables instead of plain
+  text blocks.
+- Cross-tool overlap tables and the shared-gene list are now searchable/filterable
+  DataTables.
+- Translated remaining non-English warning/notice text in the report to English.
+- ISAR switch test now selects the engine per contrast via `--isar_test_method`
+  (default `auto`): DEXSeq when the smallest condition has ≤5 replicates, else
+  satuRn — mirroring the adequacy rule in ISAR's own `isoformSwitchAnalysisPart1`.
+  DEXSeq avoids the locfdr empirical-FDR step in satuRn that was collapsing every
+  q-value to a single pinned value (~0.99) in high-isoform runs. For this cohort
+  (smallest group = 3 in all 10 contrasts) `auto` resolves to DEXSeq everywhere.
+  `--isar_test_method dexseq`/`satuRn` force an engine.
+
+### Added
+- DE + AS integration: per-tool source column and a volcano per AS tool.
+
+### Changed
 - `rmats_novel_ss` now defaults to `true`: rMATS detects unannotated (de novo)
   splice sites. Relevant for spliceosome mutants (DDX41/DHX34); increases
   runtime ~3-5x. De novo events are flagged as "de novo" in the report and

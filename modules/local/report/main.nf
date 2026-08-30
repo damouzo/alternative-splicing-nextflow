@@ -33,9 +33,8 @@ process RENDER_REPORT {
     def pegasas_arg    = pegasas_name    != 'NO_PEGASAS'    ? 'pegasas_in'    : 'NULL'
     def leafcutter_arg = leafcutter_name != 'NO_LEAFCUTTER' ? 'leafcutter_in' : 'NULL'
 
-    // nfcore_multiqc_dir and de_results are optional external paths — passed as strings so
-    // the Rmd can use file.exists() without staging them into the work directory
-    def mqc_arg = params.nfcore_multiqc_dir ? "\"${params.nfcore_multiqc_dir}\"" : 'null'
+    // de_results is an optional external path — passed as a string so
+    // the Rmd can use file.exists() without staging it into the work directory
     def de_arg  = params.de_results         ? "\"${params.de_results}\""         : 'null'
     def group1_ids_json = groovy.json.JsonOutput.toJson(group1_sample_ids ?: [])
     def group2_ids_json = groovy.json.JsonOutput.toJson(group2_sample_ids ?: [])
@@ -56,7 +55,6 @@ process RENDER_REPORT {
       "majiq_prob_threshold":   ${params.majiq_probability_threshold},
       "majiq_dpsi_cutoff":      ${params.majiq_delta_psi_threshold},
       "sashimi_png_dpi":        ${params.sashimi_png_dpi},
-      "nfcore_multiqc_dir":     ${mqc_arg},
       "organism":               "${params.organism}",
       "run_de_as":              ${params.run_de_as ? 'true' : 'false'},
       "de_results":             ${de_arg},

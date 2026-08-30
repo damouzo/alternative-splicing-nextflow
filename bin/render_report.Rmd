@@ -21,7 +21,6 @@ params:
   majiq_prob_threshold: 0.95
   majiq_dpsi_cutoff: 0.2
   sashimi_png_dpi: 150
-  nfcore_multiqc_dir: NULL
   organism: "human"
   de_results: NULL
   run_de_as: false
@@ -117,120 +116,6 @@ cat(sprintf("%s\n\n", validation_note))
 
 ---
 
-# QC Metrics
-
-```{r qc_load, eval=!is.null(params$nfcore_multiqc_dir)}
-# Parse key QC metrics from nf-core/rnaseq MultiQC output.
-# Expects the multiqc/star_salmon/ directory (contains multiqc_report_data/).
-mqc_data_dir <- file.path(params$nfcore_multiqc_dir, "multiqc_report_data")
-
-read_mqc_table <- function(path) {
-  if (!file.exists(path)) return(data.frame())
-  tryCatch(
-    read.delim(path, stringsAsFactors = FALSE, check.names = FALSE),
-    error = function(e) data.frame()
-  )
-}
-
-qc_general <- read_mqc_table(file.path(mqc_data_dir, "multiqc_general_stats.txt"))
-qc_star    <- read_mqc_table(file.path(mqc_data_dir, "multiqc_star.txt"))
-
-# Remove per-read entries added by MultiQC (e.g. "Sample Read 1", "Sample Read 2")
-if (nrow(qc_general) > 0) {
-  qc_general <- qc_general[!grepl(" Read [12]$", qc_general$Sample), ]
-}
-
-# Build a clean per-sample QC table
-qc_combined <- data.frame()
-
-if (nrow(qc_star) > 0 && "Sample" %in% colnames(qc_star)) {
-  qc_combined <- qc_star %>%
-    select(Sample, any_of(c(
-      "total_reads", "uniquely_mapped_percent"
-    )))
-}
-
-if (nrow(qc_general) > 0 && "Sample" %in% colnames(qc_general)) {
-  # Select available QC columns using flexible pattern matching
-  wanted_patterns <- c(
-    "PERCENT_DUPLICATION",
-    "reads_aligned$",
-    "reads_aligned_exonic",
-    "reads_aligned_intronic",
-    "5_3_bias"
-  )
-  gen_cols <- c("Sample", grep(
-    paste(wanted_patterns, collapse = "|"),
-    colnames(qc_general), value = TRUE
-  ))
-  gen_cols <- intersect(gen_cols, colnames(qc_general))
-
-  if (length(gen_cols) > 1) {
-    qc_sub <- qc_general[, gen_cols, drop = FALSE]
-    # Shorten column names: strip tool prefix (e.g. "qualimap_rnaseq-reads_aligned" → "reads_aligned")
-    colnames(qc_sub) <- sub("^[^-]+-", "", colnames(qc_sub))
-
-    if (nrow(qc_combined) > 0) {
-      qc_combined <- merge(qc_combined, qc_sub, by = "Sample", all = TRUE)
-    } else {
-      qc_combined <- qc_sub
-    }
-  }
-}
-```
-
-```{r qc_table, eval=!is.null(params$nfcore_multiqc_dir) && nrow(qc_combined) > 0}
-# Round numeric columns for display
-qc_display <- qc_combined %>%
-  mutate(across(where(is.numeric), ~ round(.x, 2)))
-
-datatable(
-  qc_display,
-  caption  = "Per-sample QC metrics from nf-core/rnaseq (MultiQC + STAR + Qualimap)",
-  options  = list(pageLength = 20, scrollX = TRUE),
-  rownames = FALSE
-)
-```
-
-```{r qc_mapping_plot, eval=!is.null(params$nfcore_multiqc_dir) && nrow(qc_combined) > 0 && "uniquely_mapped_percent" %in% colnames(qc_combined), fig.height=5}
-# Horizontal bar chart of uniquely mapped reads % per sample
-qc_combined %>%
-  filter(!is.na(uniquely_mapped_percent)) %>%
-  mutate(Sample = reorder(Sample, uniquely_mapped_percent)) %>%
-  ggplot(aes(x = Sample, y = uniquely_mapped_percent)) +
-  geom_col(fill = "steelblue", alpha = 0.8) +
-  geom_hline(yintercept = 70, linetype = "dashed", color = "red", linewidth = 0.5) +
-  coord_flip() +
-  theme_bw() +
-  labs(
-    title = "Uniquely mapped reads (%)",
-    x     = NULL,
-    y     = "Uniquely mapped (%)"
-  )
-```
-
-```{r qc_dup_plot, eval=!is.null(params$nfcore_multiqc_dir) && nrow(qc_combined) > 0 && "PERCENT_DUPLICATION" %in% colnames(qc_combined), fig.height=5}
-# Duplication rate per sample
-qc_combined %>%
-  filter(!is.na(PERCENT_DUPLICATION)) %>%
-  mutate(
-    Sample    = reorder(Sample, PERCENT_DUPLICATION),
-    dup_pct   = PERCENT_DUPLICATION * 100
-  ) %>%
-  ggplot(aes(x = Sample, y = dup_pct)) +
-  geom_col(fill = "coral", alpha = 0.8) +
-  geom_hline(yintercept = 50, linetype = "dashed", color = "red", linewidth = 0.5) +
-  coord_flip() +
-  theme_bw() +
-  labs(
-    title = "Duplication rate (%)",
-    x     = NULL,
-    y     = "Duplicate reads (%)"
-  )
-```
-
----
-
 # rMATS Results
 
 ```{r rmats_load, eval=!is.null(params$rmats_dir)}
@@ -284,14 +169,6 @@ summary_table <- all_rmats %>%
   )
 
 kable(summary_table, caption = "rMATS Event Summary by Event Type")
-
-n_novel <- sum(all_rmats$NovelSite, na.rm = TRUE)
-if (n_novel > 0) {
-  cat(sprintf(
-    "\n\n%d events involve unannotated (de novo) splice sites — see rMATS table.\n",
-    n_novel
-  ))
-}
 ```
 
 ```{r rmats_volcano, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=8}
@@ -320,9 +197,6 @@ all_rmats %>%
   scale_color_manual(values = c("gray70", "firebrick")) +
   geom_hline(yintercept = -log10(params$fdr_cutoff),    linetype = "dashed", color = "navy", linewidth = 0.4) +
   geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "navy", linewidth = 0.4) +
-  annotate("text", x = -1, y = 300,
-           label = "FDR < 1e-300 (suelo del test, --cstat)",
-           hjust = 0, size = 3, color = "grey40") +
   scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
   coord_cartesian(clip = "off") +
   theme_bw() +
@@ -342,7 +216,7 @@ top_events <- all_rmats %>%
   filter(Significant) %>%
   arrange(desc(priority_score)) %>%
   select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference, priority_score, NovelSite) %>%
-  head(50) %>%
+  head(100) %>%
   mutate(
     SiteType     = ifelse(NovelSite, "de novo", "annotated"),
     # Keep underflowed --cstat p-values readable instead of rounding them to 0.
@@ -352,13 +226,60 @@ top_events <- all_rmats %>%
 if (nrow(top_events) > 0) {
   datatable(
     top_events %>% select(-NovelSite, -FDR),
-    caption  = "Top 50 significant rMATS events ranked by priority score",
+    caption  = "Top 100 significant rMATS events ranked by priority score",
     options  = list(pageLength = 10, scrollX = TRUE),
     rownames = FALSE, escape = FALSE
   ) %>%
     formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4)
 } else {
   cat("No significant events detected.\n")
+}
+```
+
+## De novo splice-site events
+
+```{r rmats_novel_table, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
+# Unannotated (de novo) splice sites are not drawn by sashimi and are often of
+# special interest in spliceosome-mutant cohorts, so expose them separately.
+novel_events <- all_rmats %>%
+  filter(NovelSite) %>%
+  mutate(
+    # Keep underflowed --cstat p-values readable instead of rounding them to 0.
+    FDR_display = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
+  )
+
+n_novel <- nrow(novel_events)
+n_novel_sig <- sum(novel_events$Significant, na.rm = TRUE)
+
+if (n_novel > 0) {
+  cat(sprintf(
+    "%d events involve unannotated (de novo) splice sites; %d are significant (FDR < %s & |ΔΨ| >= %.2f).\n\n",
+    n_novel, n_novel_sig, params$fdr_cutoff, params$dpsi_cutoff
+  ))
+
+  novel_display <- novel_events %>%
+    filter(Significant) %>%
+    arrange(desc(priority_score)) %>%
+    select(EventType, GeneID, geneSymbol, chr, strand, FDR_display,
+           IncLevelDifference, priority_score) %>%
+    head(200)
+
+  if (nrow(novel_display) > 0) {
+    datatable(
+      novel_display,
+      caption  = sprintf(
+        "Significant de novo rMATS events ranked by priority score (showing top %d of %d)",
+        nrow(novel_display), n_novel_sig
+      ),
+      options  = list(pageLength = 10, scrollX = TRUE),
+      rownames = FALSE, escape = FALSE
+    ) %>%
+      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4)
+  } else {
+    cat("No significant de novo events detected.\n")
+  }
+} else {
+  cat("No de novo splice-site events detected.\n")
 }
 ```
 
@@ -550,8 +471,8 @@ sashimi_pdfs <- list.files(params$sashimi_dir, pattern = "\\.pdf$",
                            recursive = TRUE, full.names = TRUE)
 
 if (length(sashimi_pdfs) > 0) {
-  cat(sprintf("Sashimi plots generated for %d events.\n\n", length(sashimi_pdfs)))
-  cat("Use the selectors to browse by event type and gene. The selected plot is shown directly below.\n\n")
+  cat(sprintf("Sashimi plots generated for %d events; use the selectors to browse by event type and gene.\n\n",
+              length(sashimi_pdfs)))
 
   event_from_path <- function(paths) {
     rel <- basename(dirname(dirname(paths)))
@@ -756,22 +677,36 @@ if (!is.na(tsv_file) && file.exists(tsv_file)) {
 ```
 
 ```{r majiq_summary, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
-cat("Total junctions detected:", nrow(majiq_results), "\n\n")
+majiq_summary_rows <- data.frame(
+  Metric = c(
+    "Total junctions detected",
+    sprintf("Significant LSVs (P(|ΔPSI|) >= %.2f & |ΔΨ| >= %.2f)",
+            params$majiq_prob_threshold, params$majiq_dpsi_cutoff)
+  ),
+  Value = c(nrow(majiq_results), NA_integer_),
+  stringsAsFactors = FALSE
+)
+
 if ("Significant" %in% colnames(majiq_results)) {
-  cat(sprintf(
-    "Significant LSVs (P(|ΔPSI|) >= %.2f & |ΔPSI| >= %.2f): %d\n\n",
-    params$majiq_prob_threshold,
-    params$majiq_dpsi_cutoff,
-    sum(majiq_results$Significant, na.rm = TRUE)
-  ))
+  majiq_summary_rows$Value[2] <- sum(majiq_results$Significant, na.rm = TRUE)
 
   if ("InformativeGene" %in% colnames(majiq_results)) {
-    sig_with_symbol <- sum(majiq_results$Significant & majiq_results$InformativeGene, na.rm = TRUE)
-    sig_without_symbol <- sum(majiq_results$Significant & !majiq_results$InformativeGene, na.rm = TRUE)
-    cat(sprintf("Significant LSVs with informative gene symbol: %d\n", sig_with_symbol))
-    cat(sprintf("Significant LSVs without informative gene symbol: %d\n\n", sig_without_symbol))
+    majiq_summary_rows <- rbind(
+      majiq_summary_rows,
+      data.frame(
+        Metric = c("Significant LSVs with informative gene symbol",
+                   "Significant LSVs without informative gene symbol"),
+        Value = c(
+          sum(majiq_results$Significant & majiq_results$InformativeGene, na.rm = TRUE),
+          sum(majiq_results$Significant & !majiq_results$InformativeGene, na.rm = TRUE)
+        ),
+        stringsAsFactors = FALSE
+      )
+    )
   }
 }
+
+knitr::kable(majiq_summary_rows, caption = "MAJIQ summary")
 ```
 
 ```{r majiq_distribution, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0 && "dpsi_mean" %in% colnames(majiq_results)}
@@ -875,9 +810,9 @@ q_vals <- isar_switches$isoform_switch_q_value[!is.na(isar_switches$isoform_swit
 d_vals <- isar_switches$dIF[!is.na(isar_switches$dIF)]
 if (length(q_vals) > 10 && IQR(q_vals) < 0.05 && max(abs(d_vals)) >= 0.1) {
   cat(paste0(
-    "<p style='color:#b30000'>ADVERTENCIA: los q-values de satuRn están pinneados en un rango estrecho ",
-    "(IQR &lt; 0.05) mientras que hay isoformas con |dIF| >= 0.1. Esto suele indicar un fallo ",
-    "de convergencia/orden del test (ver P1-1), no un contraste genuinamente vacío.</p>\n\n"
+    "<p style='color:#b30000'>WARNING: satuRn q-values are pinned in a narrow range ",
+    "(IQR &lt; 0.05) while isoforms with |dIF| >= 0.1 exist. This usually indicates a ",
+    "convergence/ordering failure of the test (see P1-1), not a genuinely empty contrast.</p>\n\n"
   ))
 }
 ```
@@ -968,7 +903,7 @@ if (!is.na(sig_file) && file.exists(sig_file)) {
 # future vocabulary change so a mismatch cannot pass unnoticed.
 if (nrow(leafcutter_clusters) > 0 &&
     sum(leafcutter_clusters$status %in% c("OK", "Success"), na.rm = TRUE) == 0) {
-  warning("LeafCutter: no hay clusters con status OK/Success — posible cambio de vocabulario en leafcutter_ds.R")
+  warning("LeafCutter: no clusters with status OK/Success — possible vocabulary change in leafcutter_ds.R")
 }
 
 leafcutter_effects <- data.frame()
@@ -985,9 +920,15 @@ n_clusters <- nrow(leafcutter_clusters)
 n_ok       <- sum(leafcutter_clusters$status == "Success", na.rm = TRUE)
 n_sig      <- sum(leafcutter_clusters$Significant, na.rm = TRUE)
 
-cat(sprintf("Total clusters tested: %d  \n", n_clusters))
-cat(sprintf("Clusters passing noise filter (status = Success): %d  \n", n_ok))
-cat(sprintf("Significant clusters (FDR < %.2f): %d\n\n", params$fdr_cutoff, n_sig))
+lc_summary_rows <- data.frame(
+  Metric = c(
+    "Total clusters tested",
+    "Clusters passing noise filter (status = Success)",
+    sprintf("Significant clusters (FDR < %.2f)", params$fdr_cutoff)
+  ),
+  Value = c(n_clusters, n_ok, n_sig),
+  stringsAsFactors = FALSE
+)
 
 if ("genes" %in% colnames(leafcutter_clusters)) {
   sig_genes_lc <- unique(unlist(strsplit(
@@ -995,8 +936,14 @@ if ("genes" %in% colnames(leafcutter_clusters)) {
     ","
   )))
   sig_genes_lc <- trimws(sig_genes_lc[sig_genes_lc != "" & !is.na(sig_genes_lc)])
-  cat(sprintf("Genes in significant clusters: %d\n", length(sig_genes_lc)))
+  lc_summary_rows <- rbind(
+    lc_summary_rows,
+    data.frame(Metric = "Genes in significant clusters", Value = length(sig_genes_lc),
+               stringsAsFactors = FALSE)
+  )
 }
+
+knitr::kable(lc_summary_rows, caption = "LeafCutter summary")
 ```
 
 ```{r leafcutter_dpsi_dist, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_effects) > 0 && "deltapsi" %in% colnames(leafcutter_effects), fig.height=5}
@@ -1202,7 +1149,7 @@ empty_tool_sets <- setdiff(names(active_tool_sig_sets), names(gene_sets))
 # Warn when a tool ran but contributed no significant genes to the UpSet.
 if (length(empty_tool_sets) > 0) {
   cat(sprintf(
-    "<p style='color:#b30000'>ADVERTENCIA: %d herramienta(s) con datos analizados no aportan genes significativos y quedan fuera del UpSet: %s.</p>\n\n",
+    "<p style='color:#b30000'>WARNING: %d analysed tool(s) contributed no significant genes and are excluded from the UpSet: %s.</p>\n\n",
     length(empty_tool_sets), paste(empty_tool_sets, collapse = ", ")
   ))
 }
@@ -1213,7 +1160,12 @@ set_sizes <- data.frame(
   Tool      = names(gene_sets),
   Genes_sig = lengths(gene_sets)
 )
-knitr::kable(set_sizes, caption = "Significant AS genes per tool (overlap is at gene level, not event level)")
+datatable(
+  set_sizes,
+  caption  = "Significant AS genes per tool (overlap is at gene level, not event level)",
+  options  = list(pageLength = 10, scrollX = TRUE),
+  rownames = FALSE
+)
 ```
 
 ```{r overlap_upset, eval=length(gene_sets) >= 2, fig.height=5}
@@ -1230,11 +1182,20 @@ upset(
 # Count over gene_sets (tools that actually contribute signal), not
 # active_tool_sig_sets (tools that ran), so the denominator is not inflated.
 all_tools_genes_keys <- Reduce(intersect, gene_sets)
-cat(sprintf("Genes significant in all %d tools with signal: %d\n\n",
+cat(sprintf("Genes significant in all %d tools with signal: **%d**\n\n",
             length(gene_sets), length(all_tools_genes_keys)))
 
 if (length(all_tools_genes_keys) > 0) {
-  cat("Genes:", paste(sort(key_to_display(all_tools_genes_keys)), collapse = ", "), "\n")
+  shared_genes_tbl <- data.frame(
+    Gene = sort(key_to_display(all_tools_genes_keys)),
+    stringsAsFactors = FALSE
+  )
+  datatable(
+    shared_genes_tbl,
+    caption = "Genes significant in all active tools (searchable)",
+    options = list(pageLength = 15, scrollX = TRUE),
+    rownames = FALSE
+  )
 }
 ```
 
@@ -1869,7 +1830,16 @@ if (run_de_section && nrow(de_results) > 0) {
 # Reuse the gene sets built in the Cross-Tool Overlap section.
 as_sig_genes <- unique(c(rmats_sig_genes, majiq_sig_genes, isar_sig_genes, leafcutter_sig_genes))
 
-# Tag each gene in the DE table by its AS status
+as_tool_sets <- list(
+  rMATS       = rmats_sig_genes,
+  MAJIQ       = majiq_sig_genes,
+  ISAR        = isar_sig_genes,
+  LeafCutter  = leafcutter_sig_genes
+)
+# Keep only tools that contribute genes.
+active_as_tools <- names(as_tool_sets)[lengths(as_tool_sets) > 0]
+
+# Tag each gene in the DE table by its AS status and per-tool membership.
 de_results <- de_results %>%
   mutate(
     AS_hit = gene_id %in% as_sig_genes,
@@ -1881,9 +1851,18 @@ de_results <- de_results %>%
     )
   )
 
+# Per-tool AS hit flag (gene detected as significant by each tool).
+for (tl in active_as_tools) {
+  de_results[[paste0("AS_", tl)]] <- de_results$gene_id %in% as_tool_sets[[tl]]
+}
+
 dual_hits <- de_results %>%
   filter(hit_class == "DE + AS") %>%
   arrange(padj)
+
+# Ensures the downstream chunks that reference dual_hits_ann always see it,
+# even when there are no DE+AS hits (it is populated by the de_as_table chunk).
+dual_hits_ann <- data.frame()
 
 cat(sprintf(
   "DE significant (|log2FC| ≥ 1, padj < %.2f): **%d genes**  \n",
@@ -1897,6 +1876,53 @@ cat(sprintf(
   "Dual hits (DE + AS): **%d genes**\n\n",
   nrow(dual_hits)
 ))
+
+# Reusable DE volcano plot, colouring AS hits by one tool membership column.
+# as_col: column name in de_results flagging the AS hit for the chosen tool.
+make_de_volcano <- function(de_df, as_col, title, subtitle) {
+  set.seed(42)
+  colour_map <- c(
+    "DE + AS"  = "firebrick",
+    "DE only"  = "steelblue",
+    "AS only"  = "darkorange",
+    "Neither"  = "gray80"
+  )
+  size_map   <- c("DE + AS" = 2.5, "DE only" = 1.5, "AS only" = 2, "Neither" = 0.6)
+  alpha_map  <- c("DE + AS" = 0.9, "DE only" = 0.6, "AS only" = 0.7, "Neither" = 0.3)
+
+  df <- de_df
+  df$tool_hit <- df[[as_col]] %in% TRUE
+  df$hh <- ifelse(df$DE_significant & df$tool_hit, "DE + AS",
+                  ifelse(df$DE_significant & !df$tool_hit, "DE only",
+                         ifelse(!df$DE_significant & df$tool_hit, "AS only", "Neither")))
+  df$hh <- factor(df$hh, levels = names(colour_map))
+
+  plot_df <- bind_rows(
+    df %>% filter(hh != "Neither"),
+    df %>% filter(hh == "Neither") %>% slice_sample(n = min(3000, sum(df$hh == "Neither")))
+  )
+  label_df <- df %>% filter(hh == "DE + AS") %>%
+    slice_max(neg_log10_padj, n = 20)
+
+  ggplot(plot_df, aes(x = log2FC, y = neg_log10_padj,
+                      colour = hh, size = hh, alpha = hh)) +
+    geom_point() +
+    geom_text_repel(
+      data = label_df, aes(label = gene_id),
+      colour = "black", size = 2.8, max.overlaps = 15, segment.size = 0.3
+    ) +
+    scale_colour_manual(values = colour_map, name = NULL) +
+    scale_size_manual(values = size_map, name = NULL) +
+    scale_alpha_manual(values = alpha_map, name = NULL) +
+    geom_hline(yintercept = -log10(params$fdr_cutoff),
+               linetype = "dashed", colour = "gray40", linewidth = 0.4) +
+    geom_vline(xintercept = c(-1, 1),
+               linetype = "dashed", colour = "gray40", linewidth = 0.4) +
+    theme_bw(base_size = 12) +
+    labs(title = title, subtitle = subtitle,
+         x = "log2 Fold Change", y = "-log10(adj. p-value)") +
+    theme(legend.position = "bottom")
+}
 ```
 
 ```{r de_volcano, eval=run_de_section && nrow(de_results) > 0, fig.height=7, fig.width=10}
@@ -1949,58 +1975,167 @@ ggplot(de_plot, aes(x = log2FC, y = neg_log10_padj,
   theme(legend.position = "bottom")
 ```
 
-```{r de_as_table, eval=run_de_section && nrow(dual_hits) > 0}
-# Enrich dual-hit table with AS event details from rMATS (if available)
-if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
-  # Summarise per gene: best event type, lowest FDR, largest |dPSI|
-  rmats_gene_summary <- all_rmats %>%
-    filter(Significant, geneSymbol %in% dual_hits$gene_id) %>%
-    group_by(geneSymbol) %>%
-    slice_min(FDR, n = 1, with_ties = FALSE) %>%
-    ungroup() %>%
-    dplyr::select(geneSymbol, EventType, FDR_AS = FDR,
-           dPSI = IncLevelDifference, priority_score)
-
-  dual_hits_ann <- dual_hits %>%
-    left_join(rmats_gene_summary, by = c("gene_id" = "geneSymbol"))
-} else {
-  dual_hits_ann <- dual_hits
-}
-
-show_cols <- intersect(
-  c("gene_id", "log2FC", "padj", "EventType", "FDR_AS", "dPSI", "priority_score"),
-  colnames(dual_hits_ann)
+```{r de_volcano_by_tool_ui, eval=run_de_section && nrow(de_results) > 0 && length(active_as_tools) > 0, fig.show='hide', results='asis'}
+# Per-tool DE volcanoes in a tabbed browser. Each tab is a PNG generated from
+# the same DE data, highlighting only the genes called significant by that tool,
+# so the "DE + AS" signal can be inspected per AS tool without re-running anything.
+vol_by_tool <- list()
+vol_by_tool[["All tools"]] <- make_de_volcano(
+  de_results, "AS_hit",
+  "Differential Expression - AS genes highlighted (all tools)",
+  sprintf("Red = significant in both DE and AS (n = %d)", nrow(dual_hits))
 )
 
-datatable(
-  dual_hits_ann[, show_cols],
-  caption  = sprintf("Genes significant in both DE and AS (n = %d)", nrow(dual_hits_ann)),
-  rownames = FALSE,
-  filter   = "top",
-  options  = list(pageLength = 20, scrollX = TRUE)
-) %>%
-  formatRound(columns = intersect(c("log2FC", "padj", "FDR_AS", "dPSI", "priority_score"),
-                                   show_cols),
-              digits = 4)
+for (tl in active_as_tools) {
+  n_dual_t <- sum(de_results$DE_significant & de_results[[paste0("AS_", tl)]], na.rm = TRUE)
+  vol_by_tool[[tl]] <- make_de_volcano(
+    de_results, paste0("AS_", tl),
+    paste0("Differential Expression - AS genes highlighted (", tl, ")"),
+    sprintf("Red = significant in both DE and AS (%s), n = %d", tl, n_dual_t)
+  )
+}
 ```
 
-```{r de_as_barplot, eval=run_de_section && nrow(dual_hits) > 0 && nrow(all_rmats) > 0, fig.height=5}
-# Distribution of AS event types among dual-hit genes
-if ("EventType" %in% colnames(dual_hits_ann) && any(!is.na(dual_hits_ann$EventType))) {
-  dual_hits_ann %>%
-    filter(!is.na(EventType)) %>%
-    count(EventType) %>%
-    ggplot(aes(x = reorder(EventType, n), y = n, fill = EventType)) +
-    geom_col(show.legend = FALSE) +
-    coord_flip() +
-    theme_bw(base_size = 12) +
-    scale_fill_brewer(palette = "Set2") +
-    labs(
-      title = "AS event types in DE+AS dual-hit genes",
-      x     = NULL,
-      y     = "Number of genes"
-    )
+```{r de_volcano_by_tool, eval=run_de_section && nrow(de_results) > 0 && length(active_as_tools) > 0, results='asis'}
+# Render each volcano to a self-contained PNG and drive visibility with simple tabs.
+render_vol_png <- function(gg, width = 9, height = 6, dpi = 110) {
+  tmpf <- tempfile(fileext = ".png")
+  ggsave(tmpf, plot = gg, width = width, height = height, dpi = dpi, bg = "white")
+  sz <- file.info(tmpf)$size
+  raw <- readBin(tmpf, what = "raw", n = sz)
+  paste0("data:image/png;base64,", jsonlite::base64_enc(raw))
 }
+
+widget_id <- paste0("de_volcano_browser_", gsub("[^A-Za-z0-9]+", "_", params$comparison_id))
+tool_names <- names(vol_by_tool)
+
+tab_html <- paste0(
+  vapply(tool_names, function(tm) {
+    sprintf('<button class="%s_tab" data-tool="%s" style="margin:2px 6px 2px 0; padding:4px 12px; cursor:pointer; border:1px solid #ccc; border-radius:4px; background:#f7f7f7;">%s</button>',
+            widget_id, tm, tm)
+  }, character(1)),
+  collapse = ""
+)
+
+cat(
+  paste0(
+    '<div id="', widget_id, '" style="border:1px solid #d9d9d9; border-radius:8px; padding:12px; margin:12px 0 20px 0;">',
+    '<div style="font-weight:600; margin-bottom:8px;">DE volcano by AS tool</div>',
+    '<div style="margin-bottom:10px;">', tab_html, '</div>'
+  )
+)
+
+for (tm in tool_names) {
+  cat(sprintf(
+    '<div class="%s_panel" data-tool="%s" style="display:%s;">',
+    widget_id, tm, if (tm == tool_names[1]) "block" else "none"
+  ))
+  cat(sprintf('<img src="%s" style="max-width:100%%; display:block; margin:0 auto;" alt="%s volcano">',
+              render_vol_png(vol_by_tool[[tm]]), tm))
+  cat('</div>')
+}
+cat('</div>')
+
+script <- paste0(
+  '<script>(function(){',
+  'const w = document.getElementById("', widget_id, '");',
+  'const tabs = w.getElementsByClassName("', widget_id, '_tab");',
+  'const panels = w.getElementsByClassName("', widget_id, '_panel");',
+  'const activate = (tool) => {',
+  '  for (const t of tabs) t.style.background = (t.dataset.tool === tool) ? "#337ab7" : "#f7f7f7";',
+  '  for (const p of panels) p.style.display = (p.dataset.tool === tool) ? "block" : "none";',
+  '};',
+  'for (const t of tabs) t.addEventListener("click", () => activate(t.dataset.tool));',
+  '})();</script>'
+)
+cat(script)
+```
+
+```{r de_as_table, eval=run_de_section && nrow(dual_hits) > 0}
+# One row per DE+AS gene per AS tool that calls it, so the source tool can be
+# filtered/sorted. Per-tool AS metrics summarise the best event in that gene.
+tool_rows <- lapply(active_as_tools, function(tl) {
+  base <- de_results %>%
+    filter(DE_significant & .data[[paste0("AS_", tl)]]) %>%
+    select(gene_id, log2FC, padj) %>%
+    mutate(Tool = tl, AS_metric = NA_real_)
+
+  if (tl == "rMATS" && nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
+    g <- all_rmats %>%
+      filter(Significant, geneSymbol %in% base$gene_id) %>%
+      group_by(geneSymbol) %>% slice_min(FDR, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      select(geneSymbol, AS_metric = priority_score)
+    base <- base %>% left_join(g, by = c("gene_id" = "geneSymbol"))
+  } else if (tl == "MAJIQ" && nrow(majiq_results) > 0 && "gene_name" %in% colnames(majiq_results)) {
+    g <- majiq_results %>%
+      filter(Significant, gene_name %in% base$gene_id) %>%
+      group_by(gene_name) %>% slice_max(probability_changing, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      select(gene_name, AS_metric = dpsi_mean)
+    base <- base %>% left_join(g, by = c("gene_id" = "gene_name"))
+  } else if (tl == "LeafCutter" && nrow(leafcutter_clusters) > 0 && "genes" %in% colnames(leafcutter_clusters)) {
+    lc_lst <- leafcutter_clusters %>%
+      filter(Significant, !is.na(genes)) %>%
+      mutate(genes = strsplit(as.character(genes), ",")) %>%
+      tidyr::unnest(genes) %>%
+      mutate(genes = trimws(genes)) %>%
+      filter(genes %in% base$gene_id)
+    if (nrow(lc_lst) > 0) {
+      g <- lc_lst %>% group_by(genes) %>% slice_min(p.adjust, n = 1, with_ties = FALSE) %>%
+        ungroup() %>% select(genes, AS_metric = p.adjust)
+      base <- base %>% left_join(g, by = c("gene_id" = "genes"))
+    }
+  } else if (tl == "ISAR" && nrow(isar_switches) > 0 && "gene_name" %in% colnames(isar_switches)) {
+    g <- isar_switches %>%
+      filter(significant %in% TRUE, gene_name %in% base$gene_id) %>%
+      mutate(AS_metric = abs(dIF)) %>%
+      group_by(gene_name) %>% slice_min(isoform_switch_q_value, n = 1, with_ties = FALSE) %>%
+      ungroup() %>% select(gene_name, AS_metric)
+    base <- base %>% left_join(g, by = c("gene_id" = "gene_name"))
+  }
+  base
+})
+
+dual_hits_ann <- if (length(tool_rows) > 0) {
+  bind_rows(tool_rows) %>% distinct(gene_id, Tool, .keep_all = TRUE)
+} else {
+  data.frame()
+}
+
+if (nrow(dual_hits_ann) > 0) {
+  show_cols <- intersect(
+    c("gene_id", "Tool", "log2FC", "padj", "AS_metric"),
+    colnames(dual_hits_ann)
+  )
+  datatable(
+    dual_hits_ann[, show_cols],
+    caption  = sprintf("DE + AS genes per source tool (n = %d gene-tool pairs, %d unique genes)",
+                       nrow(dual_hits_ann),
+                       length(unique(dual_hits_ann$gene_id))),
+    rownames = FALSE,
+    filter   = "top",
+    options  = list(pageLength = 20, scrollX = TRUE)
+  ) %>%
+    formatRound(columns = intersect(c("log2FC", "padj", "AS_metric"), show_cols), digits = 4)
+}
+```
+
+```{r de_as_barplot, eval=run_de_section && nrow(dual_hits_ann) > 0, fig.height=5}
+# Distribution of DE+AS genes across the AS tools.
+dual_hits_ann %>%
+  filter(!is.na(Tool)) %>%
+  count(Tool) %>%
+  ggplot(aes(x = reorder(Tool, n), y = n, fill = Tool)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  theme_bw(base_size = 12) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "DE+AS genes by source tool",
+    x     = NULL,
+    y     = "Number of genes"
+  )
 ```
 
 ```{r de_as_skip_msg, eval=!run_de_section}

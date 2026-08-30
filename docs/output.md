@@ -370,49 +370,45 @@ Interactive HTML report integrating all three tools' results with visualizations
    - Sample counts and comparison
    - Tool versions and parameters
 
-2. **Quality Control**
-   - Embedded MultiQC metrics (if available)
-   - Sample validation results
-   - Splice junction QC (per-sample mean inclusion junction counts)
-
-3. **rMATS Results**
+2. **rMATS Results**
    - Event counts per AS type (bar chart)
    - Volcano plots (deltaPSI vs -log10(FDR))
    - Interactive data table with top events (with prioritization score: −log10(FDR) × |ΔΨ|)
+   - De novo splice-site event table
    - Distribution of deltaPSI values
    - PSI PCA across samples
 
-4. **MAJIQ Results**
+3. **MAJIQ Results**
    - LSV detection summary
    - deltaPSI distributions (histogram)
    - Probability distributions
    - Interactive table of high-confidence LSVs
 
-5. **IsoformSwitchAnalyzeR Results**
+4. **IsoformSwitchAnalyzeR Results**
    - Isoform switch counts
    - Functional consequence bar charts
    - Top switches with consequences table
    - Gene-level switch summary
 
-6. **LeafCutter Results** (when `--run_leafcutter true`)
+5. **LeafCutter Results** (when `--run_leafcutter true`)
    - Cluster significance table
    - Effect size distribution
 
-7. **PEGASAS Results** (when `--run_pegasas true`)
+6. **PEGASAS Results** (when `--run_pegasas true`)
    - KS score plots per pathway
    - High-correlation event tables
 
-8. **Cross-Tool Overlap**
+7. **Cross-Tool Overlap**
    - UpSet plot of genes significant across rMATS, MAJIQ, ISAR, and LeafCutter
    - List of high-confidence genes (found by multiple tools)
 
-9. **DE + AS Integration** (when `--de_results` provided)
+8. **DE + AS Integration** (when `--de_results` provided)
    - Dual-hit volcano plot overlaying DESeq2/edgeR results with AS hits
 
-10. **GO/KEGG Enrichment**
+9. **GO/KEGG Enrichment**
     - clusterProfiler enrichment for differentially spliced gene sets
 
-11. **Methods**
+10. **Methods**
     - Auto-generated methods section (copy-paste ready for papers)
     - Tool citations
     - Parameter settings
