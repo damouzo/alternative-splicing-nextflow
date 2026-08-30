@@ -21,14 +21,31 @@ process LEAFCUTTER_DS {
     """
     mkdir -p ${comparison_id}
 
-    # Generate groups file for leafcutter_ds.R (sample_id TAB condition)
+    # Generate groups file for leafcutter_ds.R (sample_id TAB condition).
+    # The order is taken from the real column header of the counts file (which
+    # LEAFCUTTER_CLUSTER fixed), not from the channel list order — mapping each
+    # column name to its condition via the id->condition dictionary.
     python3 - <<'PYEOF'
+import gzip
 import sys
 sample_ids = "${sample_ids.join(',')}".split(',')
 conditions = "${conditions.join(',')}".split(',')
+cond = dict(zip(sample_ids, conditions))
+with gzip.open("${counts_gz}", "rt") as fh:
+    header = fh.readline().split()
+if not header:
+    sys.stderr.write("[LEAFCUTTER_DS] counts file has no column header — aborting\\n")
+    sys.exit(1)
+missing = [s for s in header if s not in cond]
+if missing:
+    sys.stderr.write(
+        "[LEAFCUTTER_DS] count columns without condition mapping: %s\\n"
+        % ", ".join(missing)
+    )
+    sys.exit(1)
 with open('groups.txt', 'w') as fh:
-    for sid, cond in zip(sample_ids, conditions):
-        fh.write(f'{sid}\\t{cond}\\n')
+    for sid in header:
+        fh.write(f'{sid}\\t{cond[sid]}\\n')
 PYEOF
 
     # Build exon table expected by leafcutter_ds.R without loading full GTF in memory.

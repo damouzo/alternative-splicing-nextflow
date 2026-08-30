@@ -79,55 +79,65 @@ workflow RMATS_ANALYSIS {
             }
 
             // Keep as Path objects — Nextflow will stage them properly in RMATS_POST work dir
+            [comparison_id, g1_files, g2_files, missing]
+        }
+        .set { ch_rmats_files_by_comparison_with_missing }
+
+    // The samples that produced no .rmats files must be excluded from the BAM
+    // lists and sample ids too — otherwise b1.txt/b1_samples.txt would declare
+    // samples that have no counts in the rMATS merge.
+    ch_rmats_files_by_comparison_with_missing
+        .map { comparison_id, g1_files, g2_files, missing ->
             [comparison_id, g1_files, g2_files]
         }
         .set { ch_rmats_files_by_comparison }
-    
-    // Similarly for BAMs
+
+    ch_rmats_files_by_comparison_with_missing
+        .map { comparison_id, _g1, _g2, missing ->
+            [comparison_id, missing]
+        }
+        .set { ch_missing_by_comparison }
+
+    /*
+     * Single groupTuple for BAMs and sample_ids: the two lists share the same
+     * internal order by construction. Nextflow only guarantees alignment
+     * *within* one groupTuple; two independent groupTuple calls (as used
+     * before) may order their lists differently, silently crossing the
+     * column labels of IncLevel1/IncLevel2 against the real rMATS columns.
+     */
     ch_bams_grouped
         .groupTuple(by: 0)  // Group by comparison_id
-        .map { comparison_id, groups, sample_ids, bams ->
+        .join(ch_missing_by_comparison)
+        .map { comparison_id, groups, sample_ids, bams, missing_ids ->
             def g1_bams = []
             def g2_bams = []
+            def g1_ids  = []
+            def g2_ids  = []
 
             groups.eachWithIndex { group, idx ->
+                if (sample_ids[idx] in missing_ids) return
                 if (group == 1) {
                     g1_bams.add(bams[idx])
+                    g1_ids.add(sample_ids[idx])
                 } else {
                     g2_bams.add(bams[idx])
+                    g2_ids.add(sample_ids[idx])
                 }
             }
 
-            // Keep as Path objects — staged as symlinks, no large file copies
-            [comparison_id, g1_bams, g2_bams]
+            // b1.txt/b2.txt order and sample ids come from the same tuple,
+            // so column index i in IncLevelN maps to gN_ids[i] by construction
+            [comparison_id, g1_bams, g2_bams, g1_ids, g2_ids]
         }
-        .set { ch_bams_by_comparison }
-
-    /*
-     * Per-comparison sample_ids in the same order used for b1.txt / b2.txt.
-     * The order in ch_bams_grouped (and therefore ch_bams_by_comparison) is
-     * deterministic — it comes from groupTuple over a channel that was
-     * emitted in the order INPUT_CHECK fed it, so this list is the
-     * ground-truth mapping from rMATS column index to sample_id.
-     */
-    ch_bams_grouped
-        .groupTuple(by: 0)
-        .map { comparison_id, groups, sample_ids, _bams ->
-            def g1_ids = []
-            def g2_ids = []
-            groups.eachWithIndex { g, i ->
-                def sid = sample_ids[i]
-                (g == 1 ? g1_ids : g2_ids).add(sid)
-            }
-            [comparison_id, g1_ids, g2_ids]
-        }
-        .set { ch_sample_ids_by_comparison }
+        .set { ch_bams_and_ids }
     
-    // Join .rmats files and BAMs for each comparison
+    ch_sample_ids_by_comparison = ch_bams_and_ids.map { c, _g1, _g2, i1, i2 -> [c, i1, i2] }
+    
+    // Join .rmats files with BAMs and their ids for each comparison
     ch_rmats_files_by_comparison
-        .join(ch_bams_by_comparison)
-        .map { comparison_id, g1_rmats, g2_rmats, g1_bams, g2_bams ->
-            [comparison_id, g1_rmats, g2_rmats, g1_bams, g2_bams]
+        .join(ch_bams_and_ids)
+        .map { comparison_id, g1_rmats, g2_rmats, g1_bams, g2_bams, g1_ids, g2_ids ->
+            [comparison_id, g1_rmats, g2_rmats, g1_bams, g2_bams, g1_ids, g2_ids]
         }
         .set { ch_rmats_post_input }
     
@@ -135,11 +145,13 @@ workflow RMATS_ANALYSIS {
      * Run RMATS POST for each comparison
      */
     RMATS_POST(
-        ch_rmats_post_input.map { comparison_id, _g1_rmats, _g2_rmats, _g1_bams, _g2_bams -> comparison_id },
-        ch_rmats_post_input.map { _comparison_id, g1_rmats, _g2_rmats, _g1_bams, _g2_bams -> g1_rmats },  // List<Path> — staged
-        ch_rmats_post_input.map { _comparison_id, _g1_rmats, g2_rmats, _g1_bams, _g2_bams -> g2_rmats },  // List<Path> — staged
-        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, g1_bams, _g2_bams -> g1_bams },  // List<Path> — symlinked
-        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, _g1_bams, g2_bams -> g2_bams },  // List<Path> — symlinked
+        ch_rmats_post_input.map { comparison_id, _g1_rmats, _g2_rmats, _g1_bams, _g2_bams, _g1_ids, _g2_ids -> comparison_id },
+        ch_rmats_post_input.map { _comparison_id, g1_rmats, _g2_rmats, _g1_bams, _g2_bams, _g1_ids, _g2_ids -> g1_rmats },  // List<Path> — staged
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, g2_rmats, _g1_bams, _g2_bams, _g1_ids, _g2_ids -> g2_rmats },  // List<Path> — staged
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, g1_bams, _g2_bams, _g1_ids, _g2_ids -> g1_bams },  // List<Path> — symlinked
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, _g1_bams, g2_bams, _g1_ids, _g2_ids -> g2_bams },  // List<Path> — symlinked
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, _g1_bams, _g2_bams, g1_ids, _g2_ids -> g1_ids },  // order matches b1.txt
+        ch_rmats_post_input.map { _comparison_id, _g1_rmats, _g2_rmats, _g1_bams, _g2_bams, _g1_ids, g2_ids -> g2_ids },  // order matches b2.txt
         gtf
     )
     

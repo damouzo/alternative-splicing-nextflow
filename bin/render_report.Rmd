@@ -302,6 +302,13 @@ resolve_sample_labels <- function(expected_n, ids, prefix) {
   if (length(ids) == expected_n) {
     return(ids)
   }
+  # Sample ids are now guaranteed to match the rMATS column order by
+  # construction; a count mismatch means a real mapping problem, not a case
+  # for silent placeholder labels.
+  warning(sprintf(
+    "Sample-id count (%d) does not match rMATS column count (%d) for group %s — ",
+    length(ids), expected_n, prefix
+  ), "using placeholder labels. Check sample/condition mapping in the samplesheet.")
   paste0(prefix, "_rep", seq_len(expected_n))
 }
 

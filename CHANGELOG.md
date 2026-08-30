@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Data-integrity fixes from the internal audit (see `internal_audition.md`):
+  rMATS, MAJIQ and LeafCutter no longer rely on two independent `groupTuple`
+  calls producing the same internal order (Nextflow only guarantees alignment
+  *within* one `groupTuple`). Each tool now groups sample ids, BAMs/juncs and
+  conditions in a single tuple so column labels always match the real columns.
+  - rMATS: `sample_ids` for the report/PEGASAS derive from the same tuple as
+    `b1.txt`/`b2.txt`; `RMATS_POST` additionally writes
+    `b1_samples.txt`/`b2_samples.txt` (column → sample mapping) inside the
+    published results dir.
+  - MAJIQ: `MAJIQ_BUILD` pairs each staged BAM with its sample id via a
+    channel-derived map instead of index alignment, so the `.sj` files can
+    never be generated with the wrong sample name.
+  - LeafCutter: `groups.txt` in `LEAFCUTTER_DS` is built from the real column
+    header of the perind counts file (mapping each column name to its
+    condition), not from the channel list order.
+  - PEGASAS: `prepare_pegasas_inputs.py` now validates the channel-provided
+    `--g1-ids`/`--g2-ids` positionally against the materialized
+    `b1_samples.txt`/`b2_samples.txt`, aborting on any order mismatch (not
+    just cardinality mismatches). PEGASAS now requires those files — they are
+    written by the updated `RMATS_POST`, and the pipeline fails early with a
+    clear message if they are missing (only affects reuse of rMATS outputs
+    produced before this change).
+  - Input validation: duplicate BAM basenames within a comparison now abort
+    at `INPUT_CHECK` (MAJIQ/rMATS/LeafCutter stage BAMs by basename).
+  - rMATS: samples that produce no `.rmats` files are now excluded from the
+    BAM lists and sample ids too, keeping `b1.txt`/`b2.txt`,
+    `b1_samples.txt`/`b2_samples.txt` and the merged `.rmats` consistent.
+  - Report: `resolve_sample_labels` now emits a warning instead of silently
+    falling back to `Group1_repN` placeholder labels when the id count does
+    not match the rMATS column count.
+
 ### Changed
 - Removed the **QC Metrics** section from the HTML report and the now-dead
   `--nfcore_multiqc_dir` parameter. QC output (MultiQC) is already delivered by

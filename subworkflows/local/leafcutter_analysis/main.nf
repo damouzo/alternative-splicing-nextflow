@@ -25,41 +25,37 @@ workflow LEAFCUTTER_ANALYSIS {
     LEAFCUTTER_BAM2JUNC(samples_bam)
 
     /*
-     * Group junction files by comparison_id, carry sample IDs and conditions
-     * for groups.txt generation in LEAFCUTTER_DS
+     * Group junction files by comparison_id, carrying sample IDs, conditions
+     * and junc files in a single groupTuple so their internal order is
+     * guaranteed to stay aligned (two separate groupTuple calls are not).
      */
     LEAFCUTTER_BAM2JUNC.out.junc
         .map { meta, junc ->
             [meta.comparison_id, meta.id, meta.condition, junc]
         }
         .groupTuple(by: 0)
-        .map { comparison_id, sample_ids, _conditions, junc_files ->
-            [comparison_id, sample_ids, junc_files]
-        }
-        .set { ch_grouped_juncs }
-
-    // Carry conditions alongside for DS step
-    LEAFCUTTER_BAM2JUNC.out.junc
-        .map { meta, _junc ->
-            [meta.comparison_id, meta.id, meta.condition]
-        }
-        .groupTuple(by: 0)
-        .map { comparison_id, sample_ids, conditions ->
-            [comparison_id, sample_ids, conditions]
-        }
-        .set { ch_grouped_meta }
+        .set { ch_leaf_grouped }  // [comp_id, [ids], [conds], [juncs]] — same order by construction
 
     /*
      * Per-comparison: cluster introns
      */
-    LEAFCUTTER_CLUSTER(ch_grouped_juncs)
+    LEAFCUTTER_CLUSTER(
+        ch_leaf_grouped.map { comparison_id, sample_ids, _conditions, junc_files ->
+            [comparison_id, sample_ids, junc_files]
+        }
+    )
 
     /*
      * Per-comparison: differential splicing
-     * Join cluster counts with sample/condition metadata
+     * Join cluster counts with sample/condition metadata — ids and conditions
+     * come from the same tuple as the juncs that fixed the count columns.
      */
     LEAFCUTTER_CLUSTER.out.counts
-        .join(ch_grouped_meta)
+        .join(
+            ch_leaf_grouped.map { comparison_id, sample_ids, conditions, _junc_files ->
+                [comparison_id, sample_ids, conditions]
+            }
+        )
         .set { ch_ds_input }
 
     LEAFCUTTER_DS(ch_ds_input, gtf)

@@ -38,14 +38,17 @@ workflow MAJIQ_ANALYSIS {
 
     /*
      * Prepare inputs for MAJIQ BUILD
-     * Need: comparison_id, all_bams, all_bais, sample_info
+     * Need: comparison_id, all_bams, all_bais, and a deterministic map between
+     * each staged BAM and its sample id. BAMs and ids are paired here (from the
+     * same groupTuple) so MAJIQ_BUILD never has to align two independent lists.
      */
     ch_samples_by_comparison
         .map { comparison_id, _groups, sample_ids, bams, bais ->
-            // sample_info carries only sample IDs — their order matches the staged bams list.
-            // bam_path is no longer passed to avoid using pre-staging absolute paths in the script.
-            def sample_info = sample_ids.collect { sid -> [sid] }
-            [comparison_id, bams, bais, sample_info]
+            // [sample_id, bam_basename] — the staged name of each BAM is its
+            // basename, so this pairing is exact regardless of staging order
+            def sample_pairs = [sample_ids, bams.collect { bam -> bam.name }].transpose()
+                .collect { sid, bam_name -> [sid, bam_name] }
+            [comparison_id, bams, bais, sample_pairs]
         }
         .set { ch_majiq_build_input }
 
@@ -53,11 +56,11 @@ workflow MAJIQ_ANALYSIS {
      * Run MAJIQ BUILD
      */
     MAJIQ_BUILD(
-        ch_majiq_build_input.map { comparison_id, _bams, _bais, _sample_info -> comparison_id },
-        ch_majiq_build_input.map { _comparison_id, bams, _bais, _sample_info -> bams },
-        ch_majiq_build_input.map { _comparison_id, _bams, bais, _sample_info -> bais },
+        ch_majiq_build_input.map { comparison_id, _bams, _bais, _sample_pairs -> comparison_id },
+        ch_majiq_build_input.map { _comparison_id, bams, _bais, _sample_pairs -> bams },
+        ch_majiq_build_input.map { _comparison_id, _bams, bais, _sample_pairs -> bais },
         ch_gff3,
-        ch_majiq_build_input.map { _comparison_id, _bams, _bais, sample_info -> sample_info }
+        ch_majiq_build_input.map { _comparison_id, _bams, _bais, sample_pairs -> sample_pairs }
     )
     
     /*

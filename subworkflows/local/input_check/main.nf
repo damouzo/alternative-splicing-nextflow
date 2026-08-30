@@ -76,6 +76,21 @@ workflow INPUT_CHECK {
             [meta_updated, bam, bai]
         }
         .set { ch_samples_bam_with_comparison }
+
+    // Enforce unique BAM basenames per comparison: several tools (MAJIQ, rMATS,
+    // LeafCutter) stage BAMs by basename and pair them with sample ids by name,
+    // so a collision inside a comparison would break that pairing.
+    ch_samples_bam_with_comparison
+        .map { meta, bam, _bai -> [meta.comparison_id, bam.name] }
+        .groupTuple(by: 0)
+        .map { comparison_id, bam_names ->
+            def dup = bam_names.countBy { it }.findAll { k, v -> v > 1 }.keySet()
+            if (dup) {
+                error "[INPUT_CHECK] ${comparison_id}: duplicate BAM basenames ${dup} across samples — rename the BAM files so each sample has a unique basename."
+            }
+            true
+        }
+        .subscribe { }
     
     ch_samples_salmon
         .combine(ch_comparisons)

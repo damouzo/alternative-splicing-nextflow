@@ -13,6 +13,8 @@ process RMATS_POST {
     path rmats_files_g2   // staged .rmats files for group 2
     path bams_g1          // staged BAM files for group 1 (symlinked, not copied)
     path bams_g2          // staged BAM files for group 2
+    val  sample_ids_g1    // sample ids in the same order as bams_g1 -> order of b1.txt
+    val  sample_ids_g2    // sample ids in the same order as bams_g2 -> order of b2.txt
     path gtf
     
     output:
@@ -25,6 +27,11 @@ process RMATS_POST {
                          params.strandedness == 'reverse'    ? 'fr-firststrand' : 'fr-unstranded'
     def g1_bams_staged = (bams_g1 instanceof List ? bams_g1 : [bams_g1]).join(' ')
     def g2_bams_staged = (bams_g2 instanceof List ? bams_g2 : [bams_g2]).join(' ')
+    // Materialize the column -> sample mapping next to the rMATS output so
+    // downstream consumers (report, PEGASAS) can validate id order instead of
+    // trusting a channel that could drift from the actual BAM list order.
+    def g1_ids_staged = (sample_ids_g1 instanceof List ? sample_ids_g1 : [sample_ids_g1]).join("\n")
+    def g2_ids_staged = (sample_ids_g2 instanceof List ? sample_ids_g2 : [sample_ids_g2]).join("\n")
     // novelSS options mirror what was used in PREP — controlled via params.rmats_novel_ss
     def novelss_opt = params.rmats_novel_ss ? '--novelSS' : ''
     def mil_opt     = params.rmats_novel_ss ? "--mil ${params.rmats_min_intron_length}" : ''
@@ -34,14 +41,24 @@ process RMATS_POST {
     for bam in ${g1_bams_staged}; do realpath "\$bam"; done | paste -sd ',' - > b1.txt
     for bam in ${g2_bams_staged}; do realpath "\$bam"; done | paste -sd ',' - > b2.txt
 
+    mkdir -p ${comparison_id}
+
+    # Same order, one sample id per line — defines the column -> sample mapping.
+    # Written inside the published output dir so downstream consumers (PEGASAS,
+    # manual QC) can resolve it next to the rMATS counts tables.
+    cat > ${comparison_id}/b1_samples.txt << 'EOF1'
+${g1_ids_staged}
+EOF1
+    cat > ${comparison_id}/b2_samples.txt << 'EOF2'
+${g2_ids_staged}
+EOF2
+
     # Collect all staged .rmats files into merged_tmp
     mkdir -p merged_tmp
     for f in ${rmats_files_g1} ${rmats_files_g2}; do
         cp "\$f" merged_tmp/
     done
 
-    mkdir -p ${comparison_id}
-    
     # Run rMATS POST
     python /rmats/rmats.py \\
         --b1 b1.txt \\

@@ -52,11 +52,22 @@ workflow PEGASAS_ANALYSIS {
 
     // === PER CONTRAST: PSI matrix + 2-group order ===
     ch_contrast = ch_rmats_results
-        .map { comp_id, rmats_dir -> [comp_id, file("${rmats_dir}/SE.MATS.JC.txt")] }
+        .map { comp_id, rmats_dir ->
+            def se_file = file("${rmats_dir}/SE.MATS.JC.txt")
+            def b1_file = file("${rmats_dir}/b1_samples.txt")
+            def b2_file = file("${rmats_dir}/b2_samples.txt")
+            // If the materialized column->sample mapping is missing (e.g. rMATS
+            // results generated before this fix), fail here with a clear message
+            // instead of a generic staging error in PEGASAS_PREPARE_CONTRAST.
+            if (!b1_file.exists() || !b2_file.exists()) {
+                error "[PEGASAS_ANALYSIS] ${comp_id}: missing ${rmats_dir}/b1_samples.txt or b2_samples.txt — rMATS POST now writes these files; rerun the comparison with the current pipeline so PEGASAS can verify the column->sample order."
+            }
+            [comp_id, se_file, b1_file, b2_file]
+        }
         .combine(ch_sample_ids, by: 0)
         .combine(ch_group_info)
-        .map { comp_id, se_file, g1_ids, g2_ids, grp ->
-            [comp_id, se_file, grp, g1_ids, g2_ids]
+        .map { comp_id, se_file, b1_samples, b2_samples, g1_ids, g2_ids, grp ->
+            [comp_id, se_file, b1_samples, b2_samples, grp, g1_ids, g2_ids]
         }
 
     PEGASAS_PREPARE_CONTRAST(ch_contrast)

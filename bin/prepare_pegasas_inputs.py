@@ -6,7 +6,9 @@ Sample ids for the PSI matrix come from the rMATS BAM list (b1.txt / b2.txt
 order) and are passed in via --g1-ids / --g2-ids. They are validated against
 the per-event column counts of SE.MATS.JC.txt to make sure the assignment is
 unambiguous — if the counts do not match, the script aborts with a clear
-error instead of silently producing wrong correlations.
+error instead of silently producing wrong correlations. When the materialized
+b1_samples.txt / b2_samples.txt written by rMATS POST are provided, their
+order is also compared positionally against --g1-ids / --g2-ids.
 
 Outputs:
   gene_exp_bySample.tsv  — rows=samples, cols=genes (TPM, samples ordered by group)
@@ -31,6 +33,14 @@ def parse_args() -> argparse.Namespace:
                    help="Comma-separated sample_ids in the order rMATS POST wrote b1.txt")
     p.add_argument("--g2-ids",       dest="g2_ids", default="",
                    help="Comma-separated sample_ids in the order rMATS POST wrote b2.txt")
+    p.add_argument("--g1-samples-file", dest="g1_samples_file", default=None,
+                   help="b1_samples.txt written by rMATS POST: materialized "
+                        "column->sample order for group 1 (validated positionally "
+                        "against --g1-ids)")
+    p.add_argument("--g2-samples-file", dest="g2_samples_file", default=None,
+                   help="b2_samples.txt written by rMATS POST: materialized "
+                        "column->sample order for group 2 (validated positionally "
+                        "against --g2-ids)")
     p.add_argument("--out-dir",      default=".", dest="out_dir",
                    help="Output directory [.]")
     p.add_argument("--fdr-cutoff",   type=float, default=0.0, dest="fdr_cutoff",
@@ -47,6 +57,31 @@ def parse_args() -> argparse.Namespace:
 
 def parse_id_list(raw: str) -> list:
     return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def validate_order(ids: list, ids_file: str, group_label: str) -> None:
+    """
+    Identity-of-order guard: when rMATS POST materialized the column->sample
+    mapping (bN_samples.txt, one id per line in bN.txt order), verify it
+    matches the channel-provided ids positionally. A cardinality match alone
+    would let a crossed order pass silently.
+    """
+    if not ids_file:
+        return
+    if not os.path.isfile(ids_file):
+        print(f"[WARN] {group_label}: {ids_file} not found — "
+              "falling back to cardinality-only validation")
+        return
+    with open(ids_file) as fh:
+        reference = [ln.strip() for ln in fh if ln.strip()]
+    if reference == ids:
+        print(f"[INFO] {group_label}: sample order matches the materialized bN_samples.txt")
+        return
+    sys.exit(
+        f"[ERROR] {group_label} sample order mismatch: --g1-ids/--g2-ids order "
+        f"{ids} does not match the materialized order {reference}. PSI columns "
+        f"would be assigned to the wrong sample."
+    )
 
 
 def load_group_info(fin: str) -> dict:
@@ -270,6 +305,9 @@ def main() -> None:
             "from the rMATS BAM list order so that PSI values are assigned "
             "to the correct sample in the matrix."
         )
+
+    validate_order(g1_ids, args.g1_samples_file, "Group1")
+    validate_order(g2_ids, args.g2_samples_file, "Group2")
 
     # Every rMATS sample must be present in group_info — otherwise the
     # group_info used downstream would miss samples and the correlation would

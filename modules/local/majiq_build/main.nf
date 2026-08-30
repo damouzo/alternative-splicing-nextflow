@@ -10,21 +10,20 @@ process MAJIQ_BUILD {
     path bams
     path bais
     path gff3         // annotation.gff3 — converted from GTF by MAJIQ_PREPARE_ANNOTATION
-    val  sample_info  // [[sample_id], ...] — order must match staged bams list
+    val  sample_pairs // [[sample_id, staged_bam_basename], ...] — deterministic id<->BAM map
 
     output:
     tuple val(comparison_id), path("sj/*.sj"), path("built_sg.zarr"), emit: majiq_build
     path "versions.yml"                                              , emit: versions
 
     script:
-    // Derive sample IDs in order — must match the order of staged bams
-    def sample_ids     = sample_info.collect { it[0] }
-    def sample_ids_str = sample_ids.join(' ')
+    // id<->BAM map derived from the channel, not from staging order
+    def sample_ids = sample_pairs.collect { it[0] }
 
     // Build groups TSV: only 'group' and 'sj' columns are required by majiq-v3 build
     def tsv_rows = sample_ids.collect { sid ->
         "all\tsj/${sid}.sj"
-    }.join('\n')
+    }.join("\n")
 
     """
     # Set license only when a non-null, non-empty path is provided
@@ -39,13 +38,14 @@ process MAJIQ_BUILD {
     majiq-v3 gff3 ${gff3} ann_sg.zarr
 
     # Step 2: Extract splice junctions per sample using staged BAM paths.
-    # bams are staged in the work dir — iterate using the declared sample order.
+    # Each row maps a staged BAM basename to its sample id; the pairing comes
+    # from the channel, not from the order in which Nextflow staged the files.
     mkdir -p sj
-    bam_array=(${(bams instanceof List ? bams : [bams]).join(' ')})
-    sid_array=(${sample_ids_str})
-    for i in "\${!bam_array[@]}"; do
-        majiq-v3 sj "\${bam_array[\$i]}" ann_sg.zarr "sj/\${sid_array[\$i]}.sj"
-    done
+    while read -r sid bamfile; do
+        majiq-v3 sj "\${bamfile}" ann_sg.zarr "sj/\${sid}.sj"
+    done << 'BAM_MAP_EOF'
+${sample_pairs.collect { it.join(' ') }.join("\n")}
+BAM_MAP_EOF
 
     # Step 3: Build splicegraph across all samples
     printf 'group\\tsj\\n${tsv_rows}\\n' > build_config.tsv
