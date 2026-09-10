@@ -45,7 +45,7 @@ process PEGASAS_PREPARE_CONTRAST {
     def s1_flag = b1_samples ? "--g1-samples-file ${b1_samples}" : ""
     def s2_flag = b2_samples ? "--g2-samples-file ${b2_samples}" : ""
     """
-    ${projectDir}/bin/prepare_pegasas_inputs.py \\
+    "${projectDir}/bin/prepare_pegasas_inputs.py" \\
         ${rmats_se} \\
         ${group_info} \\
         --g1-ids "${g1_arg}" \\

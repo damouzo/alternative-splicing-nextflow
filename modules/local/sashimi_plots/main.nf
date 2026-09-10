@@ -24,8 +24,10 @@ process SASHIMI_PLOTS {
     def dpsi        = params.report_dpsi_cutoff
     def exon_scale  = params.sashimi_exon_scale
     def intron_scale = params.sashimi_intron_scale
-    def b1_ids_quoted = b1_ids.collect { '"' + it.replace('"', '\\"') + '"' }.join(' ')
-    def b2_ids_quoted = b2_ids.collect { '"' + it.replace('"', '\\"') + '"' }.join(' ')
+    // Written as literal lines inside a quoted heredoc (below) so ids are never
+    // interpolated as shell syntax, even if they contain $()/backticks/quotes.
+    def b1_ids_lines = b1_ids.join('\n')
+    def b2_ids_lines = b2_ids.join('\n')
 
     """
     # Step 1: filter rMATS output to top-N events per event type
@@ -88,8 +90,14 @@ process SASHIMI_PLOTS {
     B1_BAMS="\${B1_BAMS%,}"
     B2_BAMS="\${B2_BAMS%,}"
 
-    B1_IDS=(${b1_ids_quoted})
-    B2_IDS=(${b2_ids_quoted})
+    cat <<'B1_IDS_EOF' > b1_ids.txt
+${b1_ids_lines}
+B1_IDS_EOF
+    cat <<'B2_IDS_EOF' > b2_ids.txt
+${b2_ids_lines}
+B2_IDS_EOF
+    mapfile -t B1_IDS < b1_ids.txt
+    mapfile -t B2_IDS < b2_ids.txt
 
     if [ "\${#B1_IDS[@]}" -ne "\${#B1_ARR[@]}" ] || [ "\${#B2_IDS[@]}" -ne "\${#B2_ARR[@]}" ]; then
         echo "[ERROR] Sample IDs and BAMs are inconsistent for sashimi plotting" >&2

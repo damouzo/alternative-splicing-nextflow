@@ -18,8 +18,16 @@ process LEAFCUTTER_DS {
     def min_group_size = group_sizes ? group_sizes.min() as int : 1
     def min_samples_per_intron = Math.max(1, Math.min(5, min_group_size))
     def min_samples_per_group  = Math.max(1, Math.min(3, min_group_size))
+    // Serialize as base64-encoded JSON so sample ids/conditions containing commas,
+    // quotes or shell metacharacters can't break the embedded Python parsing.
+    def sample_ids_b64 = groovy.json.JsonOutput.toJson(sample_ids).bytes.encodeBase64().toString()
+    def conditions_b64 = groovy.json.JsonOutput.toJson(conditions).bytes.encodeBase64().toString()
     """
     mkdir -p ${comparison_id}
+
+    SAMPLE_IDS_JSON="\$(printf '%s' '${sample_ids_b64}' | base64 -d)"
+    CONDITIONS_JSON="\$(printf '%s' '${conditions_b64}' | base64 -d)"
+    export SAMPLE_IDS_JSON CONDITIONS_JSON
 
     # Generate groups file for leafcutter_ds.R (sample_id TAB condition).
     # The order is taken from the real column header of the counts file (which
@@ -27,9 +35,11 @@ process LEAFCUTTER_DS {
     # column name to its condition via the id->condition dictionary.
     python3 - <<'PYEOF'
 import gzip
+import json
+import os
 import sys
-sample_ids = "${sample_ids.join(',')}".split(',')
-conditions = "${conditions.join(',')}".split(',')
+sample_ids = json.loads(os.environ["SAMPLE_IDS_JSON"])
+conditions = json.loads(os.environ["CONDITIONS_JSON"])
 cond = dict(zip(sample_ids, conditions))
 with gzip.open("${counts_gz}", "rt") as fh:
     header = fh.readline().split()

@@ -22,11 +22,20 @@ process LEAFCUTTER_CLUSTER {
         -o ${comparison_id} \
         -m 1
 
-    # Rename outputs to include comparison_id prefix
-    [ -f "${comparison_id}_perind_numers.counts.gz" ] || \
-        mv perind_numers.counts.gz ${comparison_id}_perind_numers.counts.gz 2>/dev/null || true
-    [ -f "${comparison_id}_perind.counts.gz" ] || \
-        mv perind.counts.gz ${comparison_id}_perind.counts.gz 2>/dev/null || true
+    # Rename outputs to include comparison_id prefix — fail loudly instead of
+    # letting a missing rename surface later as an opaque "missing output" error.
+    if [ ! -f "${comparison_id}_perind_numers.counts.gz" ]; then
+        mv perind_numers.counts.gz "${comparison_id}_perind_numers.counts.gz" || {
+            echo "[ERROR] leafcutter_cluster_regtools.py did not produce perind_numers.counts.gz" >&2
+            exit 1
+        }
+    fi
+    if [ ! -f "${comparison_id}_perind.counts.gz" ]; then
+        mv perind.counts.gz "${comparison_id}_perind.counts.gz" || {
+            echo "[ERROR] leafcutter_cluster_regtools.py did not produce perind.counts.gz" >&2
+            exit 1
+        }
+    fi
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

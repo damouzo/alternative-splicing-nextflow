@@ -80,7 +80,10 @@ workflow INPUT_CHECK {
     // Enforce unique BAM basenames per comparison: several tools (MAJIQ, rMATS,
     // LeafCutter) stage BAMs by basename and pair them with sample ids by name,
     // so a collision inside a comparison would break that pairing.
-    ch_samples_bam_with_comparison
+    // Gate ch_samples_bam_with_comparison on this check via combine() so that no
+    // downstream process can start before the check has run and possibly aborted —
+    // a bare .subscribe{} runs on its own dataflow branch and does not block emission.
+    ch_bam_dup_check = ch_samples_bam_with_comparison
         .map { meta, bam, _bai -> [meta.comparison_id, bam.name] }
         .groupTuple(by: 0)
         .map { comparison_id, bam_names ->
@@ -90,8 +93,13 @@ workflow INPUT_CHECK {
             }
             true
         }
-        .subscribe { }
-    
+        .collect()
+        .map { true }
+
+    ch_samples_bam_with_comparison = ch_samples_bam_with_comparison
+        .combine(ch_bam_dup_check)
+        .map { meta, bam, bai, _ok -> [meta, bam, bai] }
+
     ch_samples_salmon
         .combine(ch_comparisons)
         .filter { meta, _salmon_dir, comp ->

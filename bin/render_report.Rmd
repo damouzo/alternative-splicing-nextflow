@@ -1555,6 +1555,17 @@ render_ora_result(global_res, heading_level = 3)
 run_pegasas_section <- !is.null(params$pegasas_dir)
 ```
 
+```{r pegasas_intro, eval=run_pegasas_section, results='asis'}
+cat("PEGASAS asks a different question than a standard DE pathway enrichment: ",
+    "it does not compare patient vs healthy directly. For each sample, it computes ",
+    "a single-sample KS enrichment score per pathway (how skewed that gene set is ",
+    "in that sample's own expression ranking), then correlates this per-sample score ",
+    "against per-sample PSI values, across samples, to find splicing events that ",
+    "track with pathway activity. The two plots below show the raw per-sample scores; ",
+    "they are **not** a patient-vs-healthy differential ranking. The actual ",
+    "splicing–pathway association is the correlation table further down.\n\n")
+```
+
 ```{r pegasas_load, eval=run_pegasas_section}
 # PEGASAS runs pathway enrichment once for the whole cohort and subsets per
 # contrast. The per-contrast pegasas directory holds:
@@ -1649,6 +1660,13 @@ pathway_summary <- if (length(cor_list) > 0) {
 } else data.frame()
 ```
 
+```{r pegasas_score_plotA_caption, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
+cat("**Plot A — per-sample pathway activity.** Each dot is one pathway in one sample: ",
+    "size = KS enrichment score, colour = -log10(p) of that single-sample test. ",
+    "Samples are grouped by condition only for display; this plot does not test for ",
+    "a difference between groups.\n\n")
+```
+
 ```{r pegasas_score_plotA, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
 # Heatmap of points (bubble heatmap): pathways x samples, sized by KS score,
 # coloured by -log10(p). Samples are faceted by group so the activity pattern
@@ -1672,6 +1690,13 @@ ggplot(plot_df, aes(x = sample, y = pathway,
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
         panel.grid = element_blank(),
         strip.background = element_rect(fill = "grey90", color = NA))
+```
+
+```{r pegasas_score_plotB_caption, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
+cat("**Plot B — cohort-average pathway ranking.** Pathways ordered by their mean KS ",
+    "score across ALL samples (both groups pooled). This ranks how consistently ",
+    "active a pathway is across the cohort — it is **not** a patient-vs-healthy ",
+    "differential GSEA and does not rank pathways by group difference.\n\n")
 ```
 
 ```{r pegasas_score_plotB, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
