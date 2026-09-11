@@ -1857,6 +1857,12 @@ if (run_de_section && nrow(de_results) > 0) {
 }
 ```
 
+```{r de_no_results, eval=run_de_section && nrow(de_results) == 0, results='asis'}
+cat("No matching DE (DESeq2) results were found in `de_results` for comparison `",
+    params$comparison_id, "` — DE + AS integration is skipped for this contrast. ",
+    "Generate a DGE subdirectory matching this comparison's groups if you need this section.\n\n", sep = "")
+```
+
 ```{r de_as_overlap, eval=run_de_section && nrow(de_results) > 0}
 # Pool AS significant genes from all active tools.
 # Reuse the gene sets built in the Cross-Tool Overlap section.
@@ -2083,7 +2089,7 @@ script <- paste0(
 cat(script)
 ```
 
-```{r de_as_table, eval=run_de_section && nrow(dual_hits) > 0}
+```{r de_as_table, eval=run_de_section && nrow(de_results) > 0 && nrow(dual_hits) > 0}
 # One row per DE+AS gene per AS tool that calls it, so the source tool can be
 # filtered/sorted. Per-tool AS metrics summarise the best event in that gene.
 tool_rows <- lapply(active_as_tools, function(tl) {
@@ -2153,7 +2159,7 @@ if (nrow(dual_hits_ann) > 0) {
 }
 ```
 
-```{r de_as_barplot, eval=run_de_section && nrow(dual_hits_ann) > 0, fig.height=5}
+```{r de_as_barplot, eval=run_de_section && nrow(de_results) > 0 && nrow(dual_hits_ann) > 0, fig.height=5}
 # Distribution of DE+AS genes across the AS tools.
 dual_hits_ann %>%
   filter(!is.na(Tool)) %>%
