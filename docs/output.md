@@ -2,10 +2,51 @@
 
 This document describes all output files produced by the alternative-splicing-nextflow pipeline.
 
+Outputs are organised in two layers (see `reestructure_plan.md` for the full spec):
+
+- **CORE** — `deliverables/`: the curated, stable tables meant for daily consumption
+  (masters, significant sets, summaries, manifests, indexes). Contents follow the
+  results contract (`results_contract_version` parameter) and are QA-checked by
+  `validate_results_contract.py` at the end of every run.
+- **RAW** — the native per-tool directories documented below. Not meant for
+  direct downstream consumption; their layout can change between tool versions.
+
+`--publish_level` controls how much of the RAW layer is published:
+
+| Level      | Native tool dirs (RAW)                | rMATS JCEC / individual counts |
+|------------|----------------------------------------|--------------------------------|
+| `core`     | not published (PDFs still kept for sashimi) | not published                 |
+| `core_raw` | published (default)                    | only with `--publish_rmats_jcec` / `--publish_rmats_individual_counts` |
+| `full`     | published                             | always published              |
+
+`--publish_raw=false` behaves like `core` for the RAW layer.
+
 ## Directory Structure
 
 ```
 results/
+├── deliverables/                    # CORE layer (publish_deliverables=true)
+│   ├── metadata/
+│   │   ├── run_manifest.yaml        # pipeline, params, tools, known issues
+│   │   ├── sample_index.tsv         # sample x comparison x input paths
+│   │   ├── tools_matrix.tsv         # tool enablement + container record
+│   │   └── results_contract_report.txt   # QA validator output
+│   └── contrasts/
+│       └── <comparison_id>/
+│           ├── metadata/
+│           │   └── contrast_manifest.yaml  # all deliverables of this contrast
+│           ├── data_tables/
+│           │   ├── <c>.rmats.master.tsv
+│           │   ├── <c>.rmats.significant.tsv
+│           │   ├── <c>.rmats.summary.tsv
+│           │   ├── <c>.majiq.master.tsv        (when run_majiq)
+│           │   ├── <c>.isar.master.tsv         (when run_isar)
+│           │   ├── <c>.leafcutter.master.tsv   (when run_leafcutter)
+│           │   ├── <c>.pegasas.master.tsv      (when run_pegasas)
+│           │   └── <c>.cross_tool.master.tsv   (when build_cross_tool_master)
+│           └── plots/
+│               └── sashimi/
+│                   └── sashimi_index.tsv       (when run_sashimi)
 ├── rmats/
 │   └── <comparison_id>/
 │       ├── SE.MATS.JC.txt
@@ -44,6 +85,33 @@ results/
     ├── execution_timeline.html
     └── execution_trace.txt
 ```
+
+## Deliverables Layer (CORE)
+
+### Known issues (`know_issues` in the manifests)
+
+Every manifest records a per-tool reliability status (`ok`, `fixed`,
+`annotated`, `known_issue`, `under_investigation`) with a note, driven by the
+`tool_reliability` parameter. The HTML report mirrors these caveats next to the
+Data exports table. Treat a `significant.tsv` whose tool has a non-`ok` status
+with the care described in the note — an empty significant table is not
+automatically "no splicing switches" when the tool has a known issue.
+
+### Master table standard columns
+
+`comparison_id, tool, feature_type, feature_id, gene_id, gene_symbol,
+effect_size, pvalue, fdr, is_significant, significance_rule, source_file`
+followed by tool-native columns. rMATS tables additionally carry
+`event_type/event_id`, `fdr_floor_flag` (FDR==0 rows, numeric floor of
+`--cstat`) and `is_novel_splice_site`.
+
+### QA validator
+
+`deliverables/metadata/results_contract_report.txt` is produced by
+`validate_results_contract.py` after all deliverables are published. The run
+aborts if structural pieces are missing (e.g. a master table for an enabled
+tool). Content warnings (FDR==0 fraction, pinned ISAR q-values, tools with 0
+significant genes in the cross-tool master, ...) are reported without blocking.
 
 ---
 

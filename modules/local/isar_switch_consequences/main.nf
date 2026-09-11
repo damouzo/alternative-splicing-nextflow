@@ -5,7 +5,9 @@ process ISAR_SWITCH_CONSEQUENCES {
     
     // Container resolved from modules.config (params.isar_container or ghcr.io default)
 
-    publishDir "${params.outdir}/isoformswitchr/${comparison_id}", mode: params.publish_dir_mode
+    // RAW layer — unpublished in 'core' mode
+    publishDir "${params.outdir}/isoformswitchr/${comparison_id}", mode: params.publish_dir_mode,
+        saveAs: { f -> (params.publish_level == 'core' || !params.publish_raw) ? null : f }
 
     input:
     tuple val(comparison_id), path(rds_input), path(pfam_results), path(iupred_results)

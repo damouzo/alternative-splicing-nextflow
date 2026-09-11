@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Deliverables publication layer (reestructure_plan.md, contract v1.0.0):
+  - `deliverables/metadata/`: `run_manifest.yaml`, `sample_index.tsv`,
+    `tools_matrix.tsv` with the per-tool `known_issues` reliability record.
+  - `deliverables/contrasts/<id>/data_tables/`: standardised
+    master/significant/summary tables per enabled tool (rMATS, MAJIQ, ISAR,
+    LeafCutter, PEGASAS) + `cross_tool.master.tsv` gene-level union.
+  - rMATS masters flag the `--cstat` numeric floor (`fdr_floor_flag`) and
+    mark `is_novel_splice_site`; significant sets use the same rule as the
+    HTML report.
+  - `deliverables/contrasts/<id>/plots/sashimi/sashimi_index.tsv`: navigable
+    PDF index with outdir-relative paths (fixes PDF discoverability).
+  - `deliverables/contrasts/<id>/metadata/contrast_manifest.yaml` listing all
+    deliverables, thresholds and known issues per comparison.
+  - QA gate: `validate_results_contract.py` (structure + content sanity
+    checks: LeafCutter status-filter regression, rMATS FDR==0 fraction, pinned
+    ISAR q-values, silent cross-tool dropouts); report at
+    `deliverables/metadata/results_contract_report.txt`; structural failures
+    abort the run.
+- New params: `publish_deliverables`, `publish_level` (`core`|`core_raw`|`full`),
+  `publish_raw`, `publish_rmats_jcec`, `publish_rmats_individual_counts`,
+  `results_contract_version`, `tool_reliability` (known-issues record).
+- Report: new "Data exports" section listing the CORE deliverable paths with
+  their reliability caveats, plus an early "Known tool reliability issues"
+  summary. `RENDER_REPORT` now emits `(comparison_id, html)`.
+- `containers/report/Dockerfile` installs `python3` for the deliverables
+  exporters.
+
+### Changed
+- rMATS RAW publishing: `*.MATS.JCEC.txt` and `individualCounts.*` are no
+  longer published by default (`--publish_rmats_jcec` /
+  `--publish_rmats_individual_counts` re-enable them).
+- `INPUT_CHECK` emits `samples_full` (meta + bam + bai + salmon_dir) for the
+  metadata layer.
+
 ### Fixed
 - Data-integrity fixes from the internal audit (see `internal_audition.md`):
   rMATS, MAJIQ and LeafCutter no longer rely on two independent `groupTuple`

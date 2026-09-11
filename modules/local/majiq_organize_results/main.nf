@@ -6,7 +6,9 @@ process MAJIQ_ORGANIZE_RESULTS {
 
     container 'local/majiq:3.0'
 
-    publishDir "${params.outdir}/majiq/${comparison_id}", mode: params.publish_dir_mode
+    // RAW layer — unpublished in 'core' mode
+    publishDir "${params.outdir}/majiq/${comparison_id}", mode: params.publish_dir_mode,
+        saveAs: { f -> (params.publish_level == 'core' || !params.publish_raw) ? null : f }
 
     input:
     val  comparison_id

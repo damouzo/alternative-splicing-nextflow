@@ -24,6 +24,11 @@ params:
   organism: "human"
   de_results: NULL
   run_de_as: false
+  publish_deliverables: false
+  publish_level: "core_raw"
+  results_contract_version: "1.0.0"
+  tool_reliability:
+    value: !r list()
   group1_sample_ids:
     value: !r character()
   group2_sample_ids:
@@ -71,6 +76,48 @@ wrap_axis_labels <- function(x, width = 55) {
   vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
 }
 
+# Reliability record per tool, shared with the deliverables manifests
+# (contrast_manifest.yaml / run_manifest.yaml known_issues). Rendering is
+# defensive: jsonlite can deliver the record as a data.frame (array of
+# objects) or a list of named lists, and params may be absent entirely.
+tool_issues_frame <- function() {
+  rec <- params$tool_reliability
+  if (is.null(rec)) return(NULL)
+  if (is.data.frame(rec)) return(rec)
+  if (is.list(rec) && length(rec) > 0 &&
+      all(sapply(rec, function(item) is.list(item) || is.data.frame(item)))) {
+    # list of named lists -> data.frame
+    return(do.call(rbind, lapply(rec, function(item) {
+      as.data.frame(lapply(item, function(x) if (is.null(x)) '' else x), stringsAsFactors = FALSE)
+    })))
+  }
+  NULL
+}
+
+tool_issue <- function(tool) {
+  frame <- tool_issues_frame()
+  if (is.null(frame)) return(NULL)
+  hit <- which(frame$tool == tool)
+  if (length(hit) == 0) return(NULL)
+  frame[hit[1], ]
+}
+
+tool_issue_status <- function(tool) {
+  issue <- tool_issue(tool)
+  if (is.null(issue)) return('ok')
+  value <- as.character(issue$status)
+  if (length(value) == 0 || is.na(value) || value == '') return('unknown')
+  value
+}
+
+tool_issue_note <- function(tool) {
+  issue <- tool_issue(tool)
+  if (is.null(issue)) return('')
+  value <- as.character(issue$note)
+  if (length(value) == 0 || is.na(value)) return('')
+  value
+}
+
 style_ora_dotplot <- function(p, title) {
   p +
     labs(title = title) +
@@ -112,6 +159,27 @@ if (low_rep) {
   )
 }
 cat(sprintf("%s\n\n", validation_note))
+```
+
+```{r known_issues_summary, results='asis'}
+# Surface the manifest tool_reliability record early — users of the tables
+# below (or the deliverables layer) see the caveats before any tool section.
+issues <- tool_issues_frame()
+if (!is.null(issues) && nrow(issues) > 0) {
+  bad <- issues[is.na(issues$status) | issues$status != 'ok', ]
+  if (nrow(bad) > 0) {
+    cat("<hr>\n\n**Known tool reliability issues (from the run manifest):**\n\n")
+    for (i in seq_len(nrow(bad))) {
+      note <- as.character(bad$note[i])
+      if (length(note) == 0 || is.na(note) || note == '') note <- ''
+      cat(sprintf(
+        "<p style='color:#b30000'><strong>%s</strong> [%s]: %s</p>\n",
+        as.character(bad$tool[i]), as.character(bad$status[i]), note
+      ))
+    }
+    cat("\n")
+  }
+}
 ```
 
 ---
@@ -2181,6 +2249,122 @@ cat("DE+AS integration is disabled.\n")
 cat("Enable with two lines in params.yaml:\n")
 cat("- `run_de_as: true`\n")
 cat("- `de_results: /path/to/dge/`  (directory with subdirs per DGE comparison, each containing `*DESeq2_results.csv`)\n")
+```
+
+---
+
+# Data Exports
+
+```{r data_exports, eval=!is.null(params$publish_deliverables) && params$publish_deliverables, results='asis'}
+# Inventory of the CORE deliverable tables for this comparison. Paths are
+# relative to the run outdir, exactly as recorded in contrast_manifest.yaml.
+comp <- params$comparison_id
+base <- sprintf("deliverables/contrasts/%s", comp)
+
+export_rows <- data.frame(
+  deliverable = character(), description = character(), rel_path = character(),
+  tool = character(), status = character(), note = character(),
+  stringsAsFactors = FALSE
+)
+
+add_export <- function(deliverable, description, rel_path, tool = '', status = '', note = '') {
+  export_rows <<- rbind(
+    export_rows,
+    data.frame(deliverable, description, rel_path, tool, status, note,
+               stringsAsFactors = FALSE)
+  )
+}
+
+active_tool_dirs <- list(
+  rMATS = params$rmats_dir, MAJIQ = params$majiq_dir, ISAR = params$isar_dir,
+  LeafCutter = params$leafcutter_dir, PEGASAS = params$pegasas_dir
+)
+tool_key <- list(rMATS = 'rmats', MAJIQ = 'majiq', ISAR = 'isar',
+                 LeafCutter = 'leafcutter', PEGASAS = 'pegasas')
+
+for (tool_name in names(active_tool_dirs)) {
+  if (is.null(active_tool_dirs[[tool_name]])) next
+  key <- tool_key[[tool_name]]
+  add_export(
+    sprintf("%s master", tool_name),
+    "All analysed features with standard columns + native metrics",
+    sprintf("%s/data_tables/%s.%s.master.tsv", base, comp, key),
+    tool_name, tool_issue_status(key), tool_issue_note(key)
+  )
+  add_export(
+    sprintf("%s significant", tool_name),
+    "Features passing the significance rule used by this report",
+    sprintf("%s/data_tables/%s.%s.significant.tsv", base, comp, key),
+    tool_name, tool_issue_status(key), tool_issue_note(key)
+  )
+  add_export(
+    sprintf("%s summary", tool_name),
+    "Per-feature-type counts and effect-size distributions",
+    sprintf("%s/data_tables/%s.%s.summary.tsv", base, comp, key),
+    tool_name, tool_issue_status(key), tool_issue_note(key)
+  )
+}
+
+if (!is.null(params$rmats_dir) || any(!is.null(active_tool_dirs[2:4]))) {
+  add_export(
+    "Cross-tool gene master",
+    "Gene x tool union of significant features across AS tools",
+    sprintf("%s/data_tables/%s.cross_tool.master.tsv", base, comp),
+    "cross_tool", tool_issue_status('rmats'), ""
+  )
+}
+if (!is.null(params$sashimi_dir)) {
+  add_export(
+    "Sashimi index",
+    "Navigable PDF index (plot browsing + publication figures)",
+    sprintf("%s/plots/sashimi/sashimi_index.tsv", base),
+    "sashimi", tool_issue_status('sashimi'), tool_issue_note('sashimi')
+  )
+}
+add_export(
+  "Contrast manifest",
+  "YAML record of every deliverable of this comparison (paths relative to outdir)",
+  sprintf("%s/metadata/contrast_manifest.yaml", base), "manifest"
+)
+add_export(
+  "Run manifest",
+  "Global run metadata: params, tools, known issues, sample index",
+  "deliverables/metadata/run_manifest.yaml", "manifest"
+)
+add_export(
+  "Sample index",
+  "Sample x comparison table with input file paths",
+  "deliverables/metadata/sample_index.tsv", "manifest"
+)
+add_export(
+  "Tools matrix",
+  "Tool enablement and container record",
+  "deliverables/metadata/tools_matrix.tsv", "manifest"
+)
+
+show_cols <- c("deliverable", "description", "rel_path", "tool", "status", "note")
+display <- export_rows
+display$note[display$status == 'ok' | display$note == ''] <- ""
+
+kable(display[, show_cols], caption = sprintf(
+  "CORE deliverables for %s (contract v%s, publish level %s)",
+  comp, params$results_contract_version, params$publish_level
+))
+
+warn_rows <- display[display$status != 'ok', ]
+if (nrow(warn_rows) > 0) {
+  cat("<br>**Reliability caveats applying to the tables above:**\n\n")
+  for (i in seq_len(nrow(warn_rows))) {
+    cat(sprintf("- **%s** (%s): %s\n", warn_rows$tool[i], warn_rows$status[i],
+                warn_rows$note[i]))
+  }
+  cat("\n")
+}
+cat(sprintf("%s\n\n", validation_note))
+```
+
+```{r data_exports_disabled, eval=is.null(params$publish_deliverables) || !params$publish_deliverables, results='asis'}
+cat("Deliverables export is disabled (`publish_deliverables: false` in the run params).\n")
 ```
 
 ---

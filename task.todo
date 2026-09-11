@@ -152,6 +152,57 @@ Effort: low.
 
 ---
 
+## Reestructura de outputs (reestructure_plan.md) — IMPLEMENTADA (v1.2.0)
+
+Fases A–E implementadas: capa `deliverables/` (metadata, masters, significants,
+summaries, cross_tool, sashimi index, contrast manifests, QA validator),
+`known_issues` en manifests, sección "Data exports" en el report, gating
+`publish_level`/`publish_raw`/flags JCEC/individual counts, `python3` en el
+contenedor report.
+
+### Checklist post-implementación (verificar y cerrar)
+
+**1. Run E2E de integración (test profile)**
+- [x] Run completo `-profile apptainer,test` verde (exit 0): deliverables generados + `VALIDATE_RESULTS` pasó con 0 errors.
+- [x] `deliverables/metadata/{run_manifest.yaml, sample_index.tsv, tools_matrix.tsv}` presentes y con valores correctos (outdir, fdr/dpsi, comparisons, known_issues).
+- [x] `deliverables/contrasts/<id>/{data_tables, plots, metadata/contrast_manifest.yaml}` completos para cada herramienta activa.
+- [x] `results_contract_report.txt` con 0 errors (1 warning esperado: FDR floor del dataset sintético).
+- [ ] Repetir E2E en los datos reales CRUK (batch_2026_04) con el próximo run programado, confirmando masters ISAR/MAJIQ/LeafCutter/PEGASAS + sashimi index.
+
+**2. Bugs de fiabilidad de herramientas (auditoría del catedrático)**
+- [x] **LeafCutter**: export usa `status=="Success"` y el validador FALLA si hay clusters con p.adjust<cutoff y significant.tsv vacío (regresión del filtro). Falta confirmarlo en un run con LeafCutter activo (CRUK real).
+- [x] **ISAR**: `known_issues: under_investigation` en manifests y report (visible en el HTML). Cuando se cierre el diagnóstico del pinning de q-values (RDS pending), actualizar `tool_reliability` y re-render.
+- [x] **rMATS**: `fdr_floor_flag` presente; % FDR==0 > 25% se reporta como warning (verificado: warning de 100% en datos sintéticos).
+- [x] **PEGASAS**: nota "sin corrección por múltiples tests" en significance_rule + manifests (verificar con run pegasas en CRUK).
+
+**3. Cross-tool / overlap**
+- [ ] Si una herramienta activa aporta 0 genes significativos: comprobar warning del validador y del report (probar con un contraste sin hits de una tool).
+- [x] `cross_tool.master.tsv` coherente con las tablas significant (cruce en run de test OK).
+
+**4. Report**
+- [x] Sección "Data exports" en el HTML con paths + caveats de known_issues (rojo under_investigation).
+- [x] Aviso temprano "Known tool reliability issues" en el summary.
+- [ ] Report con `publish_deliverables=false` sin romperse.
+
+**5. Navegabilidad sashimi**
+- [x] `sashimi_index.tsv` con `pdf_path` absoluto válido (validado contra los 150 PDFs del ejemplo CRUK).
+- [ ] En `publish_level=core`, confirmar que los PDFs finales de sashimi se siguen publicando y el índice resuelve.
+
+**6. Params / gating**
+- [ ] `publish_level=core`: capa nativa no publicada (rmats solo b1/b2_samples + versions); `full`: JCEC + individualCounts publicados sin flags.
+- [ ] `--publish_rmats_jcec` / `--publish_rmats_individual_counts` funcionan en core_raw.
+- [x] `publish_deliverables=false`: pipeline previo intacto (solo se omite la capa; smoke test pendiente en datos reales).
+
+**7. Contenedores**
+- [x] Los procesos nuevos corren en el contenedor report (GHCR local tiene python3 — run E2E lo demostró; el SIF local `report-poppler-1.0.0.sif` ya trae python3.12).
+- [ ] Rebuild del contenedor report vía build-containers.yml (workflow_dispatch target report) para incorporar `python3` explícito en la imagen GHCR canónica.
+
+**8. Docs**
+- [x] docs/output.md refleja la capa deliverables y los niveles publish_level.
+- [x] CHANGELOG.md con la entrada v1.2.0.
+
+---
+
 ## New ideas / futuro (no implementado)
 
 ### F1 — Test de significancia del solapamiento cross-tool

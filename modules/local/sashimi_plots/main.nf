@@ -2,7 +2,16 @@ process SASHIMI_PLOTS {
     tag "$comparison_id"
     label 'process_medium'
 
-    publishDir "${params.outdir}/sashimi/${comparison_id}", mode: params.publish_dir_mode
+    // In 'core' mode only the final PDFs are part of CORE (sashimi index points
+    // at them); the rest of sashimi_out is RAW. publish_raw=false behaves like 'core'.
+    publishDir "${params.outdir}/sashimi/${comparison_id}", mode: params.publish_dir_mode,
+        saveAs: { f ->
+            def p = f.toString()
+            if (params.publish_level == 'core' || !params.publish_raw) {
+                return (p.contains('/Sashimi_plot/') || p.endsWith('versions.yml')) ? f : null
+            }
+            f
+        }
 
     input:
     tuple val(comparison_id),

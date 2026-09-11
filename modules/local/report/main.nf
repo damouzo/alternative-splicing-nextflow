@@ -22,7 +22,7 @@ process RENDER_REPORT {
     path report_rmd
 
     output:
-    path "${comparison_id}_splicing_report.html", emit: html
+    tuple val(comparison_id), path("${comparison_id}_splicing_report.html"), emit: html
     path "versions.yml",                          emit: versions
 
     script:
@@ -38,6 +38,8 @@ process RENDER_REPORT {
     def de_arg  = params.de_results         ? "\"${params.de_results}\""         : 'null'
     def group1_ids_json = groovy.json.JsonOutput.toJson(group1_sample_ids ?: [])
     def group2_ids_json = groovy.json.JsonOutput.toJson(group2_sample_ids ?: [])
+    // Per-tool reliability record (known issues) — mirrors the deliverables manifest
+    def tool_reliability_json = groovy.json.JsonOutput.toJson(params.tool_reliability ?: [])
 
     """
     # Write report params to JSON — avoids shell injection from paths with special chars
@@ -59,7 +61,11 @@ process RENDER_REPORT {
       "run_de_as":              ${params.run_de_as ? 'true' : 'false'},
       "de_results":             ${de_arg},
       "group1_sample_ids":      ${group1_ids_json},
-      "group2_sample_ids":      ${group2_ids_json}
+      "group2_sample_ids":      ${group2_ids_json},
+      "publish_deliverables":   ${params.publish_deliverables ? 'true' : 'false'},
+      "publish_level":          "${params.publish_level}",
+      "results_contract_version": "${params.results_contract_version}",
+      "tool_reliability":       ${tool_reliability_json}
     }
     JSONEOF
 
