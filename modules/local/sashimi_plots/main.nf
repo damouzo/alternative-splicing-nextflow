@@ -2,15 +2,24 @@ process SASHIMI_PLOTS {
     tag "$comparison_id"
     label 'process_medium'
 
-    // In 'core' mode only the final PDFs are part of CORE (sashimi index points
-    // at them); the rest of sashimi_out is RAW. publish_raw=false behaves like 'core'.
-    publishDir "${params.outdir}/sashimi/${comparison_id}", mode: params.publish_dir_mode,
+    // Final PDFs are a shipped deliverable. They are copied to the work-dir
+    // layout deliv/<EVENT_TYPE>/<file>.pdf so publishDir can remap them per
+    // file: saveAs is only invoked per file for file globs, never for a
+    // directory output (there it receives the top-level dir name).
+    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/plots/sashimi",
+        mode: params.publish_dir_mode,
         saveAs: { f ->
             def p = f.toString()
-            if (params.publish_level == 'core' || !params.publish_raw) {
-                return (p.contains('/Sashimi_plot/') || p.endsWith('versions.yml')) ? f : null
-            }
-            f
+            if (!p.startsWith('deliv/') || !p.endsWith('.pdf')) return null
+            p.substring('deliv/'.length())
+        }
+    // Intermediates are audit-only: publish the whole sashimi_out/ tree to raw/.
+    publishDir "${params.outdir}/raw/${params.tool_ids.sashimi}/${comparison_id}",
+        mode: params.publish_dir_mode,
+        saveAs: { f ->
+            def p = f.toString()
+            if (p != 'sashimi_out' && p != 'sashimi_out/') return null
+            (params.publish_level != 'core' && params.publish_raw) ? f : null
         }
 
     input:
@@ -24,8 +33,9 @@ process SASHIMI_PLOTS {
           val(b2_ids)
 
     output:
-    tuple val(comparison_id), path("sashimi_out/"), emit: results
-    path  "versions.yml",                           emit: versions
+    tuple val(comparison_id), path("sashimi_out/"),      emit: results
+    tuple val(comparison_id), path("deliv/*/*.pdf"),    emit: pdfs, optional: true
+    path  "versions.yml",                               emit: versions
 
     script:
     def top_n       = params.sashimi_top_n
@@ -170,6 +180,19 @@ B2_IDS_EOF
         echo "[ERROR] Failed to generate sashimi plots for all event types" >&2
         exit 1
     fi
+
+    # Stage the final PDFs in the shippable layout deliv/<EVENT_TYPE>/<file>.pdf.
+    # publishDir remaps these to deliverables/.../plots/sashimi/<EVENT_TYPE>/.
+    mkdir -p deliv
+    for ETYPE in SE A5SS A3SS MXE RI; do
+        if compgen -G "sashimi_out/\${ETYPE}/Sashimi_plot/*.pdf" >/dev/null; then
+            mkdir -p "deliv/\${ETYPE}"
+            cp sashimi_out/\${ETYPE}/Sashimi_plot/*.pdf "deliv/\${ETYPE}/"
+        elif compgen -G "sashimi_out/\${ETYPE}/*.pdf" >/dev/null; then
+            mkdir -p "deliv/\${ETYPE}"
+            cp sashimi_out/\${ETYPE}/*.pdf "deliv/\${ETYPE}/"
+        fi
+    done
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

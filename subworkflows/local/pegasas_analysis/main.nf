@@ -97,5 +97,11 @@ workflow PEGASAS_ANALYSIS {
     PEGASAS_CROSS_CONTRAST(ch_cross)
 
     emit:
-    results = PEGASAS_COLLATE.out.results
+    results  = PEGASAS_COLLATE.out.results
+    versions = PEGASAS_PREPARE.out.versions
+        .mix(PEGASAS_PATHWAY.out.versions)
+        .mix(PEGASAS_PREPARE_CONTRAST.out.versions)
+        .mix(PEGASAS_CORRELATION.out.versions)
+        .mix(PEGASAS_COLLATE.out.versions)
+        .mix(PEGASAS_CROSS_CONTRAST.out.versions)
 }

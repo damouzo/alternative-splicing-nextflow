@@ -4,8 +4,7 @@
  * Collects every <comp_id>_sig_pathways.tsv produced by PEGASAS_COLLATE and builds
  * an UpSet plot + a pathway x contrast heatmap of significantly correlated
  * splicing events. Standalone output (not part of any per-contrast report),
- * published to report/contrast_comparison/pegasas/ so other cross-contrast
- * comparisons can be added there later.
+ * published to cross_contrast/pegasas/.
  */
 process PEGASAS_CROSS_CONTRAST {
     tag "cross_contrast"
@@ -13,8 +12,9 @@ process PEGASAS_CROSS_CONTRAST {
 
     // Container resolved from modules.config (report image: ggplot2 + UpSetR).
 
-    publishDir "${params.outdir}/report/contrast_comparison/pegasas", mode: params.publish_dir_mode,
-        saveAs: { f -> f.startsWith('cross_contrast/') ? f.substring('cross_contrast/'.length()) : f }
+    publishDir "${params.outdir}/deliverables/cross_contrast/${params.tool_ids.pegasas}", mode: params.publish_dir_mode,
+        saveAs: { f -> (f.toString() == 'versions.yml') ? null :
+                      (f.toString().startsWith('cross_contrast/') ? f.toString().substring('cross_contrast/'.length()) : f) }
 
     input:
     path sig_files

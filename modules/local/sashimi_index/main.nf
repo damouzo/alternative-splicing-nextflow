@@ -11,11 +11,14 @@ process SASHIMI_INDEX {
     label 'process_low'
 
     publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/plots/sashimi",
-        mode: params.publish_dir_mode
+        mode: params.publish_dir_mode,
+        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
     tuple val(comparison_id), path(sashimi_dir)
-    val  publish_root    // absolute outdir — index paths are relative to it
+    // Script as input so content edits invalidate the cache on -resume
+    // (plain `${projectDir}/bin/...` references are not hashed).
+    path index_builder
 
     output:
     tuple val(comparison_id), path("sashimi_index.tsv"), emit: index
@@ -23,10 +26,9 @@ process SASHIMI_INDEX {
 
     script:
     """
-    python3 ${projectDir}/bin/build_sashimi_index.py \\
-        --comparison-id "${comparison_id}" \\
-        --sashimi-dir   ${sashimi_dir} \\
-        --publish-root  ${publish_root} \\
+    python3 ${index_builder} \\
+        --comparison-id  "${comparison_id}" \\
+        --sashimi-dir    ${sashimi_dir} \\
         --out-dir .
 
     cat <<-END_VERSIONS > versions.yml

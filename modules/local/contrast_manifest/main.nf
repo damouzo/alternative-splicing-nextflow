@@ -15,15 +15,20 @@ process CONTRAST_MANIFEST {
     tag "$comparison_id"
     label 'process_low'
 
-    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/metadata",
-        mode: params.publish_dir_mode
+    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}",
+        mode: params.publish_dir_mode,
+        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
     tuple val(comparison_id),
           val(pipeline_json),
           val(outdir_root),
+          val(deliverables_root),
           val(group1_name),
           val(group2_name)
+    // Script as input so content edits invalidate the cache on -resume
+    // (plain `${projectDir}/bin/...` references are not hashed).
+    path manifest_builder
 
     output:
     tuple val(comparison_id), path("contrast_manifest.yaml"), emit: manifest
@@ -31,17 +36,18 @@ process CONTRAST_MANIFEST {
 
     script:
     def payload = groovy.json.JsonOutput.toJson([
-        comparison_id: comparison_id,
-        group1_name:   group1_name,
-        group2_name:   group2_name,
-        pipeline:      new groovy.json.JsonSlurper().parseText(pipeline_json),
-        outdir:        outdir_root
+        comparison_id:    comparison_id,
+        group1_name:      group1_name,
+        group2_name:      group2_name,
+        pipeline:         new groovy.json.JsonSlurper().parseText(pipeline_json),
+        outdir:           outdir_root,
+        deliverables_root: deliverables_root
     ])
     def payload_b64 = payload.bytes.encodeBase64().toString()
 
     """
     echo '${payload_b64}' | base64 -d > payload.json
-    python3 ${projectDir}/bin/build_results_manifest.py \\
+    python3 ${manifest_builder} \\
         --mode contrast_disk \\
         --payload-file payload.json
 

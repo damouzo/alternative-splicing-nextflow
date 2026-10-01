@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Build the navigable sashimi PDF index (CORE deliverable):
+Build the navigable sashimi PDF index (shippable deliverable):
 
-  plots/sashimi/sashimi_index.tsv
+  deliverables/contrasts/<comparison_id>/plots/sashimi/sashimi_index.tsv
 
-One row per final PDF under sashimi_out/<EVENT_TYPE>/Sashimi_plot/. Paths in
-the index are relative to the run outdir (publish_root) so the file stays
-valid after the pipeline finishes, regardless of where work/ lives.
+One row per final PDF. The final PDFs are published next to this index under
+deliverables/contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/<file>.pdf,
+and pdf_path is stored relative to the deliverables/ root (no absolute cluster
+paths, no references to the audit-only raw/ layer), so the table stays valid
+wherever the shipped deliverables/ folder is unpacked or renamed.
 
 The rank and gene symbol are parsed from the plot filename written by
 rmats2sashimiplot: <rank>_<GENE>_<rest>.pdf
@@ -38,10 +40,6 @@ def main():
     parser.add_argument('--comparison-id', required=True)
     parser.add_argument('--sashimi-dir', required=True,
                         help='staged sashimi_out directory')
-    parser.add_argument('--publish-root', required=True,
-                        help='absolute outdir the index paths are relative to')
-    parser.add_argument('--publish-subdir', default='sashimi',
-                        help='outdir-relative folder holding this comparison')
     parser.add_argument('--out-dir', default='.')
     args = parser.parse_args()
 
@@ -54,27 +52,30 @@ def main():
         for name in sorted(os.listdir(plot_dir)):
             if not name.endswith('.pdf'):
                 continue
-            pdf_path = os.path.join(plot_dir, name)
-            rel_pdf = os.path.relpath(pdf_path, staged_root)
-            # Published layout: <outdir>/<publish_subdir>/<comparison_id>/<dir name>/<rel>
-            # (the staged dir keeps its original basename, e.g. sashimi_out)
-            published = os.path.join(
-                args.publish_subdir, args.comparison_id,
-                os.path.basename(staged_root), rel_pdf).replace(os.sep, '/')
             rank, gene = parse_pdf_name(name)
+            # Published layout, relative to the deliverables/ root:
+            #   contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/<file>.pdf
+            pdf_rel = '/'.join([
+                'contrasts', args.comparison_id, 'plots', 'sashimi',
+                event_type, name,
+            ])
             rows.append({
                 'comparison_id': args.comparison_id,
                 'event_type': event_type,
                 'rank': rank,
                 'gene_symbol': gene,
+                # rmats2sashimiplot cannot draw unannotated splice sites, so
+                # filter_rmats_for_sashimi.py excludes de novo events upstream
+                # and every indexed plot is annotated. Kept explicit so the
+                # browser contract survives a future per-class split.
+                'site_class': 'annotated',
                 'plot_id': name[:-4],
-                'pdf_path': os.path.join(args.publish_root, published).replace(os.sep, '/'),
-                'pdf_path_relative_to_outdir': published,
+                'pdf_path': pdf_rel,
             })
 
     out_path = os.path.join(args.out_dir, 'sashimi_index.tsv')
-    columns = ['comparison_id', 'event_type', 'rank', 'gene_symbol', 'plot_id',
-               'pdf_path', 'pdf_path_relative_to_outdir']
+    columns = ['comparison_id', 'event_type', 'rank', 'gene_symbol',
+               'site_class', 'plot_id', 'pdf_path']
     with open(out_path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, delimiter='\t',
                                 lineterminator='\n', extrasaction='ignore')

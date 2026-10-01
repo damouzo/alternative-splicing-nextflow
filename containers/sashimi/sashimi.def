@@ -14,7 +14,7 @@ From: docker.io/xinglab/rmats2sashimiplot:latest
     export DEBIAN_FRONTEND=noninteractive
 
     apt-get update
-    apt-get install -y --no-install-recommends samtools ca-certificates
+    apt-get install -y --no-install-recommends samtools ca-certificates procps
     rm -rf /var/lib/apt/lists/*
 
     TOOL_BIN="$(command -v rmats2sashimiplot || true)"
@@ -24,6 +24,7 @@ From: docker.io/xinglab/rmats2sashimiplot:latest
     [ -n "${TOOL_BIN}" ]
     "${TOOL_BIN}" -h >/dev/null 2>&1 || "${TOOL_BIN}" --help >/dev/null 2>&1
     command -v samtools >/dev/null 2>&1
+    command -v ps >/dev/null 2>&1
 
 %runscript
     exec "$@"

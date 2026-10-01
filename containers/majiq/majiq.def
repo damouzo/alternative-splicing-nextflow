@@ -17,6 +17,7 @@ From: python:3.12-slim
         libhts-dev \
         zlib1g-dev \
         git \
+        procps \
     && rm -rf /var/lib/apt/lists/*
 
     # Limit parallel C++ compilation to avoid OOM
@@ -24,6 +25,9 @@ From: python:3.12-slim
     export MAX_JOBS=2
 
     pip install --no-cache-dir git+https://bitbucket.org/biociphers/majiq_academic.git
+
+    # Nextflow requires ps inside the container to collect task metrics
+    command -v ps >/dev/null 2>&1
 
 %environment
     export PATH="/usr/local/bin:$PATH"

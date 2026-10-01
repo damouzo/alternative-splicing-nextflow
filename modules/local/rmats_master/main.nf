@@ -10,13 +10,18 @@ process RMATS_MASTER {
     tag "$comparison_id"
     label 'process_low'
 
-    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/data_tables",
-        mode: params.publish_dir_mode
+    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/tables",
+        mode: params.publish_dir_mode,
+        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
     tuple val(comparison_id), path(rmats_dir)
     val  fdr_cutoff
     val  dpsi_cutoff
+    // Declared as input so its CONTENT is part of the task hash: a plain
+    // `${projectDir}/bin/...` reference is not hashed and edits would be
+    // silently served from cache on -resume.
+    path master_builder
 
     output:
     tuple val(comparison_id),
@@ -28,7 +33,7 @@ process RMATS_MASTER {
 
     script:
     """
-    python3 ${projectDir}/bin/build_rmats_master.py \\
+    python3 ${master_builder} \\
         --comparison-id "${comparison_id}" \\
         --rmats-dir     ${rmats_dir} \\
         --fdr-cutoff    ${fdr_cutoff} \\

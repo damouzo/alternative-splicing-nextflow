@@ -49,7 +49,7 @@ apptainer exec "${CONTAINERS_DIR}/isar-1.0.0.sif" \
 apptainer exec "${CONTAINERS_DIR}/report-1.0.0.sif" \
     Rscript -e "library(DT); library(plotly); cat('Report OK\n')"
 apptainer exec "${CONTAINERS_DIR}/sashimi-1.0.0.sif" \
-    /bin/bash -lc "command -v rmats2sashimiplot >/dev/null && command -v samtools >/dev/null && echo 'Sashimi OK'"
+    /bin/bash -lc "command -v rmats2sashimiplot >/dev/null && command -v samtools >/dev/null && command -v ps >/dev/null && echo 'Sashimi OK'"
 
 echo ""
 echo "=== Building PEGASAS SIF ==="

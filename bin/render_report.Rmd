@@ -26,7 +26,10 @@ params:
   run_de_as: false
   publish_deliverables: false
   publish_level: "core_raw"
-  results_contract_version: "1.0.0"
+  results_contract_version: "2.1.0"
+  report_min_reads: 20
+  group1_name: "Group1"
+  group2_name: "Group2"
   tool_reliability:
     value: !r list()
   group1_sample_ids:
@@ -62,15 +65,14 @@ n2_samples <- length(as.character(unlist(params$group2_sample_ids)))
 low_rep    <- (n1_samples > 0 && n1_samples < 4) ||
               (n2_samples > 0 && n2_samples < 4)
 
-# Orthogonal validation disclaimer (shown in Summary and at the end of each
-# tool section so section-level readers do not miss it).
-validation_note <- paste0(
-  "<em>All splicing calls in this report are computational predictions from ",
-  "short-read RNA-seq. Top candidates intended for downstream biological ",
-  "interpretation or publication should be orthogonally validated ",
-  "(e.g., RT-PCR/qPCR across the relevant junctions, or long-read sequencing) ",
-  "before being reported as confirmed splicing events.</em>"
-)
+# Condition labels from comparisons.csv (group1/group2 columns). Fall back to
+# Group1/Group2 when the pipeline does not pass names (e.g. manual renders).
+cond_label <- function(name, fallback) {
+  name <- as.character(name)
+  if (length(name) == 0 || is.na(name) || !nzchar(name)) fallback else name
+}
+g1_label <- cond_label(params$group1_name, "Group1")
+g2_label <- cond_label(params$group2_name, "Group2")
 
 wrap_axis_labels <- function(x, width = 55) {
   vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
@@ -150,15 +152,14 @@ This report presents differential alternative splicing analysis results for comp
 ```{r summary_warnings, results='asis'}
 if (low_rep) {
   cat(sprintf(
-    "**Low replication warning:** this comparison has n=%d vs n=%d (groups 1/2). ",
-    n1_samples, n2_samples
+    "**Low replication warning:** this comparison has n=%d (%s) vs n=%d (%s). ",
+    n1_samples, g1_label, n2_samples, g2_label
   ))
   cat(
     "Statistical power for detecting moderate ΔΨ is limited; ",
     "interpret borderline calls with caution.\n\n"
   )
 }
-cat(sprintf("%s\n\n", validation_note))
 ```
 
 ```{r known_issues_summary, results='asis'}
@@ -214,150 +215,48 @@ for (event_type in event_types) {
 }
 
 if (length(rmats_results_list) > 0) {
+  # Sum of a comma-separated per-sample count vector (0 when not parseable).
+  parse_count_sum <- function(x) {
+    if (is.na(x) || x == "" || x == "NA") return(0)
+    vals <- suppressWarnings(as.numeric(strsplit(as.character(x), ",")[[1]]))
+    vals <- vals[!is.na(vals)]
+    if (length(vals) == 0) return(0)
+    sum(vals)
+  }
+
+  # 0 disables the ranking-table coverage filter (e.g. manual renders without
+  # the param in their JSON).
+  min_reads <- params$report_min_reads
+  if (is.null(min_reads)) min_reads <- 0
+
   all_rmats <- bind_rows(rmats_results_list) %>%
     mutate(
       FDR_plot       = pmax(FDR, .Machine$double.xmin),
-      neglog10FDR    = -log10(FDR_plot),
+      # Cap -log10(FDR): underflowed --cstat p-values would otherwise push the
+      # priority score towards a single saturated value; past 1e-50 the ranking
+      # is effectively driven by |dPsi|.
+      neglog10FDR    = pmin(-log10(FDR_plot), 50),
       Significant    = FDR <= params$fdr_cutoff & abs(IncLevelDifference) >= params$dpsi_cutoff,
-      # Priority score: combines -log10(FDR) with effect size.
       # Higher = more significant and larger PSI change.
-      priority_score = round(neglog10FDR * abs(IncLevelDifference), 3)
+      priority_score = round(neglog10FDR * abs(IncLevelDifference), 3),
+      # Splice-site class: reflects splice-site novelty only.
+      #   annotated = every splice site present in the GTF annotation (events
+      #               with known sites but a novel junction stay here);
+      #   de_novo   = at least one site absent from it (fromGTF.novelSpliceSite).
+      site_class     = ifelse(NovelSite, "de_novo", "annotated"),
+      # Junction-read support per group (IJC + SJC). Drives the report_min_reads
+      # filter of the ranking tables only; significance calling is untouched.
+      reads_group1   = mapply(parse_count_sum, IJC_SAMPLE_1) +
+                       mapply(parse_count_sum, SJC_SAMPLE_1),
+      reads_group2   = mapply(parse_count_sum, IJC_SAMPLE_2) +
+                       mapply(parse_count_sum, SJC_SAMPLE_2),
+      reads_ok       = reads_group1 >= min_reads & reads_group2 >= min_reads
     )
 }
 ```
 
-```{r rmats_summary, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-summary_table <- all_rmats %>%
-  group_by(EventType) %>%
-  summarise(
-    Total       = n(),
-    Significant = sum(Significant, na.rm = TRUE),
-    FDR_leq_0.05 = sum(FDR <= 0.05, na.rm = TRUE),
-    Mean_deltaPSI = round(mean(abs(IncLevelDifference), na.rm = TRUE), 3)
-  )
-
-kable(summary_table, caption = "rMATS Event Summary by Event Type")
-```
-
-```{r rmats_volcano, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=8}
-# Label top 5 events per event type (highest priority score)
-top_labels <- all_rmats %>%
-  filter(
-    Significant,
-    !is.na(geneSymbol), geneSymbol != "",
-    !is.na(IncLevelDifference),
-    !is.na(neglog10FDR)
-  ) %>%
-  group_by(EventType) %>%
-  slice_max(priority_score, n = 5) %>%
-  ungroup()
-
-all_rmats %>%
-  filter(!is.na(IncLevelDifference), !is.na(neglog10FDR)) %>%
-  ggplot(aes(x = IncLevelDifference, y = neglog10FDR, color = Significant)) +
-  geom_point(alpha = 0.4, size = 1) +
-  geom_text_repel(
-    data = top_labels,
-    aes(y = neglog10FDR, label = geneSymbol),
-    size = 2.5, max.overlaps = 10, color = "black"
-  ) +
-  facet_wrap(~EventType, scales = "free_y") +
-  scale_color_manual(values = c("gray70", "firebrick")) +
-  geom_hline(yintercept = -log10(params$fdr_cutoff),    linetype = "dashed", color = "navy", linewidth = 0.4) +
-  geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "navy", linewidth = 0.4) +
-  scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
-  coord_cartesian(clip = "off") +
-  theme_bw() +
-  labs(
-    title = "rMATS Volcano Plots",
-    x     = "ΔΨ (IncLevelDifference)",
-    y     = "-log10(FDR)"
-  ) +
-  theme(
-    legend.position = "bottom",
-    plot.margin = margin(t = 5.5, r = 35, b = 5.5, l = 5.5)
-  )
-```
-
-```{r rmats_top_table, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-top_events <- all_rmats %>%
-  filter(Significant) %>%
-  arrange(desc(priority_score)) %>%
-  select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference, priority_score, NovelSite) %>%
-  head(100) %>%
-  mutate(
-    SiteType     = ifelse(NovelSite, "de novo", "annotated"),
-    # Keep underflowed --cstat p-values readable instead of rounding them to 0.
-    FDR_display  = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
-  )
-
-if (nrow(top_events) > 0) {
-  datatable(
-    top_events %>% select(-NovelSite, -FDR),
-    caption  = "Top 100 significant rMATS events ranked by priority score",
-    options  = list(pageLength = 10, scrollX = TRUE),
-    rownames = FALSE, escape = FALSE
-  ) %>%
-    formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4)
-} else {
-  cat("No significant events detected.\n")
-}
-```
-
-## De novo splice-site events
-
-```{r rmats_novel_table, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-# Unannotated (de novo) splice sites are not drawn by sashimi and are often of
-# special interest in spliceosome-mutant cohorts, so expose them separately.
-novel_events <- all_rmats %>%
-  filter(NovelSite) %>%
-  mutate(
-    # Keep underflowed --cstat p-values readable instead of rounding them to 0.
-    FDR_display = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
-  )
-
-n_novel <- nrow(novel_events)
-n_novel_sig <- sum(novel_events$Significant, na.rm = TRUE)
-
-if (n_novel > 0) {
-  cat(sprintf(
-    "%d events involve unannotated (de novo) splice sites; %d are significant (FDR < %s & |ΔΨ| >= %.2f).\n\n",
-    n_novel, n_novel_sig, params$fdr_cutoff, params$dpsi_cutoff
-  ))
-
-  novel_display <- novel_events %>%
-    filter(Significant) %>%
-    arrange(desc(priority_score)) %>%
-    select(EventType, GeneID, geneSymbol, chr, strand, FDR_display,
-           IncLevelDifference, priority_score) %>%
-    head(200)
-
-  if (nrow(novel_display) > 0) {
-    datatable(
-      novel_display,
-      caption  = sprintf(
-        "Significant de novo rMATS events ranked by priority score (showing top %d of %d)",
-        nrow(novel_display), n_novel_sig
-      ),
-      options  = list(pageLength = 10, scrollX = TRUE),
-      rownames = FALSE, escape = FALSE
-    ) %>%
-      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4)
-  } else {
-    cat("No significant de novo events detected.\n")
-  }
-} else {
-  cat("No de novo splice-site events detected.\n")
-}
-```
-
-## PSI profile (derived from rMATS)
-
-### PCA of PSI profiles
-
-```{r psi_pca, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=6}
-# Build per-sample PSI matrix from rMATS IncLevel columns (SE events preferred; fallback to all).
-# IncLevel1/IncLevel2 are comma-separated PSI values per replicate in each group.
+```{r rmats_panel_prep, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0}
+# ---- shared helpers for the three rMATS panels (Combined / Annotated / De novo) ----
 
 parse_psi_vec <- function(x) {
   if (is.na(x) || x == "NA" || x == "") return(NA_real_)
@@ -380,101 +279,6 @@ resolve_sample_labels <- function(expected_n, ids, prefix) {
   paste0(prefix, "_rep", seq_len(expected_n))
 }
 
-# Prefer SE events; fall back to the type with most quantifiable events.
-# Use the full event set (not only significant) so the PCA reflects the global
-# structure of PSI variability rather than only the contrast of interest.
-pca_event_type <- if ("SE" %in% all_rmats$EventType) "SE" else {
-  all_rmats %>% count(EventType) %>% slice_max(n, n = 1) %>% pull(EventType)
-}
-pca_events_raw <- if (length(pca_event_type) > 0) {
-  all_rmats %>%
-    filter(EventType == pca_event_type[1],
-           !is.na(IncLevel1), !is.na(IncLevel2),
-           IncLevel1 != "NA", IncLevel2 != "NA")
-} else data.frame()
-
-if (nrow(pca_events_raw) >= 10) {
-  # Parse the full per-event PSI vector once so we can rank by variance.
-  psi_all <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
-    c(parse_psi_vec(pca_events_raw$IncLevel1[i]),
-      parse_psi_vec(pca_events_raw$IncLevel2[i]))
-  })
-
-  n_samples <- length(psi_all[[1]])
-
-  # Keep events with valid PSI in >= 3 samples, then rank by per-event variance
-  # across samples and take the 2000 most variable events (not head(2000)).
-  valid_events <- sapply(psi_all, function(v) {
-    length(v) == n_samples && sum(!is.na(v)) >= 3
-  })
-  psi_all <- psi_all[valid_events]
-
-  if (length(psi_all) >= 10) {
-    event_variance <- sapply(psi_all, function(v) var(v, na.rm = TRUE))
-    keep_idx <- order(event_variance, decreasing = TRUE)[seq_len(min(2000, length(psi_all)))]
-    psi_list <- psi_all[keep_idx]
-
-    psi_mat <- do.call(rbind, psi_list)   # events x samples
-
-    # Impute remaining NAs with the per-event median; preserves each event's
-    # central tendency without forcing a global mean across heterogeneous events.
-    psi_mat <- apply(psi_mat, 1, function(row) {
-      med <- median(row, na.rm = TRUE)
-      row[is.na(row)] <- med
-      row
-    }) %>% t()
-
-    keep_row <- which(valid_events)[keep_idx[1]]
-    n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[keep_row]))
-    n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[keep_row]))
-
-    sample_labels <- c(
-      resolve_sample_labels(n1, params$group1_sample_ids, "Group1"),
-      resolve_sample_labels(n2, params$group2_sample_ids, "Group2")
-    )
-    group_labels  <- c(rep("Group1", n1), rep("Group2", n2))
-
-    # PCA on transposed matrix (samples as rows). scale. = TRUE standardises
-    # each event so high-range events (PSI near 0/1) do not dominate the PCs.
-    pca_res <- tryCatch(
-      prcomp(t(psi_mat), center = TRUE, scale. = TRUE),
-      error = function(e) NULL
-    )
-
-    if (!is.null(pca_res)) {
-      var_exp <- round(summary(pca_res)$importance[2, 1:min(2, ncol(pca_res$x))] * 100, 1)
-      pca_df  <- as.data.frame(pca_res$x[, 1:min(2, ncol(pca_res$x))])
-      pca_df$Group  <- group_labels
-      pca_df$Sample <- sample_labels
-
-      ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
-        geom_point(size = 3) +
-        geom_text_repel(size = 3, max.overlaps = 20) +
-        theme_bw() +
-        scale_color_brewer(palette = "Set1") +
-        labs(
-          title = paste0(
-            "PCA of PSI profiles (", pca_event_type[1], " events, n=",
-            length(psi_list), ", per-event median imputation, scaled)"
-          ),
-          x = paste0("PC1 (", var_exp[1], "% variance)"),
-          y = paste0("PC2 (", var_exp[2], "% variance)")
-        )
-    }
-  } else {
-    cat("Insufficient events with valid PSI data for PCA (need >= 10).\n")
-  }
-} else {
-  cat("No rMATS events available for PCA.\n")
-}
-```
-
-### Splice junction coverage QC
-
-```{r junction_qc, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=5}
-# Per-sample mean inclusion junction count (IJC) as a proxy for splice junction coverage.
-# Low values flag samples with insufficient coverage for reliable AS detection.
-
 parse_sample_counts <- function(count_str, group_label) {
   if (is.na(count_str) || count_str == "") return(NULL)
   vals <- suppressWarnings(as.integer(strsplit(as.character(count_str), ",")[[1]]))
@@ -487,68 +291,322 @@ parse_sample_counts <- function(count_str, group_label) {
   )
 }
 
-jq_events <- all_rmats %>%
-  filter(EventType == "SE", !is.na(IJC_SAMPLE_1), !is.na(IJC_SAMPLE_2)) %>%
-  head(500)
+# Non-significant points per volcano: all significant events are always drawn,
+# the background is subsampled to keep the HTML at a sane size.
+RMATS_NONSIG_PLOT_MAX <- 20000
 
-if (nrow(jq_events) > 0) {
+panel_summary_table <- function(df) {
+  df %>%
+    group_by(EventType) %>%
+    summarise(
+      Total       = n(),
+      Significant = sum(Significant, na.rm = TRUE),
+      FDR_leq_0.05 = sum(FDR <= 0.05, na.rm = TRUE),
+      # Mean |dPsi| over ALL events of the type, not only the significant ones.
+      Mean_abs_deltaPSI_all_events = round(mean(abs(IncLevelDifference), na.rm = TRUE), 3),
+      # Significant events clearing the ranking-table coverage minimum.
+      Significant_min_reads = sum(Significant & reads_ok, na.rm = TRUE)
+    ) %>%
+    kable(caption = paste(
+      "rMATS Event Summary by Event Type.",
+      "Mean_abs_deltaPSI_all_events is the mean |deltaPSI| across all events of",
+      "the type (significant or not), so it sits well below the significance cutoff.",
+      "Significant_min_reads counts significant events with >= report_min_reads",
+      "junction reads (IJC+SJC per group); it is a ranking-table filter, never a",
+      "significance one."
+    ))
+}
+
+panel_volcano <- function(df, label) {
+  # Top-5 labels per type, tie-broken by junction-read coverage: past the
+  # -log10(FDR) cap of 50 the priority score saturates and |dPsi| alone would
+  # decide the order.
+  top_labels <- df %>%
+    filter(Significant, reads_ok,
+           !is.na(geneSymbol), geneSymbol != "",
+           !is.na(IncLevelDifference), !is.na(neglog10FDR)) %>%
+    mutate(cov_min = pmin(reads_group1, reads_group2)) %>%
+    arrange(desc(priority_score), desc(cov_min)) %>%
+    group_by(EventType) %>%
+    slice_head(n = 5) %>%
+    ungroup()
+
+  plot_df <- df %>% filter(!is.na(IncLevelDifference), !is.na(neglog10FDR))
+  sig     <- plot_df %>% filter(Significant)
+  nonsig  <- plot_df %>% filter(!Significant)
+  n_nonsig_orig <- nrow(nonsig)
+  if (n_nonsig_orig > RMATS_NONSIG_PLOT_MAX) {
+    set.seed(1)
+    nonsig <- dplyr::sample_n(nonsig, RMATS_NONSIG_PLOT_MAX)
+  }
+  sub_note <- if (n_nonsig_orig > RMATS_NONSIG_PLOT_MAX) {
+    sprintf(" (%d of %d non-significant events shown)", RMATS_NONSIG_PLOT_MAX, n_nonsig_orig)
+  } else NULL
+
+  bind_rows(sig, nonsig) %>%
+    ggplot(aes(x = IncLevelDifference, y = neglog10FDR, color = Significant)) +
+    geom_point(alpha = 0.4, size = 1) +
+    geom_text_repel(
+      data = top_labels,
+      aes(y = neglog10FDR, label = geneSymbol),
+      size = 2.5, max.overlaps = 10, color = "black"
+    ) +
+    facet_wrap(~EventType, scales = "free_y") +
+    scale_color_manual(values = c("gray70", "firebrick")) +
+    geom_hline(yintercept = -log10(params$fdr_cutoff),    linetype = "dashed", color = "navy", linewidth = 0.4) +
+    geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "navy", linewidth = 0.4) +
+    scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+    coord_cartesian(clip = "off") +
+    theme_bw() +
+    labs(
+      title    = paste0("rMATS Volcano Plots (", label, ")"),
+      subtitle = sub_note,
+      x        = "ΔΨ (IncLevelDifference)",
+      y        = "-log10(FDR), capped at 50"
+    ) +
+    theme(
+      legend.position = "bottom",
+      plot.margin = margin(t = 5.5, r = 35, b = 5.5, l = 5.5)
+    )
+}
+
+panel_top_table <- function(df, label, top_n, element_id) {
+  top_events <- df %>%
+    filter(Significant, reads_ok) %>%
+    # Tie-break saturated priority scores (past the -log10(FDR) cap) by the
+    # weakest group's junction-read coverage.
+    arrange(desc(priority_score), desc(pmin(reads_group1, reads_group2))) %>%
+    select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference,
+           priority_score, site_class, reads_group1, reads_group2) %>%
+    head(top_n) %>%
+    mutate(
+      # Keep underflowed --cstat p-values readable instead of rounding them to 0.
+      FDR_display = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
+    ) %>%
+    select(-FDR)
+  if (nrow(top_events) == 0) {
+    cat("No significant events detected in this panel.\n\n")
+    return(invisible(NULL))
+  }
+  cat(sprintf(
+    "Ranking filtered to events with >= %s junction reads (IJC+SJC) per group (`report_min_reads`; significance calling is unaffected).\n\n",
+    min_reads
+  ))
+  print(
+    datatable(
+      top_events,
+      elementId = element_id,
+      caption   = sprintf("Top %d significant rMATS events (%s) ranked by priority score",
+                          top_n, label),
+      options   = list(pageLength = 10, scrollX = TRUE),
+      rownames  = FALSE, escape = FALSE
+    ) %>%
+      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4) %>%
+      formatRound(columns = c("reads_group1", "reads_group2"), digits = 0)
+  )
+}
+
+panel_pca <- function(df, label) {
+  pca_event_type <- if ("SE" %in% df$EventType) "SE" else {
+    df %>% count(EventType) %>% slice_max(n, n = 1) %>% pull(EventType)
+  }
+  # Coverage filter on the PCA event pool too: variance ranking on uncovered
+  # de novo events would otherwise visualise noise (report_min_reads).
+  pca_events_raw <- if (length(pca_event_type) > 0) {
+    df %>%
+      filter(reads_ok,
+             EventType == pca_event_type[1],
+             !is.na(IncLevel1), !is.na(IncLevel2),
+             IncLevel1 != "NA", IncLevel2 != "NA")
+  } else data.frame()
+
+  if (nrow(pca_events_raw) < 10) {
+    cat(sprintf("Insufficient events with valid PSI data for the %s PCA (need >= 10).\n\n", label))
+    return(invisible(NULL))
+  }
+
+  psi_all <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
+    c(parse_psi_vec(pca_events_raw$IncLevel1[i]),
+      parse_psi_vec(pca_events_raw$IncLevel2[i]))
+  })
+  n_samples <- length(psi_all[[1]])
+  valid_events <- sapply(psi_all, function(v) {
+    length(v) == n_samples && sum(!is.na(v)) >= 3
+  })
+  psi_all <- psi_all[valid_events]
+  if (length(psi_all) < 10) {
+    cat(sprintf("Insufficient events with valid PSI data for the %s PCA (need >= 10).\n\n", label))
+    return(invisible(NULL))
+  }
+
+  event_variance <- sapply(psi_all, function(v) var(v, na.rm = TRUE))
+  keep_idx <- order(event_variance, decreasing = TRUE)[seq_len(min(2000, length(psi_all)))]
+  psi_list <- psi_all[keep_idx]
+
+  psi_mat <- do.call(rbind, psi_list)
+  psi_mat <- apply(psi_mat, 1, function(row) {
+    med <- median(row, na.rm = TRUE)
+    row[is.na(row)] <- med
+    row
+  }) %>% t()
+
+  keep_row <- which(valid_events)[keep_idx[1]]
+  n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[keep_row]))
+  n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[keep_row]))
+
+  sample_labels <- c(
+    resolve_sample_labels(n1, params$group1_sample_ids, g1_label),
+    resolve_sample_labels(n2, params$group2_sample_ids, g2_label)
+  )
+  group_labels  <- c(rep(g1_label, n1), rep(g2_label, n2))
+
+  pca_res <- tryCatch(
+    prcomp(t(psi_mat), center = TRUE, scale. = TRUE),
+    error = function(e) NULL
+  )
+  if (is.null(pca_res)) return(invisible(NULL))
+
+  var_exp <- round(summary(pca_res)$importance[2, 1:min(2, ncol(pca_res$x))] * 100, 1)
+  pca_df  <- as.data.frame(pca_res$x[, 1:min(2, ncol(pca_res$x))])
+  pca_df$Group  <- group_labels
+  pca_df$Sample <- sample_labels
+
+  print(
+    ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
+      geom_point(size = 3) +
+      geom_text_repel(size = 3, max.overlaps = 20) +
+      theme_bw() +
+      scale_color_brewer(palette = "Set1") +
+      labs(
+        title = paste0("PCA of PSI profiles (", label, ": ", pca_event_type[1],
+                       " events, n=", length(psi_list), ", per-event median imputation, scaled)"),
+        x = paste0("PC1 (", var_exp[1], "% variance)"),
+        y = paste0("PC2 (", var_exp[2], "% variance)")
+      )
+  )
+}
+
+panel_coverage <- function(df, label) {
+  jq_pool <- df %>%
+    filter(EventType == "SE", !is.na(IJC_SAMPLE_1), !is.na(IJC_SAMPLE_2))
+  if (nrow(jq_pool) == 0) {
+    cat(sprintf("No SE events with junction count data available for the %s panel.\n\n", label))
+    return(invisible(NULL))
+  }
+  # Fixed-seed random sample (not head()): the first rows in file order are an
+  # arbitrary, non-representative slice of the event list.
+  set.seed(1)
+  jq_events <- if (nrow(jq_pool) > 500) dplyr::sample_n(jq_pool, 500) else jq_pool
   jq_raw <- bind_rows(lapply(seq_len(nrow(jq_events)), function(i) {
     bind_rows(
-      parse_sample_counts(jq_events$IJC_SAMPLE_1[i], "Group1"),
-      parse_sample_counts(jq_events$IJC_SAMPLE_2[i], "Group2")
+      parse_sample_counts(jq_events$IJC_SAMPLE_1[i], g1_label),
+      parse_sample_counts(jq_events$IJC_SAMPLE_2[i], g2_label)
     )
   }))
+  if (nrow(jq_raw) == 0) return(invisible(NULL))
 
-  if (nrow(jq_raw) > 0) {
-    jq_summary <- jq_raw %>%
-      group_by(group, sample_idx) %>%
-      summarise(mean_IJC = mean(count, na.rm = TRUE), .groups = "drop")
+  jq_summary <- jq_raw %>%
+    group_by(group, sample_idx) %>%
+    summarise(mean_IJC = mean(count, na.rm = TRUE), .groups = "drop")
 
-    g1_ids <- resolve_sample_labels(
-      sum(jq_summary$group == "Group1"),
-      params$group1_sample_ids,
-      "Group1"
-    )
-    g2_ids <- resolve_sample_labels(
-      sum(jq_summary$group == "Group2"),
-      params$group2_sample_ids,
-      "Group2"
-    )
+  g1_ids <- resolve_sample_labels(
+    sum(jq_summary$group == g1_label), params$group1_sample_ids, g1_label
+  )
+  g2_ids <- resolve_sample_labels(
+    sum(jq_summary$group == g2_label), params$group2_sample_ids, g2_label
+  )
+  jq_summary <- jq_summary %>%
+    group_by(group) %>%
+    arrange(sample_idx, .by_group = TRUE) %>%
+    mutate(Sample = if_else(group == g1_label, g1_ids[sample_idx], g2_ids[sample_idx])) %>%
+    ungroup()
 
-    jq_summary <- jq_summary %>%
-      group_by(group) %>%
-      arrange(sample_idx, .by_group = TRUE) %>%
-      mutate(Sample = if_else(group == "Group1", g1_ids[sample_idx], g2_ids[sample_idx])) %>%
-      ungroup()
-
+  print(
     ggplot(jq_summary, aes(x = reorder(Sample, mean_IJC), y = mean_IJC, fill = group)) +
       geom_col(alpha = 0.8) +
       coord_flip() +
       theme_bw() +
       scale_fill_brewer(palette = "Set1") +
       labs(
-        title = "Mean inclusion junction count per sample (SE events, top 500)",
-        subtitle = "Low values may indicate insufficient coverage for reliable AS detection",
+        title    = paste0("Mean inclusion junction count per sample (", label, ")"),
+        subtitle = sprintf(
+          "Random sample of %d SE events with junction counts (seed 1); low values may indicate insufficient coverage",
+          nrow(jq_events)
+        ),
         x = NULL,
         y = "Mean IJC"
       )
-  }
-} else {
-  cat("No SE events with junction count data available.\n")
+  )
 }
+
+sashimi_widget_html <- function(widget_id) {
+  paste0(
+    '<div id="', widget_id, '" style="border:1px solid #d9d9d9; border-radius:8px; padding:12px; margin:12px 0 20px 0;">',
+    '<div style="font-weight:600; margin-bottom:8px;">Sashimi browser</div>',
+    '<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:10px;">',
+    '<label style="font-size:0.9em;">Event type<br><select id="', widget_id, '_event"></select></label>',
+    '<label style="font-size:0.9em;">Gene<br><select id="', widget_id, '_gene"></select></label>',
+    '</div>',
+    '<div id="', widget_id, '_holder" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px; overflow:auto; background:#fafafa;">',
+    '<p style="padding:10px;">Select an event type and gene above to preview the sashimi plot.</p>',
+    '</div>',
+    '</div>'
+  )
+}
+
+panel_sashimi <- function(class_filter, widget_suffix) {
+  if (!exists("sashimi_table") || nrow(sashimi_table) == 0) {
+    cat("Sashimi plots not available for this run.\n\n")
+    return(invisible(NULL))
+  }
+  widget_id <- paste0("sashimi_browser_", widget_suffix)
+  cat(sashimi_widget_html(widget_id))
+  cat('\n<script>window.__sashimiBrowser("', widget_id, '", ',
+      if (is.null(class_filter)) "null" else paste0('"', class_filter, '"'),
+      ');</script>\n\n', sep = "")
+}
+
+render_rmats_panel <- function(panel_df, label, class_note, widget_suffix,
+                               class_filter, top_n) {
+  n_total <- nrow(panel_df)
+  n_sig   <- sum(panel_df$Significant, na.rm = TRUE)
+  cat(sprintf(
+    "**%s panel**: %d events; %d significant (FDR <= %s & |ΔΨ| >= %s).\n\n",
+    label, n_total, n_sig, params$fdr_cutoff, params$dpsi_cutoff
+  ))
+  if (n_total == 0) {
+    cat("No events in this panel.\n")
+    return(invisible(NULL))
+  }
+  cat(sprintf("*%s*\n\n", class_note))
+  cat("#### Event summary\n\n")
+  print(panel_summary_table(panel_df))
+  cat("\n\n#### Volcano\n\n")
+  print(panel_volcano(panel_df, label))
+  cat("\n\n#### Top significant events\n\n")
+  panel_top_table(panel_df, label, top_n, paste0("rmats_top_", widget_suffix))
+  cat("\n\n#### PSI profile (PCA)\n\n")
+  panel_pca(panel_df, label)
+  cat("\n\n#### Splice junction coverage\n\n")
+  panel_coverage(panel_df, label)
+  cat("\n\n#### Sashimi plots\n\n")
+  panel_sashimi(class_filter, widget_suffix)
+  invisible(NULL)
+}
+
+rmats_annotated <- all_rmats %>% filter(site_class == "annotated")
+rmats_denovo    <- all_rmats %>% filter(site_class == "de_novo")
 ```
 
-## Sashimi plots (rMATS)
-
-```{r sashimi_section, eval=!is.null(params$sashimi_dir)}
-# List available sashimi plot PDFs
+```{r sashimi_shared_data, eval=!is.null(params$sashimi_dir), results='asis'}
+# Embed every sashimi PDF once as a data URI; the three panel browsers reuse
+# this shared payload client-side (no per-panel duplication of the base64 blob).
 sashimi_pdfs <- list.files(params$sashimi_dir, pattern = "\\.pdf$",
                            recursive = TRUE, full.names = TRUE)
 
-if (length(sashimi_pdfs) > 0) {
-  cat(sprintf("Sashimi plots generated for %d events; use the selectors to browse by event type and gene.\n\n",
-              length(sashimi_pdfs)))
+sashimi_table <- data.frame()
 
+if (length(sashimi_pdfs) > 0) {
   event_from_path <- function(paths) {
     rel <- basename(dirname(dirname(paths)))
     ifelse(rel %in% c("SE", "A5SS", "A3SS", "MXE", "RI"), rel, NA_character_)
@@ -595,117 +653,121 @@ if (length(sashimi_pdfs) > 0) {
     file = basename(sashimi_pdfs),
     event_type = event_from_path(sashimi_pdfs),
     gene = extract_gene_symbol(basename(sashimi_pdfs)),
+    # rmats2sashimiplot cannot draw unannotated splice sites, so
+    # filter_rmats_for_sashimi.py excludes de novo events upstream and every
+    # generated plot is annotated. The column keeps the browser contract ready
+    # for a per-class split if plotting ever supports de novo sites.
+    site_class = "annotated",
     data_uri = sashimi_data_uris,
     mime = ifelse(grepl("^data:image/png", sashimi_data_uris), "image/png", "application/pdf"),
     stringsAsFactors = FALSE
   ) %>%
-    dplyr::arrange(event_type, gene, file)
-
-  sashimi_table <- sashimi_table %>%
+    dplyr::arrange(event_type, gene, file) %>%
     dplyr::filter(!is.na(data_uri) & nzchar(data_uri))
-
-  if (nrow(sashimi_table) == 0) {
-    cat("No embeddable sashimi PDFs found in the output directory.\n")
-  }
-} else {
-  cat("No sashimi plot PDFs found in the output directory.\n")
 }
-```
 
-```{r sashimi_browser, eval=!is.null(params$sashimi_dir) && exists("sashimi_table") && nrow(sashimi_table) > 0, results='asis'}
-browser_data <- sashimi_table %>%
-  dplyr::group_by(event_type, gene) %>%
-  dplyr::slice(1) %>%
-  dplyr::ungroup() %>%
-  dplyr::arrange(event_type, gene) %>%
-  dplyr::transmute(
-    event_type = ifelse(is.na(event_type), "UNKNOWN", event_type),
-    gene = ifelse(is.na(gene), "UNKNOWN", gene),
-    file = file,
-    data_uri = data_uri,
-    mime = ifelse(is.na(mime), "application/pdf", mime)
+if (nrow(sashimi_table) > 0) {
+  browser_json <- jsonlite::toJSON(
+    sashimi_table[, c("file", "event_type", "gene", "site_class", "data_uri", "mime")],
+    dataframe = "rows", auto_unbox = TRUE
   )
-
-widget_id <- paste0(
-  "sashimi_browser_",
-  gsub("[^A-Za-z0-9]+", "_", params$comparison_id)
-)
-
-browser_json <- jsonlite::toJSON(browser_data, dataframe = "rows", auto_unbox = TRUE)
-
-cat(
-  paste0(
-    '<div id="', widget_id, '" style="border:1px solid #d9d9d9; border-radius:8px; padding:12px; margin:12px 0 20px 0;">',
-    '<div style="font-weight:600; margin-bottom:8px;">Sashimi browser</div>',
-    '<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:10px;">',
-    '<label style="font-size:0.9em;">Event type<br><select id="', widget_id, '_event"></select></label>',
-    '<label style="font-size:0.9em;">Gene<br><select id="', widget_id, '_gene"></select></label>',
-    '</div>',
-    '<div class="', widget_id, '_holder" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px; overflow:auto; background:#fafafa;">',
-    '<p style="padding:10px;">Select an event type and gene above to preview the sashimi plot.</p>',
-    '</div>',
-    '</div>'
-  )
-)
-
-cat(
-  paste0(
+  cat('<script>window.__SASHIMI_PLOTS__ = ', browser_json, ';</script>\n')
+  cat(paste0(
     '<script>(function(){',
-    'const data = ', browser_json, ';',
-    'const root = document.getElementById("', widget_id, '");',
-    'if(!root || !Array.isArray(data) || data.length===0){return;}',
-    'const eventSel = document.getElementById("', widget_id, '_event");',
-    'const geneSel = document.getElementById("', widget_id, '_gene");',
-    'const holder = root.getElementsByClassName("', widget_id, '_holder")[0];',
+    'window.__sashimiBrowser = function (widgetId, classFilter) {',
+    'const root = document.getElementById(widgetId);',
+    'if (!root) { return; }',
+    'const eventSel = document.getElementById(widgetId + "_event");',
+    'const geneSel = document.getElementById(widgetId + "_gene");',
+    'const holder = document.getElementById(widgetId + "_holder");',
+    'const all = Array.isArray(window.__SASHIMI_PLOTS__) ? window.__SASHIMI_PLOTS__ : [];',
+    'const data = classFilter ? all.filter(d => d.site_class === classFilter) : all;',
     'const uniq = (arr) => Array.from(new Set(arr));',
     'const sortText = (arr) => arr.sort((a,b) => String(a).localeCompare(String(b)));',
     'const setOptions = (sel, values) => {',
-    '  sel.innerHTML = "";',
-    '  values.forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });',
+    'sel.innerHTML = "";',
+    'values.forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });',
     '};',
     'const renderPreview = (row) => {',
-    '  holder.innerHTML = "";',
-    '  if(!row){ holder.innerHTML = "<p style=\\"padding:10px;\\">No plot available.</p>"; return; }',
-    '  if(row.mime === "image/png"){',
-    '    const img = document.createElement("img");',
-    '    img.src = row.data_uri;',
-    '    img.style.maxWidth = "100%";',
-    '    img.style.display = "block";',
-    '    img.style.margin = "0 auto";',
-    '    holder.appendChild(img);',
-    '  } else {',
-    '    const obj = document.createElement("object");',
-    '    obj.type = "application/pdf";',
-    '    obj.data = row.data_uri;',
-    '    obj.style.width = "100%";',
-    '    obj.style.height = "760px";',
-    '    holder.appendChild(obj);',
-    '  }',
+    'holder.innerHTML = "";',
+    'if(!row){ holder.innerHTML = "<p style=\\"padding:10px;\\">No plot available.</p>"; return; }',
+    'if(row.mime === "image/png"){',
+    'const img = document.createElement("img");',
+    'img.src = row.data_uri;',
+    'img.style.maxWidth = "100%";',
+    'img.style.display = "block";',
+    'img.style.margin = "0 auto";',
+    'holder.appendChild(img);',
+    '} else {',
+    'const obj = document.createElement("object");',
+    'obj.type = "application/pdf";',
+    'obj.data = row.data_uri;',
+    'obj.style.width = "100%";',
+    'obj.style.height = "760px";',
+    'holder.appendChild(obj);',
+    '}',
     '};',
+    'if (data.length === 0) {',
+    'holder.innerHTML = "<p style=\\"padding:10px;\\">No sashimi plots available for this class: rmats2sashimiplot cannot draw unannotated (de novo) splice sites, so sashimi output covers annotated events only.</p>";',
+    'return;',
+    '}',
     'const eventValues = sortText(uniq(data.map(d => d.event_type)));',
     'setOptions(eventSel, eventValues);',
     'const currentRows = () => data.filter(d => d.event_type === eventSel.value);',
     'const refreshGenes = () => {',
-    '  const genes = sortText(uniq(currentRows().map(d => d.gene)));',
-    '  setOptions(geneSel, genes);',
+    'const genes = sortText(uniq(currentRows().map(d => d.gene)));',
+    'setOptions(geneSel, genes);',
     '};',
     'const refreshPreview = () => {',
-    '  const row = currentRows().find(d => d.gene === geneSel.value);',
-    '  renderPreview(row);',
+    'const row = currentRows().find(d => d.gene === geneSel.value);',
+    'renderPreview(row);',
     '};',
     'eventSel.addEventListener("change", () => { refreshGenes(); refreshPreview(); });',
     'geneSel.addEventListener("change", refreshPreview);',
     'refreshGenes(); refreshPreview();',
+    '};',
     '})();</script>'
-  )
+  ))
+}
+```
+
+## rMATS event panels {.tabset .tabset-pills}
+
+### Combined {.active}
+
+```{r rmats_panel_combined, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
+render_rmats_panel(
+  all_rmats, "Combined",
+  "All events: annotated and de novo splice-site classes together.",
+  "combined", NULL, 100
 )
 ```
 
-Vector PDFs for publication are published under `outdir/sashimi/<comparison_id>/`.
+### Annotated splice sites
 
-```{r validation_note_rmats, results='asis', eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-cat(sprintf("%s\n\n", validation_note))
+```{r rmats_panel_annotated, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
+render_rmats_panel(
+  rmats_annotated, "Annotated splice sites",
+  "Every splice site present in the GTF annotation. Note: the class reflects splice-site novelty only — events with known splice sites but a novel junction (fromGTF.novelJunction) also fall here.",
+  "annotated", "annotated", 100
+)
 ```
+
+### De novo splice sites
+
+```{r rmats_panel_denovo, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
+render_rmats_panel(
+  rmats_denovo, "De novo splice sites",
+  "At least one splice site absent from the GTF annotation (fromGTF.novelSpliceSite). Coverage-dependent by nature: check the coverage plot and the Significant_min_reads column before interpreting the ranking.",
+  "de_novo", "de_novo", 200
+)
+```
+
+
+Vector PDFs for publication are published inside the deliverables folder, under
+`contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/`, and indexed by
+`contrasts/<comparison_id>/plots/sashimi/sashimi_index.tsv`.
+
 
 ---
 
@@ -834,10 +896,6 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
-```{r validation_note_majiq, results='asis', eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
-cat(sprintf("%s\n\n", validation_note))
-```
-
 ---
 
 # IsoformSwitchAnalyzeR Results
@@ -943,9 +1001,6 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
-```{r validation_note_isar, results='asis', eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
-cat(sprintf("%s\n\n", validation_note))
-```
 
 ---
 
@@ -1062,9 +1117,6 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
-```{r validation_note_leafcutter, results='asis', eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
-cat(sprintf("%s\n\n", validation_note))
-```
 
 ---
 
@@ -2255,11 +2307,16 @@ cat("- `de_results: /path/to/dge/`  (directory with subdirs per DGE comparison, 
 
 # Data Exports
 
+Paths below are relative to the root of the shipped `deliverables/` folder (the
+folder that contains `run_info/` and `contrasts/`), not to this HTML file. This
+report and every table it lists ship together; `raw/` is not part of the shipment.
+
 ```{r data_exports, eval=!is.null(params$publish_deliverables) && params$publish_deliverables, results='asis'}
-# Inventory of the CORE deliverable tables for this comparison. Paths are
-# relative to the run outdir, exactly as recorded in contrast_manifest.yaml.
+# Inventory of the shippable deliverable tables for this comparison. Paths are
+# relative to the deliverables/ root (this folder), exactly as recorded in
+# contrast_manifest.yaml.
 comp <- params$comparison_id
-base <- sprintf("deliverables/contrasts/%s", comp)
+base <- sprintf("contrasts/%s", comp)
 
 export_rows <- data.frame(
   deliverable = character(), description = character(), rel_path = character(),
@@ -2288,19 +2345,19 @@ for (tool_name in names(active_tool_dirs)) {
   add_export(
     sprintf("%s master", tool_name),
     "All analysed features with standard columns + native metrics",
-    sprintf("%s/data_tables/%s.%s.master.tsv", base, comp, key),
+    sprintf("%s/tables/%s.%s.master.tsv", base, comp, key),
     tool_name, tool_issue_status(key), tool_issue_note(key)
   )
   add_export(
     sprintf("%s significant", tool_name),
     "Features passing the significance rule used by this report",
-    sprintf("%s/data_tables/%s.%s.significant.tsv", base, comp, key),
+    sprintf("%s/tables/%s.%s.significant.tsv", base, comp, key),
     tool_name, tool_issue_status(key), tool_issue_note(key)
   )
   add_export(
     sprintf("%s summary", tool_name),
     "Per-feature-type counts and effect-size distributions",
-    sprintf("%s/data_tables/%s.%s.summary.tsv", base, comp, key),
+    sprintf("%s/tables/%s.%s.summary.tsv", base, comp, key),
     tool_name, tool_issue_status(key), tool_issue_note(key)
   )
 }
@@ -2309,7 +2366,13 @@ if (!is.null(params$rmats_dir) || any(!is.null(active_tool_dirs[2:4]))) {
   add_export(
     "Cross-tool gene master",
     "Gene x tool union of significant features across AS tools",
-    sprintf("%s/data_tables/%s.cross_tool.master.tsv", base, comp),
+    sprintf("%s/tables/%s.cross_tool.master.tsv", base, comp),
+    "cross_tool", tool_issue_status('rmats'), ""
+  )
+  add_export(
+    "Cross-tool gene summary",
+    "One row per gene with n_tools_significant and the calling tools",
+    sprintf("%s/tables/%s.cross_tool.gene_summary.tsv", base, comp),
     "cross_tool", tool_issue_status('rmats'), ""
   )
 }
@@ -2322,24 +2385,34 @@ if (!is.null(params$sashimi_dir)) {
   )
 }
 add_export(
+  "Report",
+  "This HTML report (self-contained)",
+  sprintf("%s/%s_splicing_report.html", base, comp), "report"
+)
+add_export(
   "Contrast manifest",
-  "YAML record of every deliverable of this comparison (paths relative to outdir)",
-  sprintf("%s/metadata/contrast_manifest.yaml", base), "manifest"
+  "YAML record of every deliverable of this comparison (paths relative to deliverables/)",
+  sprintf("%s/contrast_manifest.yaml", base), "manifest"
 )
 add_export(
   "Run manifest",
-  "Global run metadata: params, tools, known issues, sample index",
-  "deliverables/metadata/run_manifest.yaml", "manifest"
+  "Global run metadata: params, tools, known issues",
+  "run_info/run_manifest.yaml", "manifest"
 )
 add_export(
   "Sample index",
-  "Sample x comparison table with input file paths",
-  "deliverables/metadata/sample_index.tsv", "manifest"
+  "Sample x comparison x group table (no cluster paths)",
+  "run_info/sample_index.tsv", "manifest"
 )
 add_export(
-  "Tools matrix",
-  "Tool enablement and container record",
-  "deliverables/metadata/tools_matrix.tsv", "manifest"
+  "Software versions",
+  "Consolidated tool versions for the whole run",
+  "run_info/software_versions.yml", "manifest"
+)
+add_export(
+  "QA report",
+  "Results-contract validation output (errors + warnings)",
+  "run_info/qa_report.txt", "manifest"
 )
 
 show_cols <- c("deliverable", "description", "rel_path", "tool", "status", "note")
@@ -2347,7 +2420,7 @@ display <- export_rows
 display$note[display$status == 'ok' | display$note == ''] <- ""
 
 kable(display[, show_cols], caption = sprintf(
-  "CORE deliverables for %s (contract v%s, publish level %s)",
+  "Shippable deliverables for %s (contract v%s, publish level %s)",
   comp, params$results_contract_version, params$publish_level
 ))
 
@@ -2360,7 +2433,6 @@ if (nrow(warn_rows) > 0) {
   }
   cat("\n")
 }
-cat(sprintf("%s\n\n", validation_note))
 ```
 
 ```{r data_exports_disabled, eval=is.null(params$publish_deliverables) || !params$publish_deliverables, results='asis'}

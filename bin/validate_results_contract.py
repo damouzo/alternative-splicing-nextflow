@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
 """
-QA validator for the deliverables results contract (reestructure_plan.md §8.1).
+QA validator for the shippable results contract (assets/results_schema.yaml).
 
-Run this after all deliverables are published. The validator walks the
-published outdir and checks:
+Run this after all deliverables are published. It walks the published outdir
+and checks:
 
   Structural (FAIL -> exit 2):
-    - deliverables/metadata: run_manifest.yaml, sample_index.tsv, tools_matrix.tsv
-    - one contrast_manifest.yaml per comparison
+    - run_info: run_manifest.yaml, sample_index.tsv, software_versions.yml
+    - one contrast_manifest.yaml per comparison (contrasts/<id>/)
     - master + significant + summary per enabled AS tool, with the standard columns
-    - rMATS master row count == sum of rows of the 5 *.MATS.JC.txt files
-    - sashimi_index.tsv when sashimi enabled, every indexed PDF exists
-    - per-comparison HTML report exists
+    - cross_tool.master.tsv + cross_tool.gene_summary.tsv
+    - rMATS master row count == sum of rows of the 5 *.MATS.JC.txt files (raw layer)
+    - sashimi_index.tsv when sashimi enabled; every indexed PDF exists on disk
+    - per-comparison HTML report exists under contrasts/<id>/
 
-  Content sanity (FAIL or WARN depending on severity), derived from known
-  tool reliability issues:
-    - leafcutter: clusters with p.adjust < cutoff & status Success present
-      while significant.tsv is empty -> FAIL (filter regression)
+  Content sanity (WARN or FAIL, derived from known tool reliability issues):
+    - leafcutter: clusters with status Success & padj < cutoff present while
+      significant.tsv is empty -> FAIL (filter regression)
+    - rMATS: every master row must carry a non-empty event_locus (contract
+      2.1.0) -> FAIL on runs declaring contract >= 2.1.0; WARN on older runs
+      (their tables predate the column)
     - rMATS: fraction of FDR==0 rows above threshold -> WARN (--cstat floor)
-    - ISAR: q-values pinned (IQR < 0.05) while |dIF| >= 0.1 exists -> WARN
+    - ISAR: padj pinned (IQR < 0.05) while |dIF| >= 0.1 exists -> WARN
     - cross_tool: tools that ran but contributed 0 significant genes -> WARN
-    - PEGASAS: significant table marked as uncorrected -> always noted
+    - PEGASAS: significant table is BH-corrected, noted
 
 Exit codes: 0 = pass, 1 = pass with warnings, 2 = contract broken.
 Stdlib only.
@@ -29,12 +32,12 @@ Stdlib only.
 import argparse
 import csv
 import os
-import statistics
 import sys
 
-REQUIRED_COLUMNS = ['comparison_id', 'tool', 'feature_type', 'feature_id',
-                    'gene_id', 'gene_symbol', 'effect_size', 'is_significant',
-                    'significance_rule', 'source_file']
+DEFAULT_REQUIRED_COLUMNS = ['comparison_id', 'tool', 'feature_type', 'feature_id',
+                            'gene_id', 'gene_symbol', 'effect_size',
+                            'effect_size_type', 'is_significant',
+                            'significance_rule', 'source_file']
 
 RMATS_EVENT_TYPES = ('SE', 'A5SS', 'A3SS', 'MXE', 'RI')
 MAX_FDR_ZERO_FRACTION = 0.25
@@ -62,6 +65,28 @@ class Report:
         return 0
 
 
+def load_schema(path):
+    """Minimal parser for the flat lists we need from results_schema.yaml."""
+    schema = {}
+    if not path or not os.path.isfile(path):
+        return schema
+    list_keys = ('required_master_columns', 'master_columns',
+                 'sample_index_columns', 'sashimi_index_columns',
+                 'cross_tool_gene_columns')
+    key = None
+    with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            if not line.startswith(' ') and stripped.endswith(':'):
+                key = stripped[:-1]
+                continue
+            if line.startswith('  - ') and key in list_keys:
+                schema.setdefault(key, []).append(stripped[2:].strip())
+    return schema
+
+
 def iter_tsv(path):
     """Stream rows of a TSV (header-driven, one row in memory at a time)."""
     with open(path, 'r', encoding='utf-8', errors='replace', newline='') as handle:
@@ -86,25 +111,30 @@ def count_tsv_rows(path):
         return sum(1 for _ in reader)
 
 
-def check_columns(path, report):
+def check_columns(path, report, required_columns):
     first = first_tsv_row(path)
     if first is None:
         report.error('%s is empty' % path)
         return
-    missing = [c for c in REQUIRED_COLUMNS if c not in first]
+    missing = [c for c in required_columns if c not in first]
     if missing:
         report.error('%s missing standard columns: %s' % (path, ', '.join(missing)))
 
 
-def check_rmats_master(outdir, comparison_id, report):
-    master = os.path.join(outdir, 'deliverables', 'contrasts', comparison_id,
-                          'data_tables', '%s.rmats.master.tsv' % comparison_id)
+def tables_dir(deliverables, comparison_id):
+    return os.path.join(deliverables, 'contrasts', comparison_id, 'tables')
+
+
+def check_rmats_master(outdir, deliverables, comparison_id, report,
+                       required_columns, legacy_contract):
+    master = os.path.join(tables_dir(deliverables, comparison_id),
+                          '%s.rmats.master.tsv' % comparison_id)
     if not os.path.isfile(master):
         report.error('rMATS master missing: %s' % master)
         return
-    check_columns(master, report)
+    check_columns(master, report, required_columns)
 
-    rmats_dir = os.path.join(outdir, 'rmats', comparison_id, comparison_id)
+    rmats_dir = os.path.join(outdir, 'raw', 'rmats', comparison_id)
     total_raw = 0
     for event_type in RMATS_EVENT_TYPES:
         jc = os.path.join(rmats_dir, '%s.MATS.JC.txt' % event_type)
@@ -118,19 +148,50 @@ def check_rmats_master(outdir, comparison_id, report):
 
     floor = 0
     n_sig_master = 0
+    empty_locus = {}
+    has_locus_col = None
     for row in iter_tsv(master):
         if row.get('fdr_floor_flag') == 'true':
             floor += 1
         if row.get('is_significant') == 'true':
             n_sig_master += 1
-    if floor:
+        if has_locus_col is None:
+            has_locus_col = 'event_locus' in row
+        if not (row.get('event_locus') or '').strip():
+            event_type = row.get('event_type', '')
+            empty_locus[event_type] = empty_locus.get(event_type, 0) + 1
+    if has_locus_col is False:
+        # Pre-2.1.0 tables legitimately lack the column: downgrade to WARN so
+        # old runs keep validating, new runs fail until rMATS masters are
+        # regenerated.
+        if legacy_contract:
+            report.warn(
+                'rMATS %s: event_locus column missing (introduced in results '
+                'contract 2.1.0; this table predates it)' % comparison_id)
+        else:
+            report.error(
+                'rMATS %s: event_locus column missing (results contract >= 2.1.0; '
+                'regenerate the rMATS master tables)' % comparison_id)
+    elif empty_locus:
+        detail = ', '.join(
+            '%s=%d' % (event_type, count)
+            for event_type, count in sorted(empty_locus.items()))
+        if legacy_contract:
+            report.warn(
+                'rMATS %s: rows with empty event_locus by event_type: %s '
+                '(events cannot be located in IGV)' % (comparison_id, detail))
+        else:
+            report.error(
+                'rMATS %s: rows with empty event_locus by event_type: %s '
+                '(events cannot be located in IGV)' % (comparison_id, detail))
+    if floor and total_master:
         fraction = floor / total_master
         if fraction > MAX_FDR_ZERO_FRACTION:
             report.warn(
                 'rMATS %s: %.1f%% of events have FDR==0 (--cstat numeric floor); '
                 'fdr_floor_flag is set (known issue, annotated)'
                 % (comparison_id, 100.0 * fraction))
-    significant_path = os.path.join(os.path.dirname(master),
+    significant_path = os.path.join(tables_dir(deliverables, comparison_id),
                                     '%s.rmats.significant.tsv' % comparison_id)
     if os.path.isfile(significant_path):
         n_sig_table = count_tsv_rows(significant_path)
@@ -142,42 +203,42 @@ def check_rmats_master(outdir, comparison_id, report):
         report.error('rMATS significant.tsv missing for %s' % comparison_id)
 
 
-def check_leafcutter_master(outdir, comparison_id, report, fdr_cutoff):
-    master = os.path.join(outdir, 'deliverables', 'contrasts', comparison_id,
-                          'data_tables', '%s.leafcutter.master.tsv' % comparison_id)
-    significant = os.path.join(os.path.dirname(master),
+def check_leafcutter_master(deliverables, comparison_id, report, required_columns, fdr_cutoff):
+    master = os.path.join(tables_dir(deliverables, comparison_id),
+                          '%s.leafcutter.master.tsv' % comparison_id)
+    significant = os.path.join(tables_dir(deliverables, comparison_id),
                                '%s.leafcutter.significant.tsv' % comparison_id)
     if not os.path.isfile(master):
         report.error('LeafCutter master missing: %s' % master)
         return
-    check_columns(master, report)
+    check_columns(master, report, required_columns)
     n_ok_with_p = 0
     for row in iter_tsv(master):
-        if row.get('status') == 'Success' and row.get('fdr') != '':
+        if row.get('status') == 'Success' and row.get('padj') != '':
             try:
-                if float(row['fdr']) < fdr_cutoff:
+                if float(row['padj']) < fdr_cutoff:
                     n_ok_with_p += 1
             except (TypeError, ValueError):
                 pass
     if n_ok_with_p and not (os.path.isfile(significant) and count_tsv_rows(significant) > 0):
         report.error(
-            'LeafCutter %s: %d clusters with status=="Success" & p.adjust < %s '
+            'LeafCutter %s: %d clusters with status=="Success" & padj < %s '
             'but significant.tsv has 0 rows — status filter regression'
             % (comparison_id, n_ok_with_p, fdr_cutoff))
 
 
-def check_isar_master(outdir, comparison_id, report):
-    master = os.path.join(outdir, 'deliverables', 'contrasts', comparison_id,
-                          'data_tables', '%s.isar.master.tsv' % comparison_id)
+def check_isar_master(deliverables, comparison_id, report, required_columns):
+    master = os.path.join(tables_dir(deliverables, comparison_id),
+                          '%s.isar.master.tsv' % comparison_id)
     if not os.path.isfile(master):
         report.error('ISAR master missing: %s' % master)
         return
-    check_columns(master, report)
+    check_columns(master, report, required_columns)
     q_values = []
     dmax = 0.0
     for row in iter_tsv(master):
         try:
-            q_values.append(float(row.get('fdr')))
+            q_values.append(float(row.get('padj')))
         except (TypeError, ValueError):
             pass
         try:
@@ -189,17 +250,20 @@ def check_isar_master(outdir, comparison_id, report):
         iqr = q_sorted[len(q_sorted) // 4 * 3] - q_sorted[len(q_sorted) // 4]
         if iqr < ISAR_IQR_THRESHOLD and dmax >= ISAR_DIF_THRESHOLD:
             report.warn(
-                'ISAR %s: q-values pinned (IQR %.4f < %.2f) while |dIF| max = %.2f — '
+                'ISAR %s: padj pinned (IQR %.4f < %.2f) while |dIF| max = %.2f — '
                 'known issue (satuRn), do not read significant.tsv as authoritative'
                 % (comparison_id, iqr, ISAR_IQR_THRESHOLD, dmax))
 
 
-def check_cross_tool(outdir, comparison_id, report, enabled_tools):
-    path = os.path.join(outdir, 'deliverables', 'contrasts', comparison_id,
-                        'data_tables', '%s.cross_tool.master.tsv' % comparison_id)
+def check_cross_tool(deliverables, comparison_id, report, enabled_tools):
+    dir_path = tables_dir(deliverables, comparison_id)
+    path = os.path.join(dir_path, '%s.cross_tool.master.tsv' % comparison_id)
     if not os.path.isfile(path):
         report.warn('cross_tool.master.tsv missing for %s' % comparison_id)
         return
+    gene_summary = os.path.join(dir_path, '%s.cross_tool.gene_summary.tsv' % comparison_id)
+    if not os.path.isfile(gene_summary):
+        report.error('cross_tool.gene_summary.tsv missing for %s' % comparison_id)
     counts = {}
     for row in iter_tsv(path):
         counts[row.get('tool', '')] = counts.get(row.get('tool', ''), 0) + 1
@@ -211,9 +275,9 @@ def check_cross_tool(outdir, comparison_id, report, enabled_tools):
             'the overlap/master: %s' % (comparison_id, ', '.join(empty)))
 
 
-def check_sashimi_index(outdir, comparison_id, report):
-    path = os.path.join(outdir, 'deliverables', 'contrasts', comparison_id,
-                        'plots', 'sashimi', 'sashimi_index.tsv')
+def check_sashimi_index(deliverables, comparison_id, report):
+    path = os.path.join(deliverables, 'contrasts', comparison_id, 'plots', 'sashimi',
+                        'sashimi_index.tsv')
     if not os.path.isfile(path):
         report.error('sashimi_index.tsv missing for %s (sashimi enabled)' % comparison_id)
         return
@@ -222,15 +286,45 @@ def check_sashimi_index(outdir, comparison_id, report):
         report.warn('sashimi_index.tsv is empty for %s (no sashimi-eligible events; not an error)'
                     % comparison_id)
         return
+    # pdf_path is relative to the deliverables/ root
     missing_pdfs = []
     for row in rows:
-        pdf = row.get('pdf_path', '')
-        if pdf and not os.path.isfile(pdf):
-            missing_pdfs.append(pdf)
+        rel = row.get('pdf_path', '')
+        if not rel:
+            continue
+        if os.path.isabs(rel) or 'raw/' in rel.replace('\\', '/'):
+            missing_pdfs.append(rel)
+            continue
+        if not os.path.isfile(os.path.join(deliverables, rel)):
+            missing_pdfs.append(rel)
     if missing_pdfs:
         report.error(
-            'sashimi_index.tsv %s: %d indexed PDFs missing: %s' %
-            (comparison_id, len(missing_pdfs), missing_pdfs[0]))
+            'sashimi_index.tsv %s: %d indexed PDFs missing or not deliverables-relative: %s'
+            % (comparison_id, len(missing_pdfs), missing_pdfs[0]))
+
+
+def parse_version_tuple(text):
+    """(2, 1, 0) from '2.1.0'; (0,) when absent or unparseable."""
+    text = str(text or '').strip().strip('"\'')
+    parts = []
+    for piece in text.split('.'):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            break
+    return tuple(parts) if parts else (0,)
+
+
+def contract_at_least(manifest, version):
+    """True when the validated run declares a contract >= `version`.
+
+    Old manifests carry `schema_version` (e.g. 2.0.0); new ones also carry
+    `results_contract_version`. Missing keys mean a pre-2.x run.
+    """
+    current = parse_version_tuple(
+        manifest.get('results_contract_version') or
+        manifest.get('schema_version') or '')
+    return current >= version
 
 
 def parse_manifest_yaml(path):
@@ -257,47 +351,57 @@ def parse_manifest_yaml(path):
                 value = value.strip()
                 if value.startswith('[') and value.endswith(']'):
                     value = [v for v in (v.strip() for v in value[1:-1].split(',')) if v]
-                result[key] = value
+                result.setdefault(key, value)
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--outdir', required=True, help='published run outdir')
-    parser.add_argument('--report-file', default='results_contract_report.txt')
+    parser.add_argument('--outdir', required=True, help='published run outdir (results/)')
+    parser.add_argument('--deliverables-root', default=None,
+                        help='deliverables/ root [<outdir>/deliverables]')
+    parser.add_argument('--report-file', default='qa_report.txt')
+    parser.add_argument('--schema', default=None,
+                        help='path to assets/results_schema.yaml')
+    parser.add_argument('--ignore-missing', nargs='*', default=[],
+                        help='run_info file names produced by the calling task that '
+                             'must not be required to pre-exist on disk')
     args = parser.parse_args()
 
     outdir = os.path.abspath(args.outdir)
-    report = Report()
-    deliverables = os.path.join(outdir, 'deliverables')
-    metadata = os.path.join(deliverables, 'metadata')
+    deliverables = os.path.abspath(
+        args.deliverables_root or os.path.join(outdir, 'deliverables'))
+    schema = load_schema(args.schema)
+    required_columns = schema.get('required_master_columns') or DEFAULT_REQUIRED_COLUMNS
 
-    if not os.path.isdir(deliverables):
-        report.error('deliverables/ layer missing in %s' % outdir)
+    report = Report()
+    run_info = os.path.join(deliverables, 'run_info')
+    contrasts_root = os.path.join(deliverables, 'contrasts')
+
+    if not os.path.isdir(run_info):
+        report.error('deliverables/run_info/ layer missing in %s' % deliverables)
         _finish(report, args.report_file)
         sys.exit(report.exit_code)
 
-    run_manifest = os.path.join(metadata, 'run_manifest.yaml')
-    sample_index = os.path.join(metadata, 'sample_index.tsv')
-    tools_matrix = os.path.join(metadata, 'tools_matrix.tsv')
+    run_manifest = os.path.join(run_info, 'run_manifest.yaml')
+    sample_index = os.path.join(run_info, 'sample_index.tsv')
+    software_versions = os.path.join(run_info, 'software_versions.yml')
+    ignore_missing = set(args.ignore_missing or [])
     for path, label in ((run_manifest, 'run_manifest.yaml'),
                         (sample_index, 'sample_index.tsv'),
-                        (tools_matrix, 'tools_matrix.tsv')):
+                        (software_versions, 'software_versions.yml')):
+        if label in ignore_missing:
+            continue
         if not os.path.isfile(path):
-            report.error('missing global metadata: %s' % label)
+            report.error('missing run_info file: %s' % label)
     if not os.path.isfile(run_manifest):
         _finish(report, args.report_file)
         sys.exit(report.exit_code)
 
     manifest = parse_manifest_yaml(run_manifest)
-    tools_raw = parse_manifest_yaml(tools_matrix) if os.path.isfile(tools_matrix) else {}
-    enabled_tools = set()
-    if os.path.isfile(tools_matrix):
-        with open(tools_matrix, 'r', encoding='utf-8') as handle:
-            reader = csv.DictReader(handle, delimiter='\t')
-            for row in reader:
-                if row.get('enabled') == 'true':
-                    enabled_tools.add(row.get('tool', ''))
+    enabled_tools = set(manifest.get('tools_enabled', []))
+    if isinstance(enabled_tools, str):
+        enabled_tools = {enabled_tools} if enabled_tools else set()
     fdr_cutoff = float(manifest.get('fdr_cutoff', 0.05))
 
     comparisons = manifest.get('comparisons', [])
@@ -307,37 +411,39 @@ def main():
         report.warn('run_manifest lists no comparisons')
 
     for comparison_id in comparisons:
-        contrast_dir = os.path.join(deliverables, 'contrasts', comparison_id)
+        contrast_dir = os.path.join(contrasts_root, comparison_id)
         if not os.path.isdir(contrast_dir):
-            report.error('missing contrast deliverables dir: %s' % contrast_dir)
+            report.error('missing contrast dir: %s' % contrast_dir)
             continue
-        contrast_manifest = os.path.join(contrast_dir, 'metadata', 'contrast_manifest.yaml')
+        contrast_manifest = os.path.join(contrast_dir, 'contrast_manifest.yaml')
         if not os.path.isfile(contrast_manifest):
             report.error('missing contrast_manifest.yaml for %s' % comparison_id)
 
-        report_html = os.path.join(outdir, 'report', '%s_splicing_report.html' % comparison_id)
+        report_html = os.path.join(contrast_dir, '%s_splicing_report.html' % comparison_id)
         if not os.path.isfile(report_html):
             report.error('missing report HTML for %s' % comparison_id)
 
         for tool in ('rmats', 'majiq', 'isar', 'leafcutter', 'pegasas'):
             if tool not in enabled_tools:
                 continue
-            data_tables = os.path.join(contrast_dir, 'data_tables')
             for role in ('master', 'significant', 'summary'):
-                path = os.path.join(data_tables, '%s.%s.%s.tsv' % (comparison_id, tool, role))
+                path = os.path.join(tables_dir(deliverables, comparison_id),
+                                    '%s.%s.%s.tsv' % (comparison_id, tool, role))
                 if not os.path.isfile(path):
                     report.error('missing %s.%s.%s.tsv for %s'
                                  % (comparison_id, tool, role, tool))
 
         if 'rmats' in enabled_tools:
-            check_rmats_master(outdir, comparison_id, report)
+            check_rmats_master(outdir, deliverables, comparison_id, report,
+                               required_columns,
+                               not contract_at_least(manifest, (2, 1, 0)))
         if 'leafcutter' in enabled_tools:
-            check_leafcutter_master(outdir, comparison_id, report, fdr_cutoff)
+            check_leafcutter_master(deliverables, comparison_id, report, required_columns, fdr_cutoff)
         if 'isar' in enabled_tools:
-            check_isar_master(outdir, comparison_id, report)
-        check_cross_tool(outdir, comparison_id, report, enabled_tools)
+            check_isar_master(deliverables, comparison_id, report, required_columns)
+        check_cross_tool(deliverables, comparison_id, report, enabled_tools)
         if 'sashimi' in enabled_tools:
-            check_sashimi_index(outdir, comparison_id, report)
+            check_sashimi_index(deliverables, comparison_id, report)
 
     _finish(report, args.report_file)
     sys.exit(report.exit_code)

@@ -4,7 +4,8 @@ process RENDER_REPORT {
 
     // Container resolved from modules.config (params.report_container or default)
 
-    publishDir "${params.outdir}/report", mode: params.publish_dir_mode
+    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}", mode: params.publish_dir_mode,
+        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     // stageAs gives each dir a unique name in the work dir — avoids basename collision
     // when rMATS, MAJIQ, ISAR, sashimi, PEGASAS, and LeafCutter all emit a directory per comparison.
@@ -18,7 +19,9 @@ process RENDER_REPORT {
           val(pegasas_name),     path(pegasas_dir,     stageAs: 'pegasas_in'),
           val(leafcutter_name),  path(leafcutter_dir,  stageAs: 'leafcutter_in'),
           val(group1_sample_ids),
-          val(group2_sample_ids)
+          val(group2_sample_ids),
+          val(group1_name),
+          val(group2_name)
     path report_rmd
 
     output:
@@ -62,6 +65,9 @@ process RENDER_REPORT {
       "de_results":             ${de_arg},
       "group1_sample_ids":      ${group1_ids_json},
       "group2_sample_ids":      ${group2_ids_json},
+      "group1_name":            "${group1_name}",
+      "group2_name":            "${group2_name}",
+      "report_min_reads":       ${params.report_min_reads},
       "publish_deliverables":   ${params.publish_deliverables ? 'true' : 'false'},
       "publish_level":          "${params.publish_level}",
       "results_contract_version": "${params.results_contract_version}",

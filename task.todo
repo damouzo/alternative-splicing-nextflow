@@ -152,13 +152,178 @@ Effort: low.
 
 ---
 
-## Reestructura de outputs (reestructure_plan.md) — IMPLEMENTADA (v1.2.0)
+## Reestructura de outputs v2.0.0 — layout compacto (supersede v1.2.0)
 
-Fases A–E implementadas: capa `deliverables/` (metadata, masters, significants,
-summaries, cross_tool, sashimi index, contrast manifests, QA validator),
-`known_issues` en manifests, sección "Data exports" en el report, gating
-`publish_level`/`publish_raw`/flags JCEC/individual counts, `python3` en el
-contenedor report.
+Rehecho el modelo de publicación: lo enviable vive anidado en
+`results/deliverables/`, hermano de `results/raw/` (solo auditoría). Enviar =
+`mv deliverables <nombre> && zip -r <nombre>.zip <nombre>`.
+
+```
+results/
+├── deliverables/              # SHIPPABLE (rutas internas relativas a deliverables/)
+│   ├── README.md
+│   ├── run_info/              # run_manifest, sample_index (sin rutas), software_versions,
+│   │                          # qa_report, pipeline_info/
+│   ├── contrasts/<id>/        # <id>_splicing_report.html, contrast_manifest.yaml,
+│   │                          # tables/, plots/sashimi/ (index + PDFs finales)
+│   └── cross_contrast/pegasas/
+└── raw/<tool>/<comparison_id>/ # audit-only (solo publish_level >= core_raw)
+```
+
+Cambios P0/P1 aplicados:
+- Capa enviable anidada en `deliverables/`; `raw/` queda fuera (auditoría).
+- Todas las rutas internas de la capa enviable son relativas a `deliverables/`:
+  `sashimi_index.tsv.pdf_path` y `contrast_manifest.yaml`.
+- PDFs finales de sashimi movidos a
+  `deliverables/contrasts/<id>/plots/sashimi/<EVENT_TYPE>/`; el índice ya no
+  apunta a `raw/`. `contrast_manifest.yaml` lista los nativos como
+  `raw_outputs_audit_only` (no enviables).
+- Doble anidación `<comp>/<comp>/` eliminada en rmats/majiq/isar/leafcutter;
+  sashimi y PEGASAS unificados al mismo patrón `raw/<tool>/<comp>/`.
+- `versions.yml` ya no se publica por proceso; `VALIDATE_RESULTS` consolida todo
+  en `deliverables/run_info/software_versions.yml` (bin/merge_versions.py).
+- `publish_dir_mode = 'copy'` (default documentado).
+- `params.tool_ids` define el identificador único; `isoformswitchr` → `isar`.
+- Contrato de columnas: `padj` + `padj_method` (BH, rmats_cstat,
+  satuRn_empirical, none) + `effect_size_type`; MAJIQ expone
+  `probability_changing`; PEGASAS con corrección BH (bin/export_tool_masters.py).
+- `cross_tool.gene_summary.tsv` (una fila por gen).
+- `assets/results_schema.yaml` como única fuente de verdad; el validador lo lee.
+- `tools_matrix.tsv` eliminado; QA en `deliverables/run_info/qa_report.txt`.
+- `checksums.md5` eliminado (no se considera útil; era más una fuente de fallos
+  que una feature).
+- `sig_path` de PEGASAS derivado de `params.tool_ids.pegasas` (no hardcodeado).
+
+Estado: scripts verificados con un smoke test sintético (harness en /tmp, no
+versionado) — masters, cross_tool, sashimi index, manifests, merge de versions y
+validador (0 errores, 1 warning esperado). **Pendiente: E2E real con Nextflow**
+(no disponible en este entorno) para confirmar el wiring DSL2 y los publishDir.
+
+Checklist E2E v2.0.0:
+- [ ] `nextflow run main.nf -profile test` produce `run_info/` + `contrasts/` y
+      `qa_report.txt` con 0 errores.
+- [ ] `raw/<tool>/<comp>/` sin doble anidación para rmats/majiq/isar/leafcutter.
+- [ ] `publish_level=core`: no se publica `raw/` salvo PDFs de sashimi y el índice
+      resuelve (`raw/sashimi/<comp>/sashimi_out/...`).
+- [ ] `software_versions.yml` único, sin `versions.yml` sueltos en la capa enviable.
+- [ ] El zip de `deliverables/` es autocontenido (sin rutas absolutas ni `raw/`).
+
+---
+
+## Reestructura de outputs (reestructure_plan.md) — v1.2.0 (superseded por v2.0.0)
+
+### Qué se reorganizó (v1.2.0)
+
+**Modelo de salida en dos capas** (antes: solo directorios nativos por tool):
+
+```
+results/
+├── deliverables/                          # CORE — consumo habitual (wet lab / IP)
+│   ├── metadata/
+│   │   ├── run_manifest.yaml              # pipeline, params críticos, tools, known_issues
+│   │   ├── sample_index.tsv               # muestra × comparación × paths de entrada
+│   │   ├── tools_matrix.tsv               # enablement + contenedor por tool
+│   │   └── results_contract_report.txt    # salida del QA gate
+│   └── contrasts/<comparison_id>/
+│       ├── metadata/contrast_manifest.yaml
+│       ├── data_tables/
+│       │   ├── <id>.rmats.{master,significant,summary}.tsv
+│       │   ├── <id>.majiq/.isar/.leafcutter/.pegasas.{...}.tsv
+│       │   └── <id>.cross_tool.master.tsv
+│       └── plots/sashimi/sashimi_index.tsv
+├── rmats|majiq|isoformswitchr|leafcutter|sashimi|pegasas/   # RAW — layout nativo
+│   └── <comparison_id>/                   # fijado por --publish_level
+└── report/<id>_splicing_report.html       # CORE
+```
+
+**Naming canónico**: `<comparison_id>.<tool>.{master,significant,summary}.tsv`.
+
+**Contrato de columnas estándar en todos los masters**: `comparison_id, tool,
+feature_type, feature_id, gene_id, gene_symbol, effect_size, pvalue, fdr,
+is_significant, significance_rule, source_file` + columnas nativas de cada tool
+(Regla 8: preservar lo nativo, no tirarlo). rMATS añade `event_type/event_id`,
+`fdr_floor_flag` (FDR==0 = suelo numérico de `--cstat`, anotado sin redondear)
+e `is_novel_splice_site`.
+
+**Reglas de significancia idénticas a las del report HTML** (para que
+significant.tsv y el report nunca discrepen): rMATS `FDR<=fdr & |dPSI|>=dpsi`;
+MAJIQ `probability_changing>=0.95 & |dpsi_mean|>=0.2`; ISAR
+`isoform_switch_q_value<fdr & |dIF|>=dpsi`; LeafCutter
+`status=="Success" & p.adjust<fdr` (vocabulario real de leafcutter_ds.R, no "OK").
+
+### Cómo se ha implementado (arquitectura)
+
+**Nuevos módulos Nextflow** (todos con runtime = contenedor report, python3):
+
+| Módulo | Salidas | Fase plan |
+|---|---|---|
+| `modules/local/export_metadata/` | run_manifest.yaml, sample_index.tsv, tools_matrix.tsv | A |
+| `modules/local/rmats_master/` | rmats master/sig/summary + flags | C |
+| `modules/local/export_tool_masters/` (EXPORT_TOOL_MASTERS + CROSS_TOOL_MASTER) | masters por tool + cross_tool | B |
+| `modules/local/sashimi_index/` | sashimi_index.tsv (paths outdir-relativos) | D |
+| `modules/local/contrast_manifest/` | contrast_manifest.yaml desde disco | A/B/D |
+| `modules/local/validate_results/` | results_contract_report.txt (gate final) | E |
+
+**Nuevos scripts** (Python stdlib puro, sin pandas): `bin/build_results_manifest.py`
+(run + contrast_disk), `bin/build_rmats_master.py` (streaming por tipo de evento:
+~700K filas / 173 MB sin OOM), `bin/export_tool_masters.py` (majiq/isar/
+leafcutter/pegasas + cross_tool), `bin/build_sashimi_index.py`, y
+`bin/validate_results_contract.py`.
+
+**Wiring (workflows/alternative_splicing.nf)**: los manifests se ensamblan
+**desde el disco publicado** (layout determinístico), no con agregación de
+canales — el CONTRAST_MANIFEST se dispara por una cadena de `join` de canales
+de estado por comparación (siempre emiten `'1'`/`'0'` por tool), el patrón
+probado del RENDER_REPORT. Se evita `collect()` sobre mixes por su semántica
+de aplanado y `groupTuple` emitiendo grupos parciales (lecciones del E2E).
+
+**Gating de publicación** (`--publish_level` core | core_raw | full):
+- `core`: solo deliverables + report; los dirs nativos no se publican (rMATS
+  conserva b1/b2_samples + versions; sashimi conserva los PDFs finales;
+  pegasas conserva `*_sig_pathways.tsv` porque alimenta su master).
+- `core_raw` (default): como antes + deliverables; JCEC/individualCounts solo
+  con `--publish_rmats_jcec` / `--publish_rmats_individual_counts`.
+- `full`: todo sin excepciones.
+- `--publish_raw=false` se comporta como core para la capa nativa.
+Implementado con `saveAs` en los 6 módulos nativos (rmats_post, majiq,
+isar_switch_consequences, leafcutter_ds, pegasas_collate, sashimi_plots).
+
+**Report (bin/render_report.Rmd + modules/local/report/main.nf)**:
+- `RENDER_REPORT` ahora emite `(comparison_id, html)` en tuple.
+- Sección nueva "Data exports" al final: inventario de deliverables con paths
+  outdir-relativos, status y nota de `known_issues` por tabla.
+- Aviso temprano "Known tool reliability issues" tras el summary (rojo para
+  `under_investigation`).
+- Helpers `tool_issue*` que toleran data.frame o lista (jsonlite convierte
+  arrays de objetos a data.frame).
+
+**Feedback del catedrático incorporado**:
+1. `tool_reliability` (known_issues) en nextflow.config → manifests + report.
+   ISAR en `under_investigation` (q-values pinneados 0.986-0.997); LeafCutter
+   en `fixed` (filtro "OK"→"Success"); rMATS `annotated` (FDR floor); PEGASAS
+   `known_issue` (sin corrección por múltiples tests).
+2. Validador con *content checks* del audit, no solo estructura: regresión del
+   filtro de status de LeafCutter (hard fail), % FDR==0 > 25% (warn),
+   q-values ISAR pinneados IQR<0.05 con |dIF|>=0.1 (warn), tools con 0 genes en
+   cross_tool (warn), consistencia master↔significant↔suma de MATS.JC.
+3. rMATS `fdr_floor_flag` anotado en el mismo master (no iteración aparte).
+4. Sashimi index como pieza de navegación (la queja que motivó el plan).
+5. Criterio 8 del DoD: los bugs conocidos están corregidos o señalizados en los
+   manifests antes de compartir tablas CORE.
+
+### Verificación realizada
+
+- Scripts Python validados contra datos reales CRUK (batch_2026_04): rMATS
+  702.511 eventos → master/sig/summary correcto; MAJIQ 391.165 LSVs; ISAR;
+  LeafCutter 355.606 intrones; PEGASAS 50 pathways; sashimi 150 PDFs del índice
+  resolviéndose contra outdir.
+- E2E completo `-profile apptainer,test` en SLURM: **verde (exit 0)** con
+  manifests, masters, QA report y HTML con "Data exports". 1 warning esperado
+  (FDR==0 al 100% en datos sintéticos).
+- Review local `/review uncommitted` (6 tracks): los 9 WARNING corregidos y
+  re-verificados con E2E final (validación de comparison_id, quoting en bash,
+  gating compuesto pegasas/sashimi, counts de grupo en manifest, código muerto
+  eliminado, yaml_scalar para comas, sashimi vacío no fatal, regla MAJIQ).
 
 ### Checklist post-implementación (verificar y cerrar)
 

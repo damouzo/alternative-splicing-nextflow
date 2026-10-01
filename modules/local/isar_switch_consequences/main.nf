@@ -5,9 +5,10 @@ process ISAR_SWITCH_CONSEQUENCES {
     
     // Container resolved from modules.config (params.isar_container or ghcr.io default)
 
-    // RAW layer — unpublished in 'core' mode
-    publishDir "${params.outdir}/isoformswitchr/${comparison_id}", mode: params.publish_dir_mode,
-        saveAs: { f -> (params.publish_level == 'core' || !params.publish_raw) ? null : f }
+    // raw/ layer — unpublished in 'core' mode; versions.yml goes to run_info/
+    publishDir "${params.outdir}/raw/${params.tool_ids.isar}", mode: params.publish_dir_mode,
+        saveAs: { f -> (f.toString() == 'versions.yml' ||
+                        params.publish_level == 'core' || !params.publish_raw) ? null : f }
 
     input:
     tuple val(comparison_id), path(rds_input), path(pfam_results), path(iupred_results)

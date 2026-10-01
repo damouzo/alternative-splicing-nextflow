@@ -133,27 +133,26 @@ executor >  local (12)
 
 ## Output Structure
 
-Results are written to the directory specified by `--outdir`:
+Results are written to the directory specified by `--outdir`. The shippable
+folder is `deliverables/`; `raw/` is audit-only and is not sent:
 
 ```
 results/
-├── rmats/
-│   └── control_vs_treatment/
-│       ├── SE.MATS.JC.txt
-│       ├── A5SS.MATS.JC.txt
-│       └── ...
-├── majiq/
-│   └── control_vs_treatment/
-│       ├── splicegraph.sql
-│       ├── control_vs_treatment.tsv
-│       └── ...
-├── isoformswitchr/
-│   └── control_vs_treatment/
-│       ├── top_isoform_switches.csv
-│       ├── consequence_summary.csv
-│       └── switchplots/
-└── report/
-    └── control_vs_treatment_splicing_report.html
+├── deliverables/                   # SHIPPABLE: rename + zip to send
+│   ├── README.md
+│   ├── run_info/                   # run_manifest, sample_index, software_versions, qa_report
+│   ├── contrasts/
+│   │   └── control_vs_treatment/
+│   │       ├── control_vs_treatment_splicing_report.html
+│   │       ├── contrast_manifest.yaml
+│   │       ├── tables/             # <id>.<tool>.{master,significant,summary}.tsv + cross_tool.*
+│   │       └── plots/sashimi/      # sashimi_index.tsv + <EVENT_TYPE>/*.pdf
+│   └── cross_contrast/pegasas/     # summary, heatmap, UpSet
+└── raw/                            # native per-tool output (audit-only, not shipped)
+    ├── rmats/control_vs_treatment/...
+    ├── majiq/control_vs_treatment/...
+    ├── isar/control_vs_treatment/...
+    └── ...
 ```
 
 See [output.md](output.md) for detailed descriptions of all output files.

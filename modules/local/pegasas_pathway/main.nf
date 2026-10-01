@@ -11,8 +11,10 @@ process PEGASAS_PATHWAY {
 
     container 'local/pegasas:latest'
 
-    publishDir "${params.outdir}/pegasas/pathway", mode: params.publish_dir_mode,
-        saveAs: { f -> f.startsWith('pathway_out/') ? f.substring('pathway_out/'.length()) : f }
+    // Shared, cohort-level output (not tied to a contrast) → raw/pegasas/_shared/
+    publishDir "${params.outdir}/raw/${params.tool_ids.pegasas}/_shared", mode: params.publish_dir_mode,
+        saveAs: { f -> (f.toString() == 'versions.yml') ? null :
+                      (f.toString().startsWith('pathway_out/') ? f.toString().substring('pathway_out/'.length()) : f) }
 
     input:
     path gene_exp

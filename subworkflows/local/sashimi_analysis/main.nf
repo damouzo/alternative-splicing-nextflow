@@ -74,5 +74,6 @@ workflow SASHIMI_ANALYSIS {
     SASHIMI_PLOTS(ch_sashimi_input)
 
     emit:
-    results = SASHIMI_PLOTS.out.results
+    results  = SASHIMI_PLOTS.out.results
+    versions = SASHIMI_PLOTS.out.versions
 }

@@ -7,7 +7,7 @@ Build the rMATS CORE deliverables for one comparison:
   <comparison_id>.rmats.summary.tsv      per event type counts
 
 Significance rule (same as the HTML report):
-    is_significant = (FDR <= fdr_cutoff) and (|IncLevelDifference| >= dpsi_cutoff)
+    is_significant = (padj <= fdr_cutoff) and (|IncLevelDifference| >= dpsi_cutoff)
 
 Design notes:
   - rMATS 4.3 duplicates the ID column in *.MATS.JC.txt; the first occurrence
@@ -17,6 +17,10 @@ Design notes:
     of --cstat); do not round them silently.
   - Native per-sample PSI vectors are summarised to group means (inc_level_1/2),
     matching what the report's PSI section consumes.
+  - Contract 2.1.0 (additive): every row carries event_locus (chr:start-end,
+    1-based, IGV-ready) and event_coords (native 0-based coordinates named per
+    event type). The six SE-shaped columns (exon_start_0base..downstream_ee)
+    are legacy: only SE rows populate them.
 
 Rows are streamed event-type by event-type to keep peak memory flat on large
 runs. Stdlib only.
@@ -30,14 +34,44 @@ import sys
 
 EVENT_TYPES = ('SE', 'A5SS', 'A3SS', 'MXE', 'RI')
 
+# Paste-ready location columns, independent of the event type (contract 2.1.0).
+LOCATION_COLUMNS = [
+    'event_locus',   # chr:start-end (1-based inclusive) spanning every event coordinate
+    'event_coords',  # native rMATS coordinates, 0-based, named per type (EVENT_COORD_FIELDS)
+]
+
+# Native coordinate pairs per event type, in rMATS column order.
+EVENT_COORD_FIELDS = {
+    'SE':   (('exon', 'exonStart_0base', 'exonEnd'),
+             ('upstream', 'upstreamES', 'upstreamEE'),
+             ('downstream', 'downstreamES', 'downstreamEE')),
+    'A5SS': (('long', 'longExonStart_0base', 'longExonEnd'),
+             ('short', 'shortES', 'shortEE'),
+             ('flanking', 'flankingES', 'flankingEE')),
+    'A3SS': (('long', 'longExonStart_0base', 'longExonEnd'),
+             ('short', 'shortES', 'shortEE'),
+             ('flanking', 'flankingES', 'flankingEE')),
+    'MXE':  (('1stExon', '1stExonStart_0base', '1stExonEnd'),
+             ('2ndExon', '2ndExonStart_0base', '2ndExonEnd'),
+             ('upstream', 'upstreamES', 'upstreamEE'),
+             ('downstream', 'downstreamES', 'downstreamEE')),
+    'RI':   (('riExon', 'riExonStart_0base', 'riExonEnd'),
+             ('upstream', 'upstreamES', 'upstreamEE'),
+             ('downstream', 'downstreamES', 'downstreamEE')),
+}
+
 STANDARD_COLUMNS = [
     'comparison_id', 'tool', 'event_type', 'event_id', 'feature_type',
     'feature_id', 'gene_id', 'gene_symbol',
     'chr', 'strand', 'inc_level_1', 'inc_level_2', 'inc_level_difference',
-    'effect_size', 'pvalue', 'fdr', 'fdr_floor_flag', 'is_novel_splice_site',
+    'effect_size', 'effect_size_type', 'pvalue', 'padj', 'padj_method',
+    'fdr_floor_flag', 'is_novel_splice_site',
     'is_significant', 'significance_rule', 'source_file',
 ]
 
+# Legacy SE-shaped coordinate columns (contract 2.0.x): only SE rows carry
+# values, every other event type leaves them empty. Superseded by
+# event_locus/event_coords; kept for backward compatibility until 3.0.0.
 NATIVE_COLUMNS = [
     'exon_start_0base', 'exon_end', 'upstream_es', 'upstream_ee',
     'downstream_es', 'downstream_ee', 'ijc_sample_1_total', 'sjc_sample_1_total',
@@ -98,6 +132,44 @@ def num(value):
         return repr(number)
     except ValueError:
         return text
+
+
+def as_int(value):
+    """Integer coordinate or None; tolerates float-like strings from rMATS."""
+    if value is None:
+        return None
+    text = str(value).strip().strip('"')
+    if not text or text == 'NA':
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def build_event_locus(event_type, row, header_names):
+    """(event_locus, event_coords) for one event; ('', '') when unparseable.
+
+    event_locus spans every named coordinate of the event, 1-based inclusive
+    (min start + 1 .. max end), so it can be pasted straight into IGV.
+    event_coords keeps the raw 0-based values with per-type names.
+    """
+    pairs = []
+    for label, start_col, end_col in EVENT_COORD_FIELDS.get(event_type, ()):
+        if start_col not in header_names or end_col not in header_names:
+            continue
+        start = as_int(row.get(start_col))
+        end = as_int(row.get(end_col))
+        if start is None or end is None:
+            continue
+        pairs.append((label, start, end))
+    if not pairs:
+        return '', ''
+    locus = '%d-%d' % (min(pair[1] for pair in pairs) + 1, max(pair[2] for pair in pairs))
+    chrom = (row.get('chr') or '').strip().strip('"')
+    if chrom:
+        locus = '%s:%s' % (chrom, locus)
+    return locus, ';'.join('%s=%d-%d' % pair for pair in pairs)
 
 
 def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff, rule):
@@ -169,16 +241,20 @@ def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff, 
                 'inc_level_2': parse_psi_vector(row.get('IncLevel2')),
                 'inc_level_difference': num(row.get('IncLevelDifference')),
                 'effect_size': num(row.get('IncLevelDifference')),
+                'effect_size_type': 'delta_psi',
                 'pvalue': num(row.get('PValue')),
-                'fdr': num(row.get('FDR')),
+                'padj': num(row.get('FDR')),
+                'padj_method': 'rmats_cstat',
                 'fdr_floor_flag': 'true' if fdr_float == 0.0 else 'false',
                 'is_novel_splice_site': 'true' if row.get('ID') in novel_ids else 'false',
                 'is_significant': 'true' if is_significant else 'false',
                 'significance_rule': rule,
                 'source_file': '%s.MATS.JC.txt' % event_type,
             }
-            for native in NATIVE_COLUMNS:
+            for native in LOCATION_COLUMNS + NATIVE_COLUMNS:
                 out[native] = ''
+            out['event_locus'], out['event_coords'] = build_event_locus(
+                event_type, row, full)
             if 'exonStart_0base' in full:
                 out['exon_start_0base'] = num(row.get('exonStart_0base'))
             if 'exonEnd' in full:
@@ -222,13 +298,13 @@ def main():
     parser.add_argument('--out-dir', default='.')
     args = parser.parse_args()
 
-    rule = 'fdr <= %s & |inc_level_difference| >= %s' % (args.fdr_cutoff, args.dpsi_cutoff)
+    rule = 'padj <= %s & |inc_level_difference| >= %s' % (args.fdr_cutoff, args.dpsi_cutoff)
     prefix = '%s.rmats' % args.comparison_id
     master_path = os.path.join(args.out_dir, prefix + '.master.tsv')
     sig_path = os.path.join(args.out_dir, prefix + '.significant.tsv')
     summary_path = os.path.join(args.out_dir, prefix + '.summary.tsv')
 
-    columns = STANDARD_COLUMNS + NATIVE_COLUMNS
+    columns = STANDARD_COLUMNS + LOCATION_COLUMNS + NATIVE_COLUMNS
     summary_cols = ['comparison_id', 'tool', 'event_type', 'n_total', 'n_significant',
                     'n_novel_splice_site', 'median_abs_dpsi', 'p90_abs_dpsi']
 

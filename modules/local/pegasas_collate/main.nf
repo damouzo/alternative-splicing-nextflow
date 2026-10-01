@@ -13,13 +13,17 @@ process PEGASAS_COLLATE {
 
     container 'local/pegasas:latest'
 
-    // RAW layer — unpublished in 'core' mode, except *_sig_pathways.tsv which
-    // feeds the pegasas master (n_sig_events) and must survive at every level
-    publishDir "${params.outdir}/pegasas/${comparison_id}", mode: params.publish_dir_mode,
+    // raw/ layer — unpublished in 'core' mode, except *_sig_pathways.tsv which
+    // feeds the pegasas master (n_sig_events) and must survive at every level.
+    // versions.yml goes to run_info/.
+    publishDir "${params.outdir}/raw/${params.tool_ids.pegasas}/${comparison_id}", mode: params.publish_dir_mode,
         saveAs: { f ->
             def name = f.toString()
+            if (name == 'versions.yml') {
+                return null
+            }
             if (params.publish_level == 'core' || !params.publish_raw) {
-                return (name.endsWith('_sig_pathways.tsv') || name.endsWith('versions.yml')) ? f : null
+                return name.endsWith('_sig_pathways.tsv') ? f : null
             }
             f.startsWith('pegasas_out/') ? f.substring('pegasas_out/'.length()) : f
         }

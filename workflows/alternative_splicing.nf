@@ -197,7 +197,10 @@ workflow ALTERNATIVE_SPLICING {
         .join(ch_pegasas_for_report,    by: 0)
         .join(ch_leafcutter_for_report, by: 0)
         .join(ch_sample_ids_for_report, by: 0)
-        .map { comp_id, rdir, mdir, idir, sdir, pdir, ldir, g1_ids, g2_ids ->
+        // Condition names (group1/group2 columns of comparisons.csv) feed the
+        // report legends so plots read Healthy vs Patient, not Group1 vs Group2.
+        .join(ch_comparisons_meta.map { meta -> [meta.id, meta.group1, meta.group2] }, by: 0)
+        .map { comp_id, rdir, mdir, idir, sdir, pdir, ldir, g1_ids, g2_ids, g1_name, g2_name ->
             [comp_id,
              rdir.name, rdir,
              mdir.name, mdir,
@@ -205,7 +208,8 @@ workflow ALTERNATIVE_SPLICING {
              sdir.name, sdir,
              pdir.name, pdir,
              ldir.name, ldir,
-             g1_ids, g2_ids]
+             g1_ids, g2_ids,
+             g1_name, g2_name]
         }
         .set { ch_report_inputs }
 
@@ -223,6 +227,9 @@ workflow ALTERNATIVE_SPLICING {
             params.outdir.startsWith('/') ? params.outdir :
                 (workflow.launchDir.resolve().toString() + '/' + params.outdir)
         }()
+        // Shippable layer: everything the recipient gets lives under deliverables/.
+        // results/raw/ is audit-only. All internal paths are relative to deliverables/.
+        def deliverables_root = "${outdir_root}/deliverables"
 
         // groovy.json package access is not resolved inside dataflow closures;
         // serialise/parse through these top-level references instead
@@ -242,6 +249,16 @@ workflow ALTERNATIVE_SPLICING {
             [name: 'sashimi',    enabled: sashimi_enabled,       container: (params.sashimi_container ?: 'ghcr.io/damouzo/alternative-splicing-nextflow/sashimi:latest')],
             [name: 'pegasas',    enabled: pegasas_enabled,       container: (params.pegasas_container ?: 'ghcr.io/damouzo/alternative-splicing-nextflow/pegasas:latest')]
         ]
+
+        // ---- Consolidated software versions: every process versions.yml ----
+        ch_versions = INPUT_CHECK.out.versions
+        if (params.run_rmats)      { ch_versions = ch_versions.mix(RMATS_ANALYSIS.out.versions) }
+        if (params.run_majiq)      { ch_versions = ch_versions.mix(MAJIQ_ANALYSIS.out.versions) }
+        if (params.run_isar)       { ch_versions = ch_versions.mix(ISOFORMSWITCHR_ANALYSIS.out.versions) }
+        if (sashimi_enabled)       { ch_versions = ch_versions.mix(SASHIMI_ANALYSIS.out.versions) }
+        if (pegasas_enabled)       { ch_versions = ch_versions.mix(PEGASAS_ANALYSIS.out.versions) }
+        if (params.run_leafcutter) { ch_versions = ch_versions.mix(LEAFCUTTER_ANALYSIS.out.versions) }
+        ch_versions = ch_versions.mix(RENDER_REPORT.out.versions)
 
         // ---- Fase A: run-level metadata ----
         def pipeline_json = to_json([
@@ -294,7 +311,10 @@ fdr_cutoff:             params.report_fdr_cutoff,
                 def payload = from_json(samples_json)
                 payload.pipeline = from_json(meta_json).pipeline
                 to_json(payload)
-            }
+            },
+            // Scripts passed as path inputs: their content is part of the task
+            // hash, so edits invalidate the cache on -resume.
+            file("${projectDir}/bin/build_results_manifest.py")
         )
 
         // ---- Fase C: rMATS master ----
@@ -304,7 +324,8 @@ fdr_cutoff:             params.report_fdr_cutoff,
         RMATS_MASTER(
             ch_rmats_master_input,
             params.report_fdr_cutoff,
-            params.report_dpsi_cutoff
+            params.report_dpsi_cutoff,
+            file("${projectDir}/bin/build_rmats_master.py")
         )
 
         // ---- Fase B: per-tool masters (MAJIQ / ISAR / LeafCutter / PEGASAS) ----
@@ -337,7 +358,7 @@ fdr_cutoff:             params.report_fdr_cutoff,
             ch_pegasas_for_report
                 .filter { comp_id, d -> d.name != 'NO_PEGASAS' }
                 .map { comp_id, d ->
-                    def sig_path = "${outdir_root}/pegasas/${comp_id}/${comp_id}_sig_pathways.tsv"
+                    def sig_path = "${outdir_root}/raw/${params.tool_ids.pegasas}/${comp_id}/${comp_id}_sig_pathways.tsv"
                     [comp_id, 'pegasas', d, to_json([
                         fdr_cutoff:   params.report_fdr_cutoff,
                         sig_pathways: sig_path
@@ -351,7 +372,10 @@ fdr_cutoff:             params.report_fdr_cutoff,
         ch_sashimi_index_input = ch_sashimi_for_report
             .filter { comp_id, d -> d.name != 'NO_SASHIMI' }
             .map { comp_id, d -> [comp_id, d] }
-        SASHIMI_INDEX(ch_sashimi_index_input, outdir_root)
+        SASHIMI_INDEX(
+            ch_sashimi_index_input,
+            file("${projectDir}/bin/build_sashimi_index.py")
+        )
 
         // ---- Fase B/E: cross-tool gene master ----
         ch_master_files = channel.empty()
@@ -387,7 +411,7 @@ fdr_cutoff:             params.report_fdr_cutoff,
             SASHIMI_INDEX.out.index.map { comp_id, _idx -> [comp_id, '1'] } :
             ch_ids_split.sashimi.map { comp_id -> [comp_id, '0'] }
         ch_cross_state      = (params.build_cross_tool_master && params.run_rmats) ?
-            CROSS_TOOL_MASTER.out.master.map { comp_id, _f -> [comp_id, '1'] } :
+            CROSS_TOOL_MASTER.out.master.map { comp_id, _f, _gs -> [comp_id, '1'] } :
             ch_ids_split.rmats.map { comp_id -> [comp_id, '0'] }
         ch_report_state     = ch_reports.map { comp_id, _html -> [comp_id, '1'] }
 
@@ -405,17 +429,41 @@ fdr_cutoff:             params.report_fdr_cutoff,
             }, by: 0)
 .map { comp_id, s_rmats, s_majiq, s_isar, s_lc, s_pegasas,
                s_sashimi, s_cross, s_report, g1, g2 ->
-            [comp_id, pipeline_json, outdir_root, g1, g2]
+            [comp_id, pipeline_json, outdir_root, deliverables_root, g1, g2]
         }
 
-        CONTRAST_MANIFEST(ch_manifest_gate)
+        CONTRAST_MANIFEST(
+            ch_manifest_gate,
+            file("${projectDir}/bin/build_results_manifest.py")
+        )
 
-        // ---- Fase E: QA gate on the full deliverable layer ----
+        // ---- Fase E: QA gate + run_info finalisation ----
+        ch_versions = ch_versions
+            .mix(EXPORT_METADATA.out.versions)
+            .mix(RMATS_MASTER.out.versions)
+            .mix(EXPORT_TOOL_MASTERS.out.versions)
+            .mix(SASHIMI_INDEX.out.versions)
+            .mix(CONTRAST_MANIFEST.out.versions)
+        if (params.build_cross_tool_master && params.run_rmats) {
+            ch_versions = ch_versions.mix(CROSS_TOOL_MASTER.out.versions)
+        }
+        ch_version_files = ch_versions.map { f -> f.toString() }.collect()
+
         ch_qa_trigger = CONTRAST_MANIFEST.out.manifest
             .map { comp_id, _mf -> comp_id }
             .collect()
             .map { comp_ids -> [comp_ids.size(), comp_ids.size()] }
 
-        VALIDATE_RESULTS(ch_qa_trigger, outdir_root)
+        ch_validate_input = ch_qa_trigger
+            .combine(ch_version_files.map { files -> files.join(':') })
+
+        VALIDATE_RESULTS(
+            ch_validate_input,
+            outdir_root,
+            deliverables_root,
+            file("${projectDir}/bin/merge_versions.py"),
+            file("${projectDir}/bin/validate_results_contract.py"),
+            file("${projectDir}/assets/results_schema.yaml")
+        )
     }
 }

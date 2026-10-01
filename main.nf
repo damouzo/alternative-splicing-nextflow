@@ -119,7 +119,7 @@ Tool Selection:
 MAJIQ:
   majiq_license     : ${params.majiq_license ?: 'not provided'}
 
-Deliverables (CORE layer):
+Deliverables (shippable layer):
   publish_deliverables            : ${params.publish_deliverables}
   publish_level                   : ${params.publish_level}
   publish_rmats_jcec              : ${params.publish_rmats_jcec}

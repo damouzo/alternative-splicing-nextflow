@@ -4,15 +4,16 @@
  * ========================================================================================
  *  Forms:
  *    - EXPORT_TOOL_MASTERS(comp, tool, tool_dir, tool_params) — per-tool tables
- *    - CROSS_TOOL_MASTER(comp, master_files)                  — gene-level union
+ *    - CROSS_TOOL_MASTER(comp, master_files)                  — gene x tool + gene summary
  */
 
 process EXPORT_TOOL_MASTERS {
     tag "${comparison_id}_${tool}"
     label 'process_low'
 
-    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/data_tables",
-        mode: params.publish_dir_mode
+    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/tables",
+        mode: params.publish_dir_mode,
+        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
     tuple val(comparison_id), val(tool), path(tool_dir), val(tool_params_json)
@@ -49,14 +50,18 @@ process CROSS_TOOL_MASTER {
     tag "$comparison_id"
     label 'process_low'
 
-    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/data_tables",
-        mode: params.publish_dir_mode
+    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/tables",
+        mode: params.publish_dir_mode,
+        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
     tuple val(comparison_id), path(master_files)
 
     output:
-    tuple val(comparison_id), path("${comparison_id}.cross_tool.master.tsv"), emit: master
+    tuple val(comparison_id),
+          path("${comparison_id}.cross_tool.master.tsv"),
+          path("${comparison_id}.cross_tool.gene_summary.tsv"),
+          emit: master
     path "versions.yml",                           emit: versions
 
     script:
