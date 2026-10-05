@@ -15,9 +15,10 @@ process RMATS_MASTER {
         saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
-    tuple val(comparison_id), path(rmats_dir)
+    tuple val(comparison_id), path(rmats_dir), val(group1_name), val(group2_name)
     val  fdr_cutoff
     val  dpsi_cutoff
+    val  report_min_reads
     // Declared as input so its CONTENT is part of the task hash: a plain
     // `${projectDir}/bin/...` reference is not hashed and edits would be
     // silently served from cache on -resume.
@@ -38,6 +39,9 @@ process RMATS_MASTER {
         --rmats-dir     ${rmats_dir} \\
         --fdr-cutoff    ${fdr_cutoff} \\
         --dpsi-cutoff   ${dpsi_cutoff} \\
+        --group1-name   "${group1_name}" \\
+        --group2-name   "${group2_name}" \\
+        --report-min-reads ${report_min_reads} \\
         --out-dir .
 
     cat <<-END_VERSIONS > versions.yml

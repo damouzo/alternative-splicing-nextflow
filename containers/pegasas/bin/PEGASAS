@@ -64,6 +64,9 @@ def add_pathway_parser(subparsers):
     optional.add_argument("-n", "--num-interval", type=int, default=40,
                           dest="num_interval",
                           help="Parallel KS processes per batch [40]")
+    optional.add_argument("-m", "--min-tpm", type=float, default=1.0,
+                          dest="min_tpm",
+                          help="Only genes with TPM >= this form the KS background [1.0]")
     optional.add_argument("--plotting", default=False, action="store_true",
                           help="Save KS enrichment plot per sample")
     p._action_groups.append(optional)

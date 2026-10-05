@@ -43,7 +43,7 @@ workflow PEGASAS_ANALYSIS {
     main:
 
     // === SHARED: pathway activity scores computed once for all samples ===
-    PEGASAS_PREPARE(ch_salmon_tpm, ch_group_info)
+    PEGASAS_PREPARE(ch_salmon_tpm, ch_group_info, file("${projectDir}/bin/prepare_pegasas_gene_matrix.py"))
     PEGASAS_PATHWAY(
         PEGASAS_PREPARE.out.gene_exp,
         PEGASAS_PREPARE.out.group_info,
@@ -70,7 +70,7 @@ workflow PEGASAS_ANALYSIS {
             [comp_id, se_file, b1_samples, b2_samples, grp, g1_ids, g2_ids]
         }
 
-    PEGASAS_PREPARE_CONTRAST(ch_contrast)
+    PEGASAS_PREPARE_CONTRAST(ch_contrast, file("${projectDir}/bin/prepare_pegasas_inputs.py"))
 
     // Correlation: shared scores + contrast PSI + contrast group_order.
     // The single shared pathway_out/ is broadcast (cross-joined) to every contrast.
@@ -79,7 +79,7 @@ workflow PEGASAS_ANALYSIS {
         .map { comp_id, psi, group_order, contrast_samples, pathway_out ->
             [comp_id, pathway_out, psi, group_order, contrast_samples]
         }
-    PEGASAS_CORRELATION(ch_corr)
+    PEGASAS_CORRELATION(ch_corr, file("${projectDir}/bin/cor_matrix_direct_perm.R"))
 
     // Collate: shared scores + contrast correlation_out + contrast sample ids.
     ch_collate = PEGASAS_CORRELATION.out.results
@@ -88,13 +88,13 @@ workflow PEGASAS_ANALYSIS {
         .map { comp_id, correlation_out, g1_ids, g2_ids, pathway_out ->
             [comp_id, correlation_out, pathway_out, g1_ids, g2_ids]
         }
-    PEGASAS_COLLATE(ch_collate)
+    PEGASAS_COLLATE(ch_collate, file("${projectDir}/bin/pegasas_collate_scores.py"))
 
     // === CROSS CONTRAST: upset/heatmap of significant pathways ===
     ch_cross = PEGASAS_COLLATE.out.sig_pathways
         .map { comp_id, sig_file -> sig_file }
         .collect()
-    PEGASAS_CROSS_CONTRAST(ch_cross)
+    PEGASAS_CROSS_CONTRAST(ch_cross, file("${projectDir}/bin/pegasas_cross_contrast.R"))
 
     emit:
     results  = PEGASAS_COLLATE.out.results

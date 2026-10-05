@@ -58,7 +58,7 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
             continue
 
         candidates = []
-        excluded_novel = 0
+        n_novel = 0
         with open(jc_file) as fh:
             fh.readline()  # skip header
             for line in fh:
@@ -71,18 +71,17 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
                 except ValueError:
                     continue
 
-                # Skip unannotated (de novo) splice-site events: negative
-                # coordinates cannot be drawn by rmats2sashimiplot.
+                # novelSS events are kept: rMATS 4.3 no longer encodes them as
+                # negative coordinates, so rmats2sashimiplot can draw them.
                 if parts[0] in novel_ids:
-                    excluded_novel += 1
-                    continue
+                    n_novel += 1
 
                 if fdr_val <= fdr_cutoff and abs(dpsi_val) >= dpsi_cutoff:
                     score = priority_score(fdr_val, dpsi_val)
                     candidates.append((score, line))
 
-        if excluded_novel > 0:
-            print(f"[WARN] {event_type}: excluded {excluded_novel} novel-splice-site events (ID)",
+        if n_novel > 0:
+            print(f"[INFO] {event_type}: included {n_novel} novel-splice-site events",
                   file=sys.stderr)
 
         if not candidates:

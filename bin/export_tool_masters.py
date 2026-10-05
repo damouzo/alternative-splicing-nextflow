@@ -33,12 +33,14 @@ import csv
 import json
 import math
 import os
+import re
 import statistics
 import sys
 
 STANDARD_COLUMNS = [
     'comparison_id', 'tool', 'feature_type', 'feature_id', 'gene_id',
-    'gene_symbol', 'effect_size', 'effect_size_type', 'pvalue', 'padj',
+    'gene_symbol', 'group1_name', 'group2_name', 'effect_size_direction',
+    'effect_size', 'effect_size_type', 'pvalue', 'padj',
     'padj_method', 'is_significant', 'significance_rule', 'source_file',
 ]
 
@@ -76,20 +78,35 @@ def fmt(value, digits=None):
     return repr(number)
 
 
-def bh_adjust(pvalues):
-    """Benjamini-Hochberg adjusted p-values, order-preserving."""
-    n = len(pvalues)
-    if n == 0:
-        return []
-    order = sorted(range(n), key=lambda i: pvalues[i])
-    adjusted = [0.0] * n
-    previous = 1.0
-    for position in range(n - 1, -1, -1):
-        index = order[position]
-        value = pvalues[index] * n / float(position + 1)
-        previous = min(previous, value)
-        adjusted[index] = min(previous, 1.0)
-    return adjusted
+def mannwhitney_p(group1, group2):
+    """Two-sided Mann-Whitney U p-value (normal approximation, tie-averaged).
+
+    Returns None when either group has fewer than 4 values, so small contrasts
+    do not get a spuriously precise activity difference.
+    """
+    n1, n2 = len(group1), len(group2)
+    if n1 < 4 or n2 < 4:
+        return None
+    combined = sorted([(v, 0) for v in group1] + [(v, 1) for v in group2])
+    n = n1 + n2
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and combined[j + 1][0] == combined[i][0]:
+            j += 1
+        average = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            ranks[k] = average
+        i = j + 1
+    rank_sum1 = sum(ranks[k] for k in range(n) if combined[k][1] == 0)
+    u1 = rank_sum1 - n1 * (n1 + 1) / 2.0
+    mu = n1 * n2 / 2.0
+    sigma = math.sqrt(n1 * n2 * (n1 + n2 + 1) / 12.0)
+    if sigma == 0:
+        return None
+    z = abs(u1 - mu) / sigma
+    return 2.0 * (1.0 - 0.5 * (1.0 + math.erf(z / math.sqrt(2.0))))
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +114,7 @@ def bh_adjust(pvalues):
 # ---------------------------------------------------------------------------
 
 MAJIQ_NATIVE = [
+    'lsv_id',
     'seqid', 'strand', 'event_type', 'ref_exon_start', 'ref_exon_end',
     'start', 'end', 'is_intron', 'other_exon_start', 'other_exon_end',
     'is_denovo', 'ref_exon_denovo', 'other_exon_denovo', 'event_denovo',
@@ -122,6 +140,8 @@ def export_majiq(comparison_id, input_dir, out_dir, params):
 
     prob_threshold = float(params.get('probability_threshold', 0.95))
     dpsi_cutoff = float(params.get('dpsi_cutoff', 0.2))
+    group1_name = params.get('group1_name', '')
+    group2_name = params.get('group2_name', '')
     rule = 'probability_changing >= %s & |dpsi_mean| >= %s' % (prob_threshold, dpsi_cutoff)
 
     rows = []
@@ -145,10 +165,17 @@ def export_majiq(comparison_id, input_dir, out_dir, params):
                                prob >= prob_threshold and abs(dpsi) >= dpsi_cutoff)
             gene_name = (raw.get('gene_name') or '').strip()
             gene_id = (raw.get('gene_id') or '').strip()
-            feature_id = '%s:%s-%s:%s' % (raw.get('seqid', ''),
-                                          raw.get('start', ''),
-                                          raw.get('end', ''),
-                                          raw.get('strand', ''))
+            # An LSV is the reference exon context; a row is one junction within
+            # it. Keep lsv_id for LSV-level aggregation and make feature_id the
+            # unique per-junction identity (the old seqid:start-end:strand was
+            # duplicated across rows of the same LSV).
+            ref_exon = '%s-%s' % (raw.get('ref_exon_start', ''), raw.get('ref_exon_end', ''))
+            lsv_id = '%s:%s:%s' % (raw.get('seqid', ''), raw.get('strand', ''), ref_exon)
+            feature_id = '%s:%s:%s-%s:%s-%s:%s' % (
+                raw.get('seqid', ''), raw.get('strand', ''),
+                raw.get('start', ''), raw.get('end', ''),
+                raw.get('other_exon_start', ''), raw.get('other_exon_end', ''),
+                raw.get('is_intron', ''))
             row = {
                 'comparison_id': comparison_id,
                 'tool': 'majiq',
@@ -156,6 +183,9 @@ def export_majiq(comparison_id, input_dir, out_dir, params):
                 'feature_id': feature_id,
                 'gene_id': gene_id,
                 'gene_symbol': '' if gene_name == 'NA' else gene_name,
+                'group1_name': group1_name,
+                'group2_name': group2_name,
+                'effect_size_direction': 'group2_minus_group1',
                 'effect_size': fmt(raw.get('dpsi_mean')),
                 'effect_size_type': 'delta_psi',
                 'pvalue': '',
@@ -167,6 +197,7 @@ def export_majiq(comparison_id, input_dir, out_dir, params):
             }
             for col in MAJIQ_NATIVE:
                 row[col] = raw.get(col, '')
+            row['lsv_id'] = lsv_id
             rows.append(row)
 
     rows.sort(key=lambda r: -float(r['effect_size'] or 0))
@@ -177,7 +208,9 @@ def export_majiq(comparison_id, input_dir, out_dir, params):
                columns, significant)
     _write_long_summary(out_dir, comparison_id, 'majiq', [
         ('n_total', len(rows)),
+        ('n_lsvs', len({r['lsv_id'] for r in rows})),
         ('n_significant', len(significant)),
+        ('n_significant_lsvs', len({r['lsv_id'] for r in significant})),
         ('n_significant_with_gene', sum(
             1 for r in significant if r['gene_symbol'])),
         ('max_abs_dpsi', max((abs(float(r['effect_size'] or 0)) for r in rows), default='')),
@@ -191,7 +224,8 @@ def export_majiq(comparison_id, input_dir, out_dir, params):
 # ---------------------------------------------------------------------------
 
 ISAR_NATIVE = ['IF1', 'IF2', 'gene_switch_q_value', 'condition_1', 'condition_2',
-               'switchConsequencesGene']
+               'ref_gene_id', 'gene_id_original', 'switchConsequencesGene',
+               'effective_test_method']
 
 
 def export_isar(comparison_id, input_dir, out_dir, params):
@@ -202,10 +236,18 @@ def export_isar(comparison_id, input_dir, out_dir, params):
     source = 'top_isoform_switches.csv'
     fdr_cutoff = float(params.get('fdr_cutoff', 0.05))
     dpsi_cutoff = float(params.get('dpsi_cutoff', 0.1))
-    # DEXSeq applies BH; satuRn uses an empirical locfdr step. The chosen engine
-    # is per contrast, so record the conservative label and let the known_issues
-    # note cover the satuRn pinning.
-    padj_method = 'BH'
+    group1_name = params.get('group1_name', '')
+    group2_name = params.get('group2_name', '')
+    effective_method = str(params.get('effective_test_method', '') or '').strip()
+    # DEXSeq applies Benjamini-Hochberg; satuRn uses an empirical locfdr step.
+    # Derive the label from the engine actually used for this contrast instead
+    # of hardcoding BH.
+    if effective_method.lower().startswith('satur'):
+        padj_method = 'empirical_FDR'
+    elif effective_method.lower() == 'dexseq':
+        padj_method = 'BH'
+    else:
+        padj_method = 'BH'
     rule = 'isoform_switch_q_value < %s & |dIF| >= %s' % (fdr_cutoff, dpsi_cutoff)
 
     rows = []
@@ -224,13 +266,23 @@ def export_isar(comparison_id, input_dir, out_dir, params):
                 pass
             significant = bool(q is not None and dif is not None and
                                q < fdr_cutoff and abs(dif) >= dpsi_cutoff)
+            # ISAR writes gene_id as the gene symbol in some annotations; the
+            # real Ensembl gene id lives in ref_gene_id. Keep the original in
+            # gene_id_original so the cross-tool join can use ENSG.
+            original_id = str(raw.get('gene_id') or '').strip()
+            ref_gene = str(raw.get('ref_gene_id') or '').strip()
+            if ref_gene in ('', 'NA', 'None'):
+                ref_gene = original_id
             row = {
                 'comparison_id': comparison_id,
                 'tool': 'isar',
                 'feature_type': 'isoform',
                 'feature_id': raw.get('isoform_id', ''),
-                'gene_id': raw.get('gene_id', ''),
+                'gene_id': ref_gene,
                 'gene_symbol': raw.get('gene_name', ''),
+                'group1_name': group1_name,
+                'group2_name': group2_name,
+                'effect_size_direction': 'group2_minus_group1',
                 'effect_size': fmt(raw.get('dIF')),
                 'effect_size_type': 'delta_isoform_fraction',
                 'pvalue': '',
@@ -241,7 +293,12 @@ def export_isar(comparison_id, input_dir, out_dir, params):
                 'source_file': source,
             }
             for col in ISAR_NATIVE:
-                row[col] = raw.get(col, '')
+                if col == 'effective_test_method':
+                    row[col] = effective_method
+                elif col == 'gene_id_original':
+                    row[col] = original_id
+                else:
+                    row[col] = raw.get(col, '')
             rows.append(row)
 
     columns = STANDARD_COLUMNS + ISAR_NATIVE
@@ -279,8 +336,8 @@ def export_isar(comparison_id, input_dir, out_dir, params):
 # LeafCutter
 # ---------------------------------------------------------------------------
 
-LEAFCUTTER_NATIVE = ['cluster', 'status', 'loglr', 'df', 'logef',
-                     'deltapsi', 'psi_group1', 'psi_group2']
+LEAFCUTTER_NATIVE = ['cluster', 'status', 'cluster_significant', 'loglr', 'df',
+                     'logef', 'deltapsi', 'psi_group1', 'psi_group2']
 
 
 def leafcluster_from_intron(intron_id):
@@ -306,7 +363,11 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
         return 1
 
     fdr_cutoff = float(params.get('fdr_cutoff', 0.05))
-    rule = 'status == "Success" & padj < %s' % fdr_cutoff
+    dpsi_cutoff = float(params.get('dpsi_cutoff', 0.1))
+    group1_name = params.get('group1_name', '')
+    group2_name = params.get('group2_name', '')
+    rule = ('status == "Success" & padj_cluster <= %s & '
+            '|deltapsi| >= %s') % (fdr_cutoff, dpsi_cutoff)
 
     # cluster-level significance
     clusters = {}
@@ -315,20 +376,31 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
         for raw in reader:
             clusters[raw.get('cluster', '')] = raw
 
-    # intron-level effect sizes; PSI columns are positional (after logef)
+    # intron-level effect sizes. PSI columns are named with the two group names
+    # by leafcutter_ds.R (columns 3 and 4), in groups_file order; resolve them by
+    # header name so the sign and group labels cannot drift with column order.
     effects = {}
+    eff_group_names = []
     if eff_file:
         with open(eff_file, 'r', encoding='utf-8', errors='replace') as handle:
-            handle.readline()
+            header = handle.readline().rstrip('\n').split('\t')
+            eff_group_names = header[2:-1]  # drop intron, logef and deltapsi
+            if group1_name and eff_group_names and eff_group_names[0] != group1_name:
+                print('[export_tool_masters] LeafCutter: first PSI column is %r but '
+                      'group1 is %r — cluster column order is not group1-first '
+                      '(%s)' % (eff_group_names[0], group1_name, eff_file),
+                      file=sys.stderr)
+                return 1
             for line in handle:
                 parts = line.rstrip('\n').split('\t')
                 if len(parts) < 5:
                     continue
+                record = dict(zip(header, parts))
                 effects[parts[0]] = {
-                    'logef': parts[1],
-                    'psi_group1': parts[2] if len(parts) > 2 else '',
-                    'psi_group2': parts[3] if len(parts) > 3 else '',
-                    'deltapsi': parts[-1],
+                    'logef': record.get('logef', parts[1]),
+                    'psi_group1': record.get(group1_name, '') if group1_name else '',
+                    'psi_group2': record.get(group2_name, '') if group2_name else '',
+                    'deltapsi': record.get('deltapsi', parts[-1]),
                 }
 
     rows = []
@@ -341,7 +413,16 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
             padj = float(cluster.get('p.adjust'))
         except (TypeError, ValueError):
             pass
-        significant = bool(status == 'Success' and padj is not None and padj < fdr_cutoff)
+        cluster_significant = bool(status == 'Success' and padj is not None and padj <= fdr_cutoff)
+        dpsi = None
+        try:
+            dpsi = float(eff.get('deltapsi'))
+        except (TypeError, ValueError):
+            pass
+        # Significance is called per intron, not per cluster: the cluster must
+        # pass FDR and the intron must clear the |deltaPSI| cutoff.
+        significant = bool(cluster_significant and dpsi is not None and
+                           abs(dpsi) >= dpsi_cutoff)
         row = {
             'comparison_id': comparison_id,
             'tool': 'leafcutter',
@@ -349,6 +430,9 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
             'feature_id': intron_id,
             'gene_id': '',
             'gene_symbol': cluster.get('genes', '') or '',
+            'group1_name': group1_name,
+            'group2_name': group2_name,
+            'effect_size_direction': 'group2_minus_group1',
             'effect_size': eff.get('deltapsi', ''),
             'effect_size_type': 'delta_psi',
             'pvalue': cluster.get('p', ''),
@@ -363,6 +447,7 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
             row[col] = ''
         row['cluster'] = cluster_id
         row['status'] = status
+        row['cluster_significant'] = 'true' if cluster_significant else 'false'
         row['loglr'] = cluster.get('loglr', '')
         row['df'] = cluster.get('df', '')
         row['logef'] = eff.get('logef', '')
@@ -382,7 +467,7 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
             padj = float(cluster.get('p.adjust'))
         except (TypeError, ValueError):
             pass
-        significant = bool(status == 'Success' and padj is not None and padj < fdr_cutoff)
+        cluster_significant = bool(status == 'Success' and padj is not None and padj <= fdr_cutoff)
         rows.append({
             'comparison_id': comparison_id,
             'tool': 'leafcutter',
@@ -390,16 +475,22 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
             'feature_id': '',
             'gene_id': '',
             'gene_symbol': cluster.get('genes', '') or '',
+            'group1_name': group1_name,
+            'group2_name': group2_name,
+            'effect_size_direction': 'group2_minus_group1',
             'effect_size': '',
             'effect_size_type': 'delta_psi',
             'pvalue': cluster.get('p', ''),
             'padj': cluster.get('p.adjust', ''),
             'padj_method': 'BH',
-            'is_significant': 'true' if significant else 'false',
+            # No intron-level deltapsi to test, so this cluster row is never
+            # intron-significant; cluster_significant records the cluster call.
+            'is_significant': 'false',
             'significance_rule': rule,
             'source_file': os.path.basename(sig_file),
             'cluster': cluster_id,
             'status': status,
+            'cluster_significant': 'true' if cluster_significant else 'false',
             'loglr': cluster.get('loglr', ''),
             'df': cluster.get('df', ''),
             'logef': '',
@@ -440,8 +531,10 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
 # PEGASAS
 # ---------------------------------------------------------------------------
 
-PEGASAS_NATIVE = ['n_samples', 'n_sig_samples', 'median_p', 'max_abs_ks',
-                  'median_rank', 'n_sig_tests', 'min_padj', 'n_sig_events']
+PEGASAS_NATIVE = ['n_samples', 'n_group1', 'n_group2',
+                  'activity_diff', 'activity_diff_pvalue',
+                  'ks_score_max', 'ks_score_median', 'ks_min_pvalue',
+                  'n_sig_events', 'n_sig_events_perm', 'n_tested', 'min_padj_bh']
 
 
 def export_pegasas(comparison_id, input_dir, out_dir, params):
@@ -449,59 +542,70 @@ def export_pegasas(comparison_id, input_dir, out_dir, params):
     if not os.path.isfile(scores_path):
         print('[export_tool_masters] PEGASAS: %s missing' % scores_path, file=sys.stderr)
         return 1
-    fdr_cutoff = float(params.get('fdr_cutoff', 0.05))
-    rule = 'BH padj < %s across pathway x sample KS tests' % fdr_cutoff
+    group1_name = params.get('group1_name', '')
+    group2_name = params.get('group2_name', '')
+    # PEGASAS has no boolean significance call. n_sig_events is the BH-adjusted
+    # count of event x pathway correlations using the analytic Pearson p-value
+    # (BH applied once across the contrast matrix); the permutation p-value has
+    # a 1/N_PERMS floor, so its BH count is kept only as n_sig_events_perm.
+    rule = ('descriptive: n_sig_events = BH-adjusted event x pathway correlations '
+            '(analytic Pearson p, FDR < %s across the contrast matrix); '
+            'n_sig_events_perm is the permutation cross-check; no boolean call'
+            % params.get('fdr_cutoff', 0.05))
 
     per_pathway = {}
-    tests = []  # (pathway, p_value)
     with open(scores_path, 'r', encoding='utf-8', errors='replace') as handle:
         reader = csv.DictReader(handle, delimiter='\t')
         for raw in reader:
             pathway = raw.get('pathway', '')
-            entry = per_pathway.setdefault(pathway, {'p': [], 'ks': [], 'rank': []})
-            p_value = None
+            entry = per_pathway.setdefault(
+                pathway, {'g1': [], 'g2': [], 'all': [], 'p': []})
+            group = str(raw.get('group', ''))
             try:
                 p_value = float(raw.get('p_value'))
                 entry['p'].append(p_value)
-                tests.append((pathway, p_value))
             except (TypeError, ValueError):
                 pass
             try:
-                entry['ks'].append(abs(float(raw.get('KS_score'))))
+                ks = float(raw.get('KS_score'))
             except (TypeError, ValueError):
-                pass
-            try:
-                entry['rank'].append(float(raw.get('median_rank')))
-            except (TypeError, ValueError):
-                pass
+                continue
+            entry['all'].append(ks)
+            if group == group2_name:
+                entry['g2'].append(ks)
+            elif group == group1_name:
+                entry['g1'].append(ks)
 
-    # Benjamini-Hochberg across every pathway x sample KS test
-    adjusted = bh_adjust([p for _pathway, p in tests])
-    min_padj = {}
-    n_sig_tests = {}
-    for (pathway, _p), q in zip(tests, adjusted):
-        if pathway not in min_padj or q < min_padj[pathway]:
-            min_padj[pathway] = q
-        if q < fdr_cutoff:
-            n_sig_tests[pathway] = n_sig_tests.get(pathway, 0) + 1
-
+    # Group names come from the comparison; activity_diff is undefined when a
+    # group has no samples (and its p-value is suppressed for n < 4).
     sig_counts = {}
     sig_path = params.get('sig_pathways')
     if sig_path and os.path.isfile(sig_path):
         with open(sig_path, 'r', encoding='utf-8', errors='replace') as handle:
             reader = csv.DictReader(handle, delimiter='\t')
             for raw in reader:
+                entry = {'n_sig_events': 0, 'n_sig_events_perm': '', 'n_tested': '', 'min_padj': ''}
                 try:
-                    sig_counts[raw.get('pathway', '')] = int(raw.get('n_sig_events', 0))
+                    entry['n_sig_events'] = int(raw.get('n_sig_events', 0))
                 except (TypeError, ValueError):
                     pass
+                for key in ('n_sig_events_perm', 'n_tested', 'min_padj'):
+                    if raw.get(key) not in (None, ''):
+                        entry[key] = raw.get(key)
+                sig_counts[raw.get('pathway', '')] = entry
 
     rows = []
     for pathway, entry in sorted(per_pathway.items()):
-        p_values = entry['p']
-        min_p = min(p_values) if p_values else None
-        pathway_padj = min_padj.get(pathway)
-        significant = pathway_padj is not None and pathway_padj < fdr_cutoff
+        g1 = entry['g1']
+        g2 = entry['g2']
+        all_ks = entry['all']
+        activity_diff = None
+        if g1 and g2:
+            activity_diff = (sum(g2) / len(g2)) - (sum(g1) / len(g1))
+        activity_p = mannwhitney_p(g1, g2) if (g1 and g2) else None
+        sig_entry = sig_counts.get(pathway, {'n_sig_events': 0, 'n_sig_events_perm': '',
+                                             'n_tested': '', 'min_padj': ''})
+        n_sig_events = sig_entry['n_sig_events']
         row = {
             'comparison_id': comparison_id,
             'tool': 'pegasas',
@@ -509,38 +613,54 @@ def export_pegasas(comparison_id, input_dir, out_dir, params):
             'feature_id': pathway,
             'gene_id': '',
             'gene_symbol': '',
-            'effect_size': fmt(max(entry['ks'], default=None)),
-            'effect_size_type': 'KS_statistic',
-            'pvalue': fmt(min_p),
-            'padj': fmt(pathway_padj),
-            'padj_method': 'BH',
-            'is_significant': 'true' if significant else 'false',
+            'group1_name': group1_name,
+            'group2_name': group2_name,
+            'effect_size_direction': 'group2_minus_group1',
+            # Descriptive activity difference (mean KS group2 - group1); the KS
+            # score itself is never presented as significance.
+            'effect_size': fmt(activity_diff),
+            'effect_size_type': 'delta_KS',
+            'pvalue': '',
+            'padj': '',
+            'padj_method': 'BH_event_wise',
+            # PEGASAS is exploratory: no row is called significant. Rank the
+            # pathways by n_sig_events instead.
+            'is_significant': 'false',
             'significance_rule': rule,
             'source_file': 'all_pathways_scores.tsv',
-            'n_samples': len(p_values),
-            'n_sig_samples': n_sig_tests.get(pathway, 0),
-            'median_p': fmt(statistics.median(p_values) if p_values else None),
-            'max_abs_ks': fmt(max(entry['ks'], default=None)),
-            'median_rank': fmt(statistics.median(entry['rank']) if entry['rank'] else None),
-            'n_sig_tests': n_sig_tests.get(pathway, 0),
-            'min_padj': fmt(pathway_padj),
-            'n_sig_events': sig_counts.get(pathway, ''),
+            'n_samples': len(all_ks),
+            'n_group1': len(g1),
+            'n_group2': len(g2),
+            'activity_diff': fmt(activity_diff),
+            'activity_diff_pvalue': fmt(activity_p),
+            'ks_score_max': fmt(max(all_ks) if all_ks else None),
+            'ks_score_median': fmt(statistics.median(all_ks) if all_ks else None),
+            'ks_min_pvalue': fmt(min(entry['p']) if entry['p'] else None),
+            'n_sig_events': n_sig_events,
+            'n_sig_events_perm': sig_entry['n_sig_events_perm'],
+            'n_tested': sig_entry['n_tested'],
+            'min_padj_bh': sig_entry['min_padj'],
         }
         rows.append(row)
 
+    # Rank by the BH-significant event count (the only per-pathway quantity).
+    rows.sort(key=lambda r: (-(r['n_sig_events'] if isinstance(r['n_sig_events'], int) else 0),
+                             r['feature_id']))
     columns = STANDARD_COLUMNS + PEGASAS_NATIVE
     write_rows(os.path.join(out_dir, '%s.pegasas.master.tsv' % comparison_id), columns, rows)
-    significant = [r for r in rows if r['is_significant'] == 'true']
+    # No boolean significance call: significant.tsv is intentionally empty.
     write_rows(os.path.join(out_dir, '%s.pegasas.significant.tsv' % comparison_id),
-               columns, significant)
+               columns, [])
     _write_long_summary(out_dir, comparison_id, 'pegasas', [
         ('n_pathways', len(rows)),
-        ('n_pathways_significant_BH', len(significant)),
-        ('n_tests', len(tests)),
+        ('n_sig_events_total', sum(r['n_sig_events'] for r in rows
+                                   if isinstance(r['n_sig_events'], int))),
+        ('top_pathway', rows[0]['feature_id'] if rows else ''),
+        ('top_n_sig_events', rows[0]['n_sig_events'] if rows else ''),
         ('n_samples_per_pathway', rows[0]['n_samples'] if rows else ''),
     ])
-    print('[export_tool_masters] PEGASAS: %d pathways (%d significant after BH)'
-          % (len(rows), len(significant)))
+    print('[export_tool_masters] PEGASAS: %d pathways (ranked by n_sig_events; '
+          'no boolean significance)' % len(rows))
     return 0
 
 
@@ -548,44 +668,95 @@ def export_pegasas(comparison_id, input_dir, out_dir, params):
 # Cross-tool
 # ---------------------------------------------------------------------------
 
-def export_cross_tool(comparison_id, master_files, out_dir):
+def export_cross_tool(comparison_id, master_files, out_dir, params=None):
     """Gene-level union of significant features across AS tools.
 
     Writes both shapes:
       cross_tool.master.tsv        one row per gene x tool (long)
       cross_tool.gene_summary.tsv  one row per gene with the tools that called it
     """
-    genes = {}
-    per_gene = {}
-    tool_genes = {}
-    for path in master_files:
-        tool = None
+    params = params or {}
+    group1_name = params.get('group1_name', '')
+    group2_name = params.get('group2_name', '')
+
+    def detect_tool(path):
         for candidate in ('rmats', 'majiq', 'isar', 'leafcutter'):
             if '.' + candidate + '.master.tsv' in os.path.basename(path):
-                tool = candidate
-                break
+                return candidate
+        return None
+
+    def is_ensg(value):
+        return bool(re.match(r'^ENSG\d+', str(value or '').strip()))
+
+    # symbol -> ENSG map built from every row of every master. ISAR/MAJIQ/rMATS
+    # carry a real gene_id; LeafCutter only has comma-separated symbols, so the
+    # map lets its clusters join the ENSG-keyed overlap instead of falling back
+    # to symbol == gene_id.
+    symbol_to_ensg = {}
+    # Single pass per master: build the symbol->ENSG map from every row and
+    # collect significant rows. The map must be complete before LeafCutter
+    # (symbol-only) rows are resolved, so processing is deferred.
+    significant_rows = []  # (tool, row)
+    for path in master_files:
+        tool = detect_tool(path)
         if tool is None:
             continue
         with open(path, 'r', encoding='utf-8', errors='replace') as handle:
             reader = csv.DictReader(handle, delimiter='\t')
             for raw in reader:
-                if raw.get('is_significant', 'false') != 'true':
-                    continue
+                gid = str(raw.get('gene_id') or '').strip()
+                if is_ensg(gid):
+                    sym = str(raw.get('gene_symbol') or '').split(',')[0].strip().upper()
+                    if sym and sym != 'NA':
+                        symbol_to_ensg.setdefault(sym, gid)
+                if raw.get('is_significant', 'false') == 'true':
+                    significant_rows.append((tool, raw))
+
+    genes = {}
+    per_gene = {}
+    tool_stats = {}
+
+    for tool, raw in significant_rows:
+        stats = tool_stats.setdefault(tool, {'significant': set(), 'ok': set()})
+        for raw in (raw,):
+                gid = str(raw.get('gene_id') or '').strip()
                 symbols = [s.strip().upper() for s in
                            str(raw.get('gene_symbol') or '').split(',')]
                 symbols = [s for s in symbols if s and s != 'NA']
+                reads_ok = raw.get('reads_ok', 'true')
+                row_is_ok = reads_ok != 'false'
                 for symbol in symbols:
-                    key = (symbol, tool)
+                    if is_ensg(gid):
+                        ensg = gid
+                    else:
+                        ensg = symbol_to_ensg.get(symbol, '')
+                    # Key the overlap by ENSG; fall back to the symbol only when
+                    # no ENSG could be resolved.
+                    gene_key = ensg or symbol
+                    key = (gene_key, tool)
                     entry = genes.setdefault(key, {
                         'comparison_id': comparison_id,
                         'gene_symbol': symbol,
-                        'gene_id': raw.get('gene_id', ''),
+                        'gene_id': ensg,
                         'tool': tool,
+                        'group1_name': group1_name,
+                        'group2_name': group2_name,
+                        'effect_size_direction': 'group2_minus_group1',
                         'n_significant_features': 0,
+                        'n_ok_features': 0,
                         'best_effect_size': '',
                         'best_padj': '',
                     })
+                    if not entry['gene_symbol'] and symbol:
+                        entry['gene_symbol'] = symbol
+                    if not entry['gene_id'] and ensg:
+                        entry['gene_id'] = ensg
                     entry['n_significant_features'] += 1
+                    if row_is_ok:
+                        entry['n_ok_features'] += 1
+                    stats['significant'].add(gene_key)
+                    if row_is_ok:
+                        stats['ok'].add(gene_key)
                     try:
                         effect = abs(float(raw.get('effect_size')))
                         if entry['best_effect_size'] == '' or \
@@ -600,16 +771,18 @@ def export_cross_tool(comparison_id, master_files, out_dir):
                     except (TypeError, ValueError):
                         pass
 
-                    summary = per_gene.setdefault(symbol, {
+                    summary = per_gene.setdefault(gene_key, {
                         'comparison_id': comparison_id,
                         'gene_symbol': symbol,
-                        'gene_id': raw.get('gene_id', ''),
+                        'gene_id': ensg,
                         'tools': set(),
                         'best_effect_size': '',
                         'best_padj': '',
                     })
-                    if not summary['gene_id'] and raw.get('gene_id'):
-                        summary['gene_id'] = raw.get('gene_id')
+                    if not summary['gene_symbol'] and symbol:
+                        summary['gene_symbol'] = symbol
+                    if not summary['gene_id'] and ensg:
+                        summary['gene_id'] = ensg
                     summary['tools'].add(tool)
                     if entry['best_effect_size'] != '' and (
                             summary['best_effect_size'] == '' or
@@ -619,12 +792,12 @@ def export_cross_tool(comparison_id, master_files, out_dir):
                             summary['best_padj'] == '' or
                             float(entry['best_padj']) < float(summary['best_padj'])):
                         summary['best_padj'] = entry['best_padj']
-            tool_genes[tool] = {s.strip().upper() for s in
-                                _all_gene_symbols(path)}
 
     rows = list(genes.values())
     columns = ['comparison_id', 'gene_symbol', 'gene_id', 'tool',
-               'n_significant_features', 'best_effect_size', 'best_padj']
+               'group1_name', 'group2_name', 'effect_size_direction',
+               'n_significant_features', 'n_ok_features',
+               'best_effect_size', 'best_padj']
     write_rows(os.path.join(out_dir, '%s.cross_tool.master.tsv' % comparison_id),
                columns, rows)
 
@@ -634,6 +807,9 @@ def export_cross_tool(comparison_id, master_files, out_dir):
             'comparison_id': comparison_id,
             'gene_symbol': summary['gene_symbol'],
             'gene_id': summary['gene_id'],
+            'group1_name': group1_name,
+            'group2_name': group2_name,
+            'effect_size_direction': 'group2_minus_group1',
             'n_tools_significant': len(summary['tools']),
             'tools': ','.join(sorted(summary['tools'])),
             'best_effect_size': summary['best_effect_size'],
@@ -641,29 +817,17 @@ def export_cross_tool(comparison_id, master_files, out_dir):
         })
     gene_rows.sort(key=lambda r: (-r['n_tools_significant'], r['gene_symbol']))
     gene_columns = ['comparison_id', 'gene_symbol', 'gene_id',
+                    'group1_name', 'group2_name', 'effect_size_direction',
                     'n_tools_significant', 'tools', 'best_effect_size', 'best_padj']
     write_rows(os.path.join(out_dir, '%s.cross_tool.gene_summary.tsv' % comparison_id),
                gene_columns, gene_rows)
 
     print('[export_tool_masters] cross_tool: %d gene x tool rows, %d genes'
           % (len(rows), len(gene_rows)))
-    print('[export_tool_masters] cross_tool per-tool significant genes: %s'
-          % json.dumps({t: len(gs) for t, gs in tool_genes.items()}))
+    print('[export_tool_masters] cross_tool per-tool significant/ok genes: %s'
+          % json.dumps({t: [len(s['significant']), len(s['ok'])]
+                        for t, s in tool_stats.items()}))
     return 0
-
-
-def _all_gene_symbols(master_path):
-    symbols = set()
-    with open(master_path, 'r', encoding='utf-8', errors='replace') as handle:
-        reader = csv.DictReader(handle, delimiter='\t')
-        for raw in reader:
-            if raw.get('is_significant', 'false') != 'true':
-                continue
-            for s in str(raw.get('gene_symbol') or '').split(','):
-                s = s.strip()
-                if s and s != 'NA':
-                    symbols.add(s)
-    return symbols
 
 
 # ---------------------------------------------------------------------------
@@ -701,7 +865,8 @@ def main():
 
     params = parse_tool_params(args.tool_params)
     if args.tool == 'cross_tool':
-        return export_cross_tool(args.comparison_id, args.master_files or [], args.out_dir)
+        return export_cross_tool(args.comparison_id, args.master_files or [],
+                                 args.out_dir, params)
     if not args.input_dir:
         parser.error('--input-dir required for --tool %s' % args.tool)
     dispatcher = {

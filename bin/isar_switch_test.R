@@ -37,7 +37,9 @@ opt$gene_expr_cutoff <- as.numeric(opt$gene_expr_cutoff)
 opt$iso_expr_cutoff  <- as.numeric(opt$iso_expr_cutoff)
 opt$test_method      <- tolower(opt$test_method)
 
-if (!opt$test_method %in% c("auto", "dexseq", "satuRn")) {
+# Compare case-insensitively: tolower('satuRn') is 'saturn', which would fail a
+# case-sensitive membership check against 'satuRn'.
+if (!opt$test_method %in% c("auto", "dexseq", "saturn")) {
     stop("Unknown --test_method '", opt$test_method,
          "' (expected 'auto', 'dexseq' or 'satuRn')")
 }
@@ -78,7 +80,9 @@ cat("  Isoforms:", nrow(switchAnalyzeRlist$isoformFeatures), "\n")
 # smallest condition has <= 5 replicates, and satuRn otherwise. Isolate the
 # effective method here so it can be recorded verbatim in the outcome.
 resolve_test_method <- function(sar, requested) {
-    if (requested != "auto") return(requested)
+    if (requested != "auto") {
+        return(if (requested == "saturn") "satuRn" else requested)
+    }
     nr <- sar$conditions$nrReplicates
     nr <- nr[!is.na(nr)]
     if (length(nr) == 0) {
@@ -120,18 +124,11 @@ run_switch_test <- function(sar, reduce_only) {
     }
 }
 
-switchAnalyzeRlist <- tryCatch({
-    run_switch_test(switchAnalyzeRlist, TRUE)
-}, error = function(e) {
-    if (grepl("No genes were considered switching", conditionMessage(e))) {
-        # No significant switches at these cutoffs — run without reduction
-        # so test statistics are preserved in isoformFeatures
-        cat("  NOTE: No significant switches at current thresholds, saving full results\n")
-        run_switch_test(switchAnalyzeRlist, FALSE)
-    } else {
-        stop(e)
-    }
-})
+# Test without reducing to switching genes: the master must contain every
+# tested isoform (significant or not), so the full test statistics survive in
+# isoformFeatures. Reducing here would drop non-significant isoforms whenever
+# at least one switch is found.
+switchAnalyzeRlist <- run_switch_test(switchAnalyzeRlist, FALSE)
 
 cat("\nSwitch test results:\n")
 if (!is.null(switchAnalyzeRlist$isoformSwitchAnalysis) &&

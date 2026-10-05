@@ -34,6 +34,8 @@ process PEGASAS_COLLATE {
           path(shared_scores),
           val(g1_ids),
           val(g2_ids)
+    // Script as input so content edits invalidate the cache on -resume
+    path collate_script
 
     output:
     tuple val(comparison_id), path("pegasas_out/"), emit: results
@@ -45,12 +47,13 @@ process PEGASAS_COLLATE {
     def g2_arg = g2_ids instanceof List ? g2_ids.join(',') : g2_ids
     """
     mkdir -p pegasas_out
-    pegasas_collate_scores.py \\
+    python3 ${collate_script} \\
         ${shared_scores} \\
         ${correlation_out} \\
         --g1-ids "${g1_arg}" \\
         --g2-ids "${g2_arg}" \\
         --comp-id "${comparison_id}" \\
+        --fdr-cutoff ${params.report_fdr_cutoff} \\
         --out-dir pegasas_out \\
         --sig-out .
 

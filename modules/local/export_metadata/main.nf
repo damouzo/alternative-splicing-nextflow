@@ -15,9 +15,14 @@ process EXPORT_METADATA {
 
     // Shippable run metadata. sample_paths.tsv carries the absolute cluster
     // paths and is routed to raw/_internal/ only (never shipped).
+    // run_manifest.yaml lives outside deliverables/ (results/run_info/) so the
+    // shipment carries no internal run metadata; it is audit/QA only.
     publishDir "${params.outdir}/deliverables/run_info",
         mode: params.publish_dir_mode,
-        saveAs: { f -> (f.toString() in ['sample_paths.tsv', 'versions.yml']) ? null : f }
+        saveAs: { f -> (f.toString() in ['sample_paths.tsv', 'run_manifest.yaml', 'versions.yml']) ? null : f }
+    publishDir "${params.outdir}/run_info",
+        mode: params.publish_dir_mode,
+        saveAs: { f -> (f.toString() == 'run_manifest.yaml') ? f : null }
     publishDir "${params.outdir}/raw/_internal",
         mode: params.publish_dir_mode,
         saveAs: { f -> (f.toString() == 'sample_paths.tsv' &&

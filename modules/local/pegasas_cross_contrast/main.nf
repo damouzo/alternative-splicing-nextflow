@@ -18,6 +18,8 @@ process PEGASAS_CROSS_CONTRAST {
 
     input:
     path sig_files
+    // Script as input so content edits invalidate the cache on -resume
+    path cross_script
 
     output:
     path "cross_contrast/", emit: results
@@ -26,7 +28,7 @@ process PEGASAS_CROSS_CONTRAST {
     script:
     """
     mkdir -p cross_contrast
-    pegasas_cross_contrast.R cross_contrast
+    Rscript ${cross_script} cross_contrast
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

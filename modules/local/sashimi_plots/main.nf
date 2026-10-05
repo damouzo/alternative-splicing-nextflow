@@ -30,7 +30,11 @@ process SASHIMI_PLOTS {
           val(b1_ids),
           path(b2_bams,     stageAs: 'b2_bams/*'),
           path(b2_bais,     stageAs: 'b2_bams/*'),
-          val(b2_ids)
+          val(b2_ids),
+          val(group1_name),
+          val(group2_name)
+    // Script as input so content edits invalidate the cache on -resume
+    path filter_script
 
     output:
     tuple val(comparison_id), path("sashimi_out/"),      emit: results
@@ -43,6 +47,10 @@ process SASHIMI_PLOTS {
     def dpsi        = params.report_dpsi_cutoff
     def exon_scale  = params.sashimi_exon_scale
     def intron_scale = params.sashimi_intron_scale
+    // Real condition labels; fall back to the configured labels only when the
+    // comparison has none.
+    def g1_label = group1_name ?: params.sashimi_group1_label
+    def g2_label = group2_name ?: params.sashimi_group2_label
     // Written as literal lines inside a quoted heredoc (below) so ids are never
     // interpolated as shell syntax, even if they contain $()/backticks/quotes.
     def b1_ids_lines = b1_ids.join('\n')
@@ -50,7 +58,7 @@ process SASHIMI_PLOTS {
 
     """
     # Step 1: filter rMATS output to top-N events per event type
-    filter_rmats_for_sashimi.py \\
+    python3 ${filter_script} \\
         rmats_results/ \\
         filtered_events/ \\
         --top-n ${top_n} \\
@@ -160,8 +168,8 @@ B2_IDS_EOF
             --b2 "\$B2_BAMS" \\
             --event-type "\$ETYPE" \\
             -e   "\$EFILE" \\
-            --l1 "group1" \\
-            --l2 "group2" \\
+            --l1 "${g1_label}" \\
+            --l2 "${g2_label}" \\
             --exon_s  ${exon_scale} \\
             --intron_s ${intron_scale} \\
             --group-info "\$GROUP_FILE" \\

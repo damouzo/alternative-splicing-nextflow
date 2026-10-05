@@ -32,7 +32,8 @@ process PEGASAS_PATHWAY {
         ${gmt_file} \\
         ${group_info} \\
         -o pathway_out/ \\
-        -n ${params.pegasas_num_interval}
+        -n ${params.pegasas_num_interval} \\
+        -m ${params.pegasas_min_tpm}
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

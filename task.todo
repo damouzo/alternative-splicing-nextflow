@@ -370,6 +370,13 @@ isar_switch_consequences, leafcutter_ds, pegasas_collate, sashimi_plots).
 
 ## New ideas / futuro (no implementado)
 
+### F7 — Diseño pareado en los experimentos 4, 6 y 7 (deuda estadística)
+Los contrastes de los experimentos 4, 6 y 7 proceden de diseños pareados (misma
+línea/donante con scramble y sh). Hoy se analizan como grupos independientes y
+solo queda una nota en `task.todo`; no se aprovecha el bloqueo por par. Pendiente
+añadir un modo pareado (p. ej. `--paired` en rMATS/LeafCutter e ISAR
+`design` con `block`) cuando el samplesheet declare el emparejamiento.
+
 ### F1 — Test de significancia del solapamiento cross-tool
 `phyper`/Fisher para pares + `SuperExactTest` para intersecciones múltiples.
 Background = intersección de los universos **testados** de cada herramienta:

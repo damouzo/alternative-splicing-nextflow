@@ -44,7 +44,6 @@ results/
 ├── deliverables/                    # SHIPPABLE: rename + zip to send
 │   ├── README.md                    # what each folder is, how to read the TSVs
 │   ├── run_info/                    # what was run and how to read the tables
-│   │   ├── run_manifest.yaml        # pipeline, schema_version, params, tools, known issues
 │   │   ├── sample_index.tsv         # sample x comparison x group (no cluster paths)
 │   │   ├── software_versions.yml    # single consolidated tool-version record
 │   │   ├── qa_report.txt            # results-contract validation output
@@ -52,7 +51,6 @@ results/
 │   ├── contrasts/
 │   │   └── <comparison_id>/
 │   │       ├── <comparison_id>_splicing_report.html
-│   │       ├── contrast_manifest.yaml   # every deliverable of this comparison
 │   │       ├── tables/
 │   │       │   ├── <c>.rmats.{master,significant,summary}.tsv
 │   │       │   ├── <c>.majiq.{master,significant,summary}.tsv      (when run_majiq)
@@ -67,6 +65,10 @@ results/
 │   │               └── <EVENT_TYPE>/*.pdf                          final sashimi PDFs
 │   └── cross_contrast/
 │       └── pegasas/                 # cross_contrast_summary.tsv, heatmap, UpSet
+├── run_info/                        # run metadata, NOT shipped
+│   ├── run_manifest.yaml            # pipeline, schema_version, params, tools, known issues
+│   └── contrast_manifests/
+│       └── <comparison_id>_contrast_manifest.yaml
 └── raw/                             # audit-only, NOT shipped
     ├── rmats/<comparison_id>/…
     ├── majiq/<comparison_id>/…
@@ -77,17 +79,23 @@ results/
     └── _internal/sample_paths.tsv   # absolute input paths for audit
 ```
 
+Manifests (`run_manifest.yaml`, per-contrast manifests) are run metadata and live in
+`results/run_info/`, outside the shipped `deliverables/` tree.
+
 ## Shippable layer (`deliverables/`)
 
 ### run_info/
 
 | File | Description |
 |------|-------------|
-| `run_manifest.yaml` | pipeline name/version, `schema_version`, `params_criticos`, `tools_enabled`/`tools_disabled`, `comparisons`, `known_issues` |
 | `sample_index.tsv` | `sample_id, condition, replicate, comparison_id, group` — deliberately free of absolute paths |
 | `software_versions.yml` | every per-process `versions.yml` merged into one file |
 | `qa_report.txt` | output of `validate_results_contract.py` (errors + warnings) |
 | `pipeline_info/` | Nextflow `execution_report.html`, `execution_trace.txt`, `execution_timeline.html`, `pipeline_dag.svg` (audit-only) |
+
+`run_manifest.yaml` and the per-contrast manifests are in `results/run_info/` (outside
+`deliverables/`), together with the embedded `params_criticos`, `tools_enabled`/
+`tools_disabled`, `known_issues` and per-contrast manifests.
 
 The absolute BAM/BAI/Salmon paths live only in `raw/_internal/sample_paths.tsv`, so they
 do not leak into the shippable layer.
@@ -96,13 +104,16 @@ do not leak into the shippable layer.
 
 Every `<tool>.master.tsv` starts with:
 
-`comparison_id, tool, feature_type, feature_id, gene_id, gene_symbol, effect_size,
-effect_size_type, pvalue, padj, padj_method, is_significant, significance_rule, source_file`
+`comparison_id, tool, feature_type, feature_id, gene_id, gene_symbol, group1_name,
+group2_name, effect_size_direction, effect_size, effect_size_type, pvalue, padj,
+padj_method, is_significant, significance_rule, source_file`
 
-followed by the tool-native columns (never dropped). `padj` is always accompanied by
-`padj_method` (`BH`, `rmats_cstat`, `satuRn_empirical` or `none`) so nobody filters on an
-ambiguous empty `fdr`. rMATS tables add `event_type/event_id`, `fdr_floor_flag`
-(FDR==0 rows are the numeric floor of `--cstat`) and `is_novel_splice_site`.
+followed by the tool-native columns (never dropped). `effect_size` is always
+`group2 - group1` and `effect_size_direction` is `group2_minus_group1`. `padj` is always
+accompanied by `padj_method` (`BH`, `rmats_cstat`, `empirical_FDR`, `BH_event_wise` or
+`none`) so nobody filters on an ambiguous empty `fdr`. rMATS tables add
+`event_type/event_id`, `fdr_floor_flag` (FDR==0 rows are the numeric floor of
+`--cstat`), `event_class`, `reads_ok` and `is_igv_supported`.
 
 rMATS location columns (contract 2.1.0): `event_locus` is `chr:start-end`
 (1-based inclusive) spanning every coordinate of the event — paste it into IGV.
@@ -120,8 +131,8 @@ Per-tool significance rules (identical to the report):
 | rMATS | `padj <= fdr_cutoff & |inc_level_difference| >= dpsi_cutoff` |
 | MAJIQ | `probability_changing >= 0.95 & |dpsi_mean| >= 0.2` |
 | ISAR | `isoform_switch_q_value < fdr_cutoff & |dIF| >= dpsi_cutoff` |
-| LeafCutter | `status == "Success" & padj < fdr_cutoff` |
-| PEGASAS | `BH padj < fdr_cutoff` across pathway x sample KS tests |
+| LeafCutter | `status == "Success" & padj_cluster <= fdr_cutoff & |deltapsi| >= dpsi_cutoff` (per intron) |
+| PEGASAS | no boolean call: exploratory; `n_sig_events` is the BH-adjusted event x pathway correlation count (analytic Pearson p; `n_sig_events_perm` is the permutation cross-check), rank pathways by it |
 
 ### cross_tool tables
 
@@ -619,10 +630,11 @@ Only `results/deliverables/` ships; `results/raw/` is audit evidence. What to ke
 - **Ship (compact):** the whole `deliverables/` folder (rename it and zip it).
   Optional: drop `run_info/pipeline_info/` if you do not need the Nextflow trace.
 - **Minimal set** (for publications): each `deliverables/contrasts/<comparison>/`
-  folder — the HTML report, `tables/*.master.tsv` / `*.significant.tsv`,
-  `plots/sashimi/` and `contrast_manifest.yaml`.
+  folder — the HTML report, `tables/*.master.tsv` / `*.significant.tsv` and
+  `plots/sashimi/`.
 - **Audit (keep, do not ship):** `results/raw/` (native tool outputs, MAJIQ
-  binaries, rMATS fromGTF/JCEC, sashimi intermediates) and
+  binaries, rMATS fromGTF/JCEC, sashimi intermediates), `results/run_info/`
+  (`run_manifest.yaml` + per-contrast manifests) and
   `deliverables/run_info/pipeline_info/`.
 
 ---

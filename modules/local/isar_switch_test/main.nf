@@ -4,13 +4,24 @@ process ISAR_SWITCH_TEST {
     label 'process_high_memory'
     
     // Container resolved from modules.config (params.isar_container or ghcr.io default)
+
+    // The resolved engine is QA metadata, not raw output, so it is published at
+    // every publish_level (build_results_manifest reads it to derive the ISAR
+    // reliability state). versions.yml is consolidated in run_info/ instead.
+    publishDir "${params.outdir}/raw/${params.tool_ids.isar}", mode: params.publish_dir_mode,
+        saveAs: { f ->
+            f.toString() == 'effective_test_method.txt' ?
+                "${comparison_id}/effective_test_method.txt" : null
+        }
     
     input:
     tuple val(comparison_id), path(rds_input)
+    // Script as input so content edits invalidate the cache on -resume
+    path test_script
     
     output:
     tuple val(comparison_id), path("${comparison_id}_tested.rds"), emit: rds
-    path "effective_test_method.txt"                             , emit: effective_method
+    tuple val(comparison_id), path("effective_test_method.txt"),   emit: effective_method
     path "versions.yml"                                          , emit: versions
     
     script:
@@ -19,7 +30,7 @@ process ISAR_SWITCH_TEST {
     export OMP_NUM_THREADS=1
     export MKL_NUM_THREADS=1
 
-    isar_switch_test.R \\
+    Rscript ${test_script} \\
         --input ${rds_input} \\
         --output ${comparison_id}_tested.rds \\
         --alpha ${params.isar_alpha} \\

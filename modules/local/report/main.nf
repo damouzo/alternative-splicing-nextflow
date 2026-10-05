@@ -21,7 +21,8 @@ process RENDER_REPORT {
           val(group1_sample_ids),
           val(group2_sample_ids),
           val(group1_name),
-          val(group2_name)
+          val(group2_name),
+          val(effective_test_method)
     path report_rmd
 
     output:
@@ -39,6 +40,7 @@ process RENDER_REPORT {
     // de_results is an optional external path — passed as a string so
     // the Rmd can use file.exists() without staging it into the work directory
     def de_arg  = params.de_results         ? "\"${params.de_results}\""         : 'null'
+    def de_map_json = groovy.json.JsonOutput.toJson(params.de_results_map ?: [:])
     def group1_ids_json = groovy.json.JsonOutput.toJson(group1_sample_ids ?: [])
     def group2_ids_json = groovy.json.JsonOutput.toJson(group2_sample_ids ?: [])
     // Per-tool reliability record (known issues) — mirrors the deliverables manifest
@@ -63,10 +65,12 @@ process RENDER_REPORT {
       "organism":               "${params.organism}",
       "run_de_as":              ${params.run_de_as ? 'true' : 'false'},
       "de_results":             ${de_arg},
+      "de_results_map":         ${de_map_json},
       "group1_sample_ids":      ${group1_ids_json},
       "group2_sample_ids":      ${group2_ids_json},
       "group1_name":            "${group1_name}",
       "group2_name":            "${group2_name}",
+      "effective_test_method":  "${effective_test_method}",
       "report_min_reads":       ${params.report_min_reads},
       "publish_deliverables":   ${params.publish_deliverables ? 'true' : 'false'},
       "publish_level":          "${params.publish_level}",

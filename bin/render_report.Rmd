@@ -23,6 +23,7 @@ params:
   sashimi_png_dpi: 150
   organism: "human"
   de_results: NULL
+  de_results_map: {}
   run_de_as: false
   publish_deliverables: false
   publish_level: "core_raw"
@@ -30,6 +31,7 @@ params:
   report_min_reads: 20
   group1_name: "Group1"
   group2_name: "Group2"
+  effective_test_method: "NA"
   tool_reliability:
     value: !r list()
   group1_sample_ids:
@@ -59,11 +61,20 @@ isar_switches     <- data.frame()
 isar_consequences <- data.frame()
 leafcutter_clusters <- data.frame()
 
+# ISAR reliability thresholds. Mirror build_results_manifest.py
+# (ISAR_IQR_THRESHOLD / ISAR_DIF_THRESHOLD); keep the two in sync.
+ISAR_IQR_PIN_THRESHOLD <- 0.05
+ISAR_DIF_PIN_THRESHOLD <- 0.1
+
 # Replication sizes per group (empty arrays when a tool is disabled).
 n1_samples <- length(as.character(unlist(params$group1_sample_ids)))
 n2_samples <- length(as.character(unlist(params$group2_sample_ids)))
-low_rep    <- (n1_samples > 0 && n1_samples < 4) ||
-              (n2_samples > 0 && n2_samples < 4)
+rep_sizes <- c(n1_samples, n2_samples)
+rep_sizes <- rep_sizes[rep_sizes > 0]
+min_rep   <- if (length(rep_sizes) > 0) min(rep_sizes) else NA_integer_
+# Strong warning only below n=3; n=3 gets a neutral note (many contrasts are 3v3).
+low_rep      <- !is.na(min_rep) && min_rep < 3
+note_rep_n3  <- !is.na(min_rep) && min_rep == 3
 
 # Condition labels from comparisons.csv (group1/group2 columns). Fall back to
 # Group1/Group2 when the pipeline does not pass names (e.g. manual renders).
@@ -105,6 +116,14 @@ tool_issue <- function(tool) {
 }
 
 tool_issue_status <- function(tool) {
+  # Per-contrast override: the ISAR state depends on the engine actually used,
+  # not on the run-wide default.
+  if (tool == 'isar') {
+    engine <- tolower(cond_label(params$effective_test_method, 'na'))
+    if (nzchar(engine) && engine != 'dexseq' && engine != 'na') {
+      return('under_investigation')
+    }
+  }
   issue <- tool_issue(tool)
   if (is.null(issue)) return('ok')
   value <- as.character(issue$status)
@@ -147,18 +166,36 @@ This report presents differential alternative splicing analysis results for comp
 - rMATS / ISAR FDR cutoff: `r params$fdr_cutoff`
 - rMATS / ISAR |ΔΨ| / |dIF| cutoff: `r params$dpsi_cutoff`
 - MAJIQ P(|ΔΨ| > threshold) cutoff: `r params$majiq_prob_threshold`
-- MAJIQ |ΔΨ| cutoff: `r params$majiq_dpsi_cutoff`
+- MAJIQ |ΔΨ| cutoff: `r params$majiq_dpsi_cutoff` (native default, more conservative than the 0.1 rule)
+- LeafCutter: an intron is significant when its cluster passes FDR and `|ΔPSI| >= r params$dpsi_cutoff`
+
+**How to read the sign:** every `effect_size` is `group2 - group1`
+(`r g2_label` minus `r g1_label`), the same direction in all tools and tables.
+`group1_name`, `group2_name` and `effect_size_direction` are carried in every
+master table.
+
+**PEGASAS is exploratory:** its KS score is descriptive (not called significant),
+`activity_diff` is group2 - group1, and with two groups a PSI-activity
+correlation can reflect group separation alone.
 
 ```{r summary_warnings, results='asis'}
 if (low_rep) {
   cat(sprintf(
-    "**Low replication warning:** this comparison has n=%d (%s) vs n=%d (%s). ",
+    "<p style='color:#b30000'><strong>Low replication warning:</strong> ",
+    "this comparison has n=%d (%s) vs n=%d (%s) — a group below n=3. ",
     n1_samples, g1_label, n2_samples, g2_label
   ))
   cat(
-    "Statistical power for detecting moderate ΔΨ is limited; ",
-    "interpret borderline calls with caution.\n\n"
+    "Statistical power for detecting moderate \u0394\u03a8 is limited; ",
+    "interpret borderline calls with caution.</p>\n\n"
   )
+} else if (note_rep_n3) {
+  cat(sprintf(
+    paste0("<p style='color:#555555'>Note: this comparison has n=%d (%s) vs ",
+           "n=%d (%s). With a group of three, power for moderate \u0394\u03a8 is ",
+           "limited; borderline calls should be interpreted descriptively.</p>\n\n"),
+    n1_samples, g1_label, n2_samples, g2_label
+  ))
 }
 ```
 
@@ -167,15 +204,18 @@ if (low_rep) {
 # below (or the deliverables layer) see the caveats before any tool section.
 issues <- tool_issues_frame()
 if (!is.null(issues) && nrow(issues) > 0) {
-  bad <- issues[is.na(issues$status) | issues$status != 'ok', ]
+  # Use the per-contrast status (not the raw record) so an ISAR contrast on a
+  # non-DEXSeq engine is flagged even when the run default is ok.
+  row_status <- vapply(as.character(issues$tool), tool_issue_status, character(1))
+  bad <- issues[is.na(row_status) | row_status != 'ok', ]
   if (nrow(bad) > 0) {
     cat("<hr>\n\n**Known tool reliability issues (from the run manifest):**\n\n")
     for (i in seq_len(nrow(bad))) {
       note <- as.character(bad$note[i])
       if (length(note) == 0 || is.na(note) || note == '') note <- ''
       cat(sprintf(
-        "<p style='color:#b30000'><strong>%s</strong> [%s]: %s</p>\n",
-        as.character(bad$tool[i]), as.character(bad$status[i]), note
+        "<p style='color:#7a5c00'><strong>%s</strong> [%s]: %s</p>\n",
+        as.character(bad$tool[i]), tool_issue_status(as.character(bad$tool[i])), note
       ))
     }
     cat("\n")
@@ -207,6 +247,12 @@ for (event_type in event_types) {
 
     df <- read.delim(jc_file, stringsAsFactors = FALSE)
     if (nrow(df) > 0) {
+      # Unified sign: effect_size = group2 - group1. rMATS IncLevelDifference is
+      # group1 - group2, so keep the native value and flip for every display.
+      if ("IncLevelDifference" %in% colnames(df)) {
+        df$IncLevelDifference_native <- df$IncLevelDifference
+        df$IncLevelDifference <- -df$IncLevelDifference
+      }
       df$EventType <- event_type
       df$NovelSite <- df$ID %in% novel_ids
       rmats_results_list[[event_type]] <- df
@@ -361,7 +407,7 @@ panel_volcano <- function(df, label) {
     labs(
       title    = paste0("rMATS Volcano Plots (", label, ")"),
       subtitle = sub_note,
-      x        = "ΔΨ (IncLevelDifference)",
+      x        = paste0("\u0394\u03a8 (group2 - group1: ", g2_label, " - ", g1_label, ")"),
       y        = "-log10(FDR), capped at 50"
     ) +
     theme(
@@ -941,11 +987,14 @@ if ("gene_name" %in% colnames(isar_switches)) {
 # genuinely empty contrast (see plans/report_bugs_fix_plan.md, P1-1).
 q_vals <- isar_switches$isoform_switch_q_value[!is.na(isar_switches$isoform_switch_q_value)]
 d_vals <- isar_switches$dIF[!is.na(isar_switches$dIF)]
-if (length(q_vals) > 10 && IQR(q_vals) < 0.05 && max(abs(d_vals)) >= 0.1) {
+if (length(q_vals) > 10 && IQR(q_vals) < ISAR_IQR_PIN_THRESHOLD &&
+    max(abs(d_vals)) >= ISAR_DIF_PIN_THRESHOLD) {
   cat(paste0(
-    "<p style='color:#b30000'>WARNING: satuRn q-values are pinned in a narrow range ",
-    "(IQR &lt; 0.05) while isoforms with |dIF| >= 0.1 exist. This usually indicates a ",
-    "convergence/ordering failure of the test (see P1-1), not a genuinely empty contrast.</p>\n\n"
+    "<p style='color:#7a5c00'>NOTE: ISAR q-values are pinned in a narrow range ",
+    "(IQR &lt; ", ISAR_IQR_PIN_THRESHOLD, ") while isoforms with |dIF| >= ",
+    ISAR_DIF_PIN_THRESHOLD, " exist. The contrast is marked ",
+    "<em>under_investigation</em> in the run manifest; interpret the significant ",
+    "isoforms cautiously.</p>\n\n"
   ))
 }
 ```
@@ -1684,6 +1733,13 @@ cat("PEGASAS asks a different question than a standard DE pathway enrichment: ",
     "track with pathway activity. The two plots below show the raw per-sample scores; ",
     "they are **not** a patient-vs-healthy differential ranking. The actual ",
     "splicing–pathway association is the correlation table further down.\n\n")
+cat("**This section is exploratory.** The KS enrichment score is descriptive and is ",
+    "not called significant. Pathway ranking comes from the event x pathway ",
+    "correlations, BH-adjusted across the whole contrast matrix using the analytic ",
+    "Pearson p-value (the permutation p is floored at 1/N_PERMS and is shown only as ",
+    "a cross-check). In a two-group design, a PSI–activity correlation can reflect ",
+    "only the separation between the groups rather than a within-group ",
+    "dose–response, so treat these results as hypothesis-generating.\n\n")
 ```
 
 ```{r pegasas_load, eval=run_pegasas_section}
@@ -1728,17 +1784,45 @@ for (cdir in corr_dirs) {
   cor_list[[sig_name]] <- d
 }
 
-# BH over the permutation p-values of each pathway. p is NA where the
-# permutation was not run (|r| <= 0.3); p.adjust() would propagate those NAs,
-# so adjust only over the tested rows and keep NA for the untested ones.
+# BH over the analytic Pearson p-values across the WHOLE event x pathway matrix
+# (all pathways pooled), matching the PEGASAS master. The permutation p-value is
+# floored at 1/N_PERMS, so over ~1M tests it has no resolution; the analytic p
+# (t distribution, df = n-2) does. The permutation p is retained as a
+# cross-check column. NAs (r not computed) are excluded and kept NA.
+corr_n_samples <- if (nrow(score_df) > 0) {
+  length(unique(score_df$sample))
+} else {
+  length(c(as.character(unlist(params$group1_sample_ids)),
+           as.character(unlist(params$group2_sample_ids))))
+}
+corr_df <- corr_n_samples - 2
+
 cor_list <- lapply(cor_list, function(d) {
   d$p_adj <- NA_real_
-  tested  <- !is.na(d$p_value)
-  if (any(tested)) {
-    d$p_adj[tested] <- p.adjust(d$p_value[tested], method = "BH")
+  d$p_analytic <- NA_real_
+  if (corr_df > 0 && "pearson_r" %in% colnames(d)) {
+    r <- pmin(pmax(as.numeric(d$pearson_r), -0.999999999), 0.999999999)
+    t_stat <- r * sqrt(corr_df / (1 - r * r))
+    d$p_analytic <- 2 * pt(-abs(t_stat), df = corr_df)
   }
   d
 })
+
+# Pool every pathway's analytic p, BH once, then split back by pathway.
+pooled_p <- unlist(lapply(cor_list, function(d) d$p_analytic), use.names = FALSE)
+pooled_adj <- rep(NA_real_, length(pooled_p))
+if (length(pooled_p) > 0) {
+  ok <- !is.na(pooled_p)
+  if (any(ok)) pooled_adj[ok] <- p.adjust(pooled_p[ok], method = "BH")
+}
+offset <- 0L
+for (nm in names(cor_list)) {
+  m <- nrow(cor_list[[nm]])
+  if (m > 0L) {
+    cor_list[[nm]]$p_adj <- pooled_adj[(offset + 1L):(offset + m)]
+    offset <- offset + m
+  }
+}
 
 # Keep the most informative rows per pathway (top by |r|) for an HTML that stays
 # responsive. The complete, unfiltered table is on disk in correlation_out/.
@@ -1767,7 +1851,10 @@ pathway_summary <- if (length(cor_list) > 0) {
     data.frame(
       pathway      = p,
       n_events     = nrow(d),
-      n_significant = sum(d$significant, na.rm = TRUE),
+      # BH-significant events using the analytic Pearson p (falls back to the
+      # permutation significant flag when the analytic p is unavailable).
+      n_significant = if (any(!is.na(pa))) sum(pa < 0.05, na.rm = TRUE) else
+                        sum(d$significant, na.rm = TRUE),
       max_abs_r    = if (any(is.finite(ar))) max(ar, na.rm = TRUE) else NA_real_,
       min_p        = if (any(is.finite(pv))) min(pv, na.rm = TRUE) else NA_real_,
       # BH-adjusted p: only the tested events are counted, so NAs in p_value
@@ -1916,12 +2003,23 @@ if (run_de_section) {
   g2_clean <- sub(paste0("^", prefix, "_"), "", parts[2L])
   dge_name <- paste0(prefix, "_", g2_clean, "_vs_", g1_clean)
 
+  # Explicit override wins: some DGE contrasts do not follow the reverse-name
+  # pattern (e.g. the SF3B1 mut/wt split maps to MNC_DDX41_Patient_vs_Healthy).
+  explicit_name <- NULL
+  if (!is.null(params$de_results_map) && length(params$de_results_map) > 0L) {
+    explicit_name <- params$de_results_map[[params$comparison_id]]
+  }
+  if (!is.null(explicit_name) && nzchar(explicit_name)) {
+    dge_name <- explicit_name
+  }
+
   dge_subdirs <- list.dirs(params$de_results, recursive = FALSE, full.names = TRUE)
   # Try: (1) exact DGE name, (2) reversed DGE name, (3) any dir containing both
   # group names
   for (d in dge_subdirs) {
     dn <- basename(d)
     if (dn == dge_name || dn == params$comparison_id ||
+        (!is.null(explicit_name) && nzchar(explicit_name) && dn == explicit_name) ||
         (grepl(g1_clean, dn, fixed = TRUE) && grepl(g2_clean, dn, fixed = TRUE))) {
       csvs <- list.files(d, pattern = "\\.csv$", full.names = TRUE, ignore.case = TRUE)
       if (length(csvs) > 0L) {
@@ -1929,6 +2027,13 @@ if (run_de_section) {
         break
       }
     }
+  }
+
+  if (is.null(de_file)) {
+    warning(sprintf(
+      paste0("DE+AS skipped for %s: no DGE directory matching '%s' under %s. ",
+             "Add an explicit de_results_map entry if the DGE name differs."),
+      params$comparison_id, dge_name, params$de_results))
   }
 
   if (!is.null(de_file)) {
@@ -2388,16 +2493,6 @@ add_export(
   "Report",
   "This HTML report (self-contained)",
   sprintf("%s/%s_splicing_report.html", base, comp), "report"
-)
-add_export(
-  "Contrast manifest",
-  "YAML record of every deliverable of this comparison (paths relative to deliverables/)",
-  sprintf("%s/contrast_manifest.yaml", base), "manifest"
-)
-add_export(
-  "Run manifest",
-  "Global run metadata: params, tools, known issues",
-  "run_info/run_manifest.yaml", "manifest"
 )
 add_export(
   "Sample index",

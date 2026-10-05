@@ -15,9 +15,14 @@ process CONTRAST_MANIFEST {
     tag "$comparison_id"
     label 'process_low'
 
-    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}",
+    // Manifests are run metadata, not deliverables: publish to results/run_info/
+    // (sibling of raw/), outside the shipped deliverables/ tree.
+    publishDir "${params.outdir}/run_info/contrast_manifests",
         mode: params.publish_dir_mode,
-        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
+        saveAs: { f ->
+            f.toString() == 'versions.yml' ? null :
+                "${comparison_id}_contrast_manifest.yaml"
+        }
 
     input:
     tuple val(comparison_id),
@@ -25,7 +30,8 @@ process CONTRAST_MANIFEST {
           val(outdir_root),
           val(deliverables_root),
           val(group1_name),
-          val(group2_name)
+          val(group2_name),
+          val(effective_test_method)
     // Script as input so content edits invalidate the cache on -resume
     // (plain `${projectDir}/bin/...` references are not hashed).
     path manifest_builder
@@ -39,6 +45,7 @@ process CONTRAST_MANIFEST {
         comparison_id:    comparison_id,
         group1_name:      group1_name,
         group2_name:      group2_name,
+        effective_test_method: effective_test_method,
         pipeline:         new groovy.json.JsonSlurper().parseText(pipeline_json),
         outdir:           outdir_root,
         deliverables_root: deliverables_root

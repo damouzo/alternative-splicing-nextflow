@@ -21,7 +21,7 @@ workflow MAJIQ_ANALYSIS {
     main:
 
     // Convert GTF to GFF3 — MAJIQ v3 requires GFF3 with Parent= hierarchy
-    MAJIQ_PREPARE_ANNOTATION(gtf)
+    MAJIQ_PREPARE_ANNOTATION(gtf, file("${projectDir}/bin/gtf_to_gff3.py"))
     // .first() converts the queue channel to a value channel so all MAJIQ_BUILD
     // invocations (one per comparison) can consume the same GFF3 without blocking.
     ch_gff3 = MAJIQ_PREPARE_ANNOTATION.out.gff3.first()

@@ -89,6 +89,7 @@ PYEOF
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
         leafcutter: \$(Rscript -e "cat(as.character(packageVersion('leafcutter')))" 2>/dev/null || echo "unknown")
+        R: \$(Rscript -e "cat(as.character(getRversion()))" 2>/dev/null || echo "unknown")
     END_VERSIONS
     """
 }

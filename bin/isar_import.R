@@ -40,12 +40,28 @@ samplesheet <- read.csv(opt$samplesheet, stringsAsFactors = FALSE)
 cat("Samples:", nrow(samplesheet), "\n")
 cat("Conditions:", length(unique(samplesheet$condition)), "\n")
 
+# Explicit factor levels: the control (group1) must be the reference, so that
+# ISAR reports condition_1 = group1, condition_2 = group2 and dIF = group2 - group1.
+conditions <- unique(samplesheet$condition)
+if (!is.null(opt$group1) && !is.null(opt$group2) &&
+    opt$group1 %in% conditions && opt$group2 %in% conditions &&
+    opt$group1 != opt$group2) {
+    level_order <- c(opt$group1, opt$group2)
+} else {
+    level_order <- conditions
+    if (!is.null(opt$group1) || !is.null(opt$group2)) {
+        cat("WARNING: --group1/--group2 not both present in the samplesheet; ",
+            "falling back to the default condition order\n", sep = "")
+    }
+}
+
 # Prepare design matrix
 design <- data.frame(
     sampleID  = samplesheet$sample,
-    condition = samplesheet$condition,
+    condition = factor(samplesheet$condition, levels = level_order),
     stringsAsFactors = FALSE
 )
+cat("Reference condition (group1):", level_order[1], "\n")
 
 # Prepare Salmon quantification paths
 salmon_quant_paths <- data.frame(

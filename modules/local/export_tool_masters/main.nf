@@ -17,6 +17,8 @@ process EXPORT_TOOL_MASTERS {
 
     input:
     tuple val(comparison_id), val(tool), path(tool_dir), val(tool_params_json)
+    // Script as input so content edits invalidate the cache on -resume
+    path exporter_script
 
     output:
     tuple val(comparison_id),
@@ -32,7 +34,7 @@ process EXPORT_TOOL_MASTERS {
     def tool_params_b64 = tool_params_json.bytes.encodeBase64().toString()
 
     """
-    python3 ${projectDir}/bin/export_tool_masters.py \\
+    python3 ${exporter_script} \\
         --comparison-id "${comparison_id}" \\
         --tool          ${tool} \\
         --input-dir     ${tool_dir} \\
@@ -55,7 +57,9 @@ process CROSS_TOOL_MASTER {
         saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
-    tuple val(comparison_id), path(master_files)
+    tuple val(comparison_id), path(master_files), val(tool_params_json)
+    // Script as input so content edits invalidate the cache on -resume
+    path exporter_script
 
     output:
     tuple val(comparison_id),
@@ -65,11 +69,13 @@ process CROSS_TOOL_MASTER {
     path "versions.yml",                           emit: versions
 
     script:
+    def tool_params_b64 = tool_params_json.bytes.encodeBase64().toString()
     """
-    python3 ${projectDir}/bin/export_tool_masters.py \\
+    python3 ${exporter_script} \\
         --comparison-id "${comparison_id}" \\
         --tool cross_tool \\
         --master-files ${master_files} \\
+        --tool-params   ${tool_params_b64} \\
         --out-dir .
 
     cat <<-END_VERSIONS > versions.yml

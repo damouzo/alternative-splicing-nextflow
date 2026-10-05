@@ -12,6 +12,8 @@ process ISAR_SWITCH_CONSEQUENCES {
 
     input:
     tuple val(comparison_id), path(rds_input), path(pfam_results), path(iupred_results)
+    // Script as input so content edits invalidate the cache on -resume
+    path consequences_script
 
     output:
     tuple val(comparison_id), path("${comparison_id}"), emit: results
@@ -30,7 +32,7 @@ process ISAR_SWITCH_CONSEQUENCES {
     # Create output directory
     mkdir -p ${comparison_id}
 
-    isar_switch_consequences.R \\
+    Rscript ${consequences_script} \\
         --input ${rds_input} \\
         --output ${comparison_id}/${comparison_id}_final.rds \\
         --output_dir ${comparison_id} \\

@@ -63,6 +63,7 @@ EVENT_COORD_FIELDS = {
 STANDARD_COLUMNS = [
     'comparison_id', 'tool', 'event_type', 'event_id', 'feature_type',
     'feature_id', 'gene_id', 'gene_symbol',
+    'group1_name', 'group2_name', 'effect_size_direction',
     'chr', 'strand', 'inc_level_1', 'inc_level_2', 'inc_level_difference',
     'effect_size', 'effect_size_type', 'pvalue', 'padj', 'padj_method',
     'fdr_floor_flag', 'is_novel_splice_site',
@@ -73,6 +74,16 @@ STANDARD_COLUMNS = [
 # values, every other event type leaves them empty. Superseded by
 # event_locus/event_coords; kept for backward compatibility until 3.0.0.
 NATIVE_COLUMNS = [
+    # rMATS-native IncLevelDifference (group1 - group2). Kept verbatim so the
+    # sign flip into group2 - group1 is auditable; all other columns use the
+    # unified convention.
+    'inc_level_difference_native',
+    # Junction-read support (IJC + SJC) per group and the report_min_reads gate.
+    'reads_group1', 'reads_group2', 'reads_ok',
+    # annotated | novel_junction | novel_splice_site (from the fromGTF.* files).
+    'event_class',
+    # canonical assembly chromosome (IGV-able); false for scaffolds/MT.
+    'is_igv_supported',
     'exon_start_0base', 'exon_end', 'upstream_es', 'upstream_ee',
     'downstream_es', 'downstream_ee', 'ijc_sample_1_total', 'sjc_sample_1_total',
     'ijc_sample_2_total', 'sjc_sample_2_total', 'inc_form_len', 'skip_form_len',
@@ -147,11 +158,35 @@ def as_int(value):
         return None
 
 
+CANONICAL_CHROMS = set(str(i) for i in range(1, 23)) | {'X', 'Y'}
+
+
+def normalize_chrom(chrom):
+    """Map rMATS/LeafCutter 'chr1' to MAJIQ-style '1'; keep MT as 'MT'."""
+    value = (chrom or '').strip().strip('"')
+    if value[:3].lower() == 'chr':
+        value = value[3:]
+    upper = value.upper()
+    if upper in ('M', 'MT'):
+        return 'MT'
+    if upper == 'X':
+        return 'X'
+    if upper == 'Y':
+        return 'Y'
+    return value
+
+
+def is_igv_supported(chrom):
+    """True for the canonical assembly chromosomes; scaffolds/MT are excluded."""
+    return chrom in CANONICAL_CHROMS
+
+
 def build_event_locus(event_type, row, header_names):
     """(event_locus, event_coords) for one event; ('', '') when unparseable.
 
     event_locus spans every named coordinate of the event, 1-based inclusive
-    (min start + 1 .. max end), so it can be pasted straight into IGV.
+    (min start + 1 .. max end), so it can be pasted straight into IGV. The
+    chromosome name is harmonized to the MAJIQ style (no 'chr' prefix).
     event_coords keeps the raw 0-based values with per-type names.
     """
     pairs = []
@@ -166,29 +201,40 @@ def build_event_locus(event_type, row, header_names):
     if not pairs:
         return '', ''
     locus = '%d-%d' % (min(pair[1] for pair in pairs) + 1, max(pair[2] for pair in pairs))
-    chrom = (row.get('chr') or '').strip().strip('"')
+    chrom = normalize_chrom(row.get('chr'))
     if chrom:
         locus = '%s:%s' % (chrom, locus)
     return locus, ';'.join('%s=%d-%d' % pair for pair in pairs)
 
 
-def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff, rule):
+def load_id_set(path):
+    """rMATS fromGTF.*.txt ID column as a set (empty set when absent)."""
+    ids = set()
+    if not os.path.isfile(path):
+        return ids
+    with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+        header = handle.readline().rstrip('\n').split('\t')
+        if 'ID' not in header:
+            return ids
+        idx = header.index('ID')
+        for line in handle:
+            if line.strip():
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) > idx:
+                    ids.add(parts[idx])
+    return ids
+
+
+def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff,
+                 rule, group1_name, group2_name, min_reads):
     """Yield (master_row_dict, is_significant) for one MATS.JC file."""
     jc_path = os.path.join(rmats_dir, '%s.MATS.JC.txt' % event_type)
     if not os.path.isfile(jc_path):
         return
-    novel_path = os.path.join(rmats_dir, 'fromGTF.novelSpliceSite.%s.txt' % event_type)
-    novel_ids = set()
-    if os.path.isfile(novel_path):
-        with open(novel_path, 'r', encoding='utf-8', errors='replace') as handle:
-            header = handle.readline().rstrip('\n').split('\t')
-            if 'ID' in header:
-                idx = header.index('ID')
-                for line in handle:
-                    if line.strip():
-                        parts = line.rstrip('\n').split('\t')
-                        if len(parts) > idx:
-                            novel_ids.add(parts[idx])
+    novel_ids = load_id_set(
+        os.path.join(rmats_dir, 'fromGTF.novelSpliceSite.%s.txt' % event_type))
+    novel_junction_ids = load_id_set(
+        os.path.join(rmats_dir, 'fromGTF.novelJunction.%s.txt' % event_type))
 
     with open(jc_path, 'r', encoding='utf-8', errors='replace') as handle:
         header = handle.readline().rstrip('\n').split('\t')
@@ -222,6 +268,10 @@ def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff, 
                 dpsi = float(row.get('IncLevelDifference'))
             except (TypeError, ValueError):
                 pass
+            # Unified sign: effect_size = group2 - group1. rMATS ships
+            # IncLevelDifference as group1 - group2, so negate it and keep the
+            # native value in inc_level_difference_native.
+            effect_dpsi = -dpsi if dpsi is not None else None
             is_significant = bool(
                 fdr_float is not None and dpsi is not None and
                 fdr_float <= fdr_cutoff and abs(dpsi) >= dpsi_cutoff)
@@ -235,12 +285,16 @@ def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff, 
                 'feature_id': row.get('ID', ''),
                 'gene_id': norm_gene_id(row.get('GeneID')),
                 'gene_symbol': (row.get('geneSymbol') or '').strip('"'),
-                'chr': row.get('chr', ''),
+                'group1_name': group1_name,
+                'group2_name': group2_name,
+                'effect_size_direction': 'group2_minus_group1',
+                'chr': normalize_chrom(row.get('chr')),
                 'strand': row.get('strand', ''),
                 'inc_level_1': parse_psi_vector(row.get('IncLevel1')),
                 'inc_level_2': parse_psi_vector(row.get('IncLevel2')),
-                'inc_level_difference': num(row.get('IncLevelDifference')),
-                'effect_size': num(row.get('IncLevelDifference')),
+                'inc_level_difference': num(effect_dpsi),
+                'inc_level_difference_native': num(dpsi),
+                'effect_size': num(effect_dpsi),
                 'effect_size_type': 'delta_psi',
                 'pvalue': num(row.get('PValue')),
                 'padj': num(row.get('FDR')),
@@ -253,6 +307,27 @@ def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff, 
             }
             for native in LOCATION_COLUMNS + NATIVE_COLUMNS:
                 out[native] = ''
+            # Native value cleared by the loop above; restore it after.
+            out['inc_level_difference_native'] = num(dpsi)
+            # Junction-read coverage per group (IJC + SJC) and the report gate.
+            ijc1 = parse_count_vector(row.get('IJC_SAMPLE_1')) or 0
+            sjc1 = parse_count_vector(row.get('SJC_SAMPLE_1')) or 0
+            ijc2 = parse_count_vector(row.get('IJC_SAMPLE_2')) or 0
+            sjc2 = parse_count_vector(row.get('SJC_SAMPLE_2')) or 0
+            reads1 = ijc1 + sjc1
+            reads2 = ijc2 + sjc2
+            out['reads_group1'] = reads1
+            out['reads_group2'] = reads2
+            out['reads_ok'] = 'true' if (reads1 >= min_reads and reads2 >= min_reads) else 'false'
+            event_id = row.get('ID')
+            if event_id in novel_ids:
+                out['event_class'] = 'novel_splice_site'
+            elif event_id in novel_junction_ids:
+                out['event_class'] = 'novel_junction'
+            else:
+                out['event_class'] = 'annotated'
+            out['is_igv_supported'] = 'true' if is_igv_supported(
+                normalize_chrom(row.get('chr'))) else 'false'
             out['event_locus'], out['event_coords'] = build_event_locus(
                 event_type, row, full)
             if 'exonStart_0base' in full:
@@ -268,13 +343,17 @@ def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff, 
             if 'downstreamEE' in full:
                 out['downstream_ee'] = num(row.get('downstreamEE'))
             if 'IJC_SAMPLE_1' in full:
-                out['ijc_sample_1_total'] = parse_count_vector(row.get('IJC_SAMPLE_1')) or ''
+                count = parse_count_vector(row.get('IJC_SAMPLE_1'))
+                out['ijc_sample_1_total'] = '' if count is None else count
             if 'SJC_SAMPLE_1' in full:
-                out['sjc_sample_1_total'] = parse_count_vector(row.get('SJC_SAMPLE_1')) or ''
+                count = parse_count_vector(row.get('SJC_SAMPLE_1'))
+                out['sjc_sample_1_total'] = '' if count is None else count
             if 'IJC_SAMPLE_2' in full:
-                out['ijc_sample_2_total'] = parse_count_vector(row.get('IJC_SAMPLE_2')) or ''
+                count = parse_count_vector(row.get('IJC_SAMPLE_2'))
+                out['ijc_sample_2_total'] = '' if count is None else count
             if 'SJC_SAMPLE_2' in full:
-                out['sjc_sample_2_total'] = parse_count_vector(row.get('SJC_SAMPLE_2')) or ''
+                count = parse_count_vector(row.get('SJC_SAMPLE_2'))
+                out['sjc_sample_2_total'] = '' if count is None else count
             if 'IncFormLen' in full:
                 out['inc_form_len'] = num(row.get('IncFormLen'))
             if 'SkipFormLen' in full:
@@ -295,6 +374,10 @@ def main():
     parser.add_argument('--rmats-dir', required=True)
     parser.add_argument('--fdr-cutoff', type=float, required=True)
     parser.add_argument('--dpsi-cutoff', type=float, required=True)
+    parser.add_argument('--group1-name', default='')
+    parser.add_argument('--group2-name', default='')
+    parser.add_argument('--report-min-reads', type=int, default=0,
+                        help='reads_ok requires >= this many junction reads (IJC+SJC) per group')
     parser.add_argument('--out-dir', default='.')
     args = parser.parse_args()
 
@@ -330,7 +413,8 @@ def main():
             dpsi_abs = []
             for row, is_significant in iter_jc_rows(
                     args.comparison_id, args.rmats_dir, event_type,
-                    args.fdr_cutoff, args.dpsi_cutoff, rule):
+                    args.fdr_cutoff, args.dpsi_cutoff, rule,
+                    args.group1_name, args.group2_name, args.report_min_reads):
                 master_writer.writerow(row)
                 type_total += 1
                 if row['is_novel_splice_site'] == 'true':

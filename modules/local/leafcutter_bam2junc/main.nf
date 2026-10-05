@@ -28,7 +28,7 @@ process LEAFCUTTER_BAM2JUNC {
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
-        regtools: \$(regtools --version 2>&1 | head -1 | sed 's/regtools //')
+        regtools: \$(regtools --version 2>&1 | grep -oEm1 '[0-9]+\\.[0-9]+(\\.[0-9]+)?' || echo "unknown")
     END_VERSIONS
     """
 }

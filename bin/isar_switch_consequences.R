@@ -171,7 +171,7 @@ all_switches <- tryCatch({
 
         # Select columns present in this object (consequence annotations may vary)
         wanted_cols <- c(
-            "gene_name", "gene_id", "isoform_id", "condition_1", "condition_2",
+            "gene_name", "gene_id", "ref_gene_id", "isoform_id", "condition_1", "condition_2",
             "IF1", "IF2", "dIF",
             "isoform_switch_q_value", "gene_switch_q_value",
             # consequence columns — present only if analyzeSwitchConsequences ran

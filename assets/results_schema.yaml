@@ -4,24 +4,23 @@
 # validate_results_contract.py and docs/output.md mirror this file; bump
 # schema_version when a path or a column changes.
 #
-# results/ contains two siblings:
+# results/ contains three siblings:
 #   deliverables/  everything the recipient gets (shipping = rename + zip)
 #   raw/           native per-tool output, audit-only, never shipped
-# All paths *inside* deliverables/ (sashimi_index.tsv, manifests) are relative
-# to the deliverables/ root, so the folder survives renaming/moving.
-schema_version: 2.1.0
+#   run_info/      run metadata (run_manifest.yaml, contrast manifests), not shipped
+# All paths *inside* deliverables/ (sashimi_index.tsv) are relative to the
+# deliverables/ root, so the folder survives renaming/moving.
+schema_version: 2.2.0
 
 shippable_root: deliverables/
 
 # What the recipient gets when the deliverables/ folder is zipped.
 shippable:
   - deliverables/README.md
-  - deliverables/run_info/run_manifest.yaml
   - deliverables/run_info/sample_index.tsv
   - deliverables/run_info/software_versions.yml
   - deliverables/run_info/qa_report.txt
   - deliverables/contrasts/<comparison_id>/<comparison_id>_splicing_report.html
-  - deliverables/contrasts/<comparison_id>/contrast_manifest.yaml
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.<tool>.master.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.<tool>.significant.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.<tool>.summary.tsv
@@ -52,6 +51,9 @@ master_columns:
   - feature_id
   - gene_id
   - gene_symbol
+  - group1_name
+  - group2_name
+  - effect_size_direction
   - effect_size
   - effect_size_type
   - pvalue
@@ -69,6 +71,9 @@ required_master_columns:
   - feature_id
   - gene_id
   - gene_symbol
+  - group1_name
+  - group2_name
+  - effect_size_direction
   - effect_size
   - effect_size_type
   - is_significant

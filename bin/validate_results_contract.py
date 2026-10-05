@@ -6,8 +6,8 @@ Run this after all deliverables are published. It walks the published outdir
 and checks:
 
   Structural (FAIL -> exit 2):
-    - run_info: run_manifest.yaml, sample_index.tsv, software_versions.yml
-    - one contrast_manifest.yaml per comparison (contrasts/<id>/)
+    - run_info (deliverables/run_info): sample_index.tsv, software_versions.yml
+    - run manifest and per-contrast manifests under results/run_info/ (NOT in deliverables/)
     - master + significant + summary per enabled AS tool, with the standard columns
     - cross_tool.master.tsv + cross_tool.gene_summary.tsv
     - rMATS master row count == sum of rows of the 5 *.MATS.JC.txt files (raw layer)
@@ -35,7 +35,8 @@ import os
 import sys
 
 DEFAULT_REQUIRED_COLUMNS = ['comparison_id', 'tool', 'feature_type', 'feature_id',
-                            'gene_id', 'gene_symbol', 'effect_size',
+                            'gene_id', 'gene_symbol', 'group1_name', 'group2_name',
+                            'effect_size_direction', 'effect_size',
                             'effect_size_type', 'is_significant',
                             'significance_rule', 'source_file']
 
@@ -49,12 +50,16 @@ class Report:
     def __init__(self):
         self.errors = []
         self.warnings = []
+        self.infos = []
 
     def error(self, message):
         self.errors.append(message)
 
     def warn(self, message):
         self.warnings.append(message)
+
+    def info(self, message):
+        self.infos.append(message)
 
     @property
     def exit_code(self):
@@ -149,17 +154,27 @@ def check_rmats_master(outdir, deliverables, comparison_id, report,
     floor = 0
     n_sig_master = 0
     empty_locus = {}
+    empty_counts = 0
+    count_cols = ('ijc_sample_1_total', 'sjc_sample_1_total',
+                  'ijc_sample_2_total', 'sjc_sample_2_total')
     has_locus_col = None
     for row in iter_tsv(master):
         if row.get('fdr_floor_flag') == 'true':
             floor += 1
         if row.get('is_significant') == 'true':
             n_sig_master += 1
+        if all((row.get(c) or '').strip() == '' for c in count_cols):
+            empty_counts += 1
         if has_locus_col is None:
             has_locus_col = 'event_locus' in row
         if not (row.get('event_locus') or '').strip():
             event_type = row.get('event_type', '')
             empty_locus[event_type] = empty_locus.get(event_type, 0) + 1
+    if empty_counts:
+        report.warn(
+            'rMATS %s: %d rows have all four junction-count columns empty — '
+            'counts may be missing (zero-vs-empty regression?)'
+            % (comparison_id, empty_counts))
     if has_locus_col is False:
         # Pre-2.1.0 tables legitimately lack the column: downgrade to WARN so
         # old runs keep validating, new runs fail until rMATS masters are
@@ -203,7 +218,8 @@ def check_rmats_master(outdir, deliverables, comparison_id, report,
         report.error('rMATS significant.tsv missing for %s' % comparison_id)
 
 
-def check_leafcutter_master(deliverables, comparison_id, report, required_columns, fdr_cutoff):
+def check_leafcutter_master(deliverables, comparison_id, report, required_columns,
+                            fdr_cutoff, dpsi_cutoff):
     master = os.path.join(tables_dir(deliverables, comparison_id),
                           '%s.leafcutter.master.tsv' % comparison_id)
     significant = os.path.join(tables_dir(deliverables, comparison_id),
@@ -213,6 +229,7 @@ def check_leafcutter_master(deliverables, comparison_id, report, required_column
         return
     check_columns(master, report, required_columns)
     n_ok_with_p = 0
+    n_sig_small_dpsi = 0
     for row in iter_tsv(master):
         if row.get('status') == 'Success' and row.get('padj') != '':
             try:
@@ -220,14 +237,26 @@ def check_leafcutter_master(deliverables, comparison_id, report, required_column
                     n_ok_with_p += 1
             except (TypeError, ValueError):
                 pass
+        if row.get('is_significant') == 'true':
+            try:
+                if abs(float(row.get('effect_size'))) < dpsi_cutoff:
+                    n_sig_small_dpsi += 1
+            except (TypeError, ValueError):
+                pass
     if n_ok_with_p and not (os.path.isfile(significant) and count_tsv_rows(significant) > 0):
         report.error(
             'LeafCutter %s: %d clusters with status=="Success" & padj < %s '
             'but significant.tsv has 0 rows — status filter regression'
             % (comparison_id, n_ok_with_p, fdr_cutoff))
+    if n_sig_small_dpsi:
+        report.error(
+            'LeafCutter %s: %d significant introns with |deltaPSI| < %s — '
+            'intron-level |dPSI| filter not applied'
+            % (comparison_id, n_sig_small_dpsi, dpsi_cutoff))
 
 
-def check_isar_master(deliverables, comparison_id, report, required_columns):
+def check_isar_master(deliverables, comparison_id, report, required_columns,
+                      effective_method=''):
     master = os.path.join(tables_dir(deliverables, comparison_id),
                           '%s.isar.master.tsv' % comparison_id)
     if not os.path.isfile(master):
@@ -236,6 +265,8 @@ def check_isar_master(deliverables, comparison_id, report, required_columns):
     check_columns(master, report, required_columns)
     q_values = []
     dmax = 0.0
+    n_sig = 0
+    padj_methods = set()
     for row in iter_tsv(master):
         try:
             q_values.append(float(row.get('padj')))
@@ -245,13 +276,33 @@ def check_isar_master(deliverables, comparison_id, report, required_columns):
             dmax = max(dmax, abs(float(row.get('effect_size'))))
         except (TypeError, ValueError):
             pass
+        if row.get('is_significant') == 'true':
+            n_sig += 1
+        value = (row.get('padj_method') or '').strip()
+        if value:
+            padj_methods.add(value.lower())
+
+    if q_values and n_sig == 0:
+        report.warn(
+            'ISAR %s: no isoform passes the significance rule — every gene lacks '
+            'a significant isoform' % comparison_id)
+
+    engine = str(effective_method or '').strip().lower()
+    expected = 'empirical_fdr' if engine.startswith('satur') else 'bh'
+    if padj_methods and expected not in padj_methods:
+        report.warn(
+            'ISAR %s: padj_method %s does not match the effective switch-test '
+            'engine %r (expected %s)'
+            % (comparison_id, ','.join(sorted(padj_methods)),
+               effective_method or 'unknown', expected))
+
     if len(q_values) > 10:
         q_sorted = sorted(q_values)
         iqr = q_sorted[len(q_sorted) // 4 * 3] - q_sorted[len(q_sorted) // 4]
         if iqr < ISAR_IQR_THRESHOLD and dmax >= ISAR_DIF_THRESHOLD:
             report.warn(
                 'ISAR %s: padj pinned (IQR %.4f < %.2f) while |dIF| max = %.2f — '
-                'known issue (satuRn), do not read significant.tsv as authoritative'
+                'state under_investigation, do not read significant.tsv as authoritative'
                 % (comparison_id, iqr, ISAR_IQR_THRESHOLD, dmax))
 
 
@@ -273,6 +324,51 @@ def check_cross_tool(deliverables, comparison_id, report, enabled_tools):
         report.warn(
             'cross_tool %s: tool(s) with 0 significant genes silently absent from '
             'the overlap/master: %s' % (comparison_id, ', '.join(empty)))
+
+
+def check_sign_consistency(deliverables, comparison_id, report):
+    """WARN on gene-level sign disagreement between rMATS and LeafCutter.
+
+    Both tools now report effect_size = group2 - group1, so a gene called by
+    both should agree in sign on its strongest hit.
+    """
+    dir_path = tables_dir(deliverables, comparison_id)
+
+    def best_signs(path):
+        # symbol -> (max_abs_effect, sign): keep the strongest hit per gene, the
+        # masters are not ordered by effect size.
+        signs = {}
+        if not os.path.isfile(path):
+            return signs
+        for row in iter_tsv(path):
+            if row.get('is_significant') != 'true':
+                continue
+            try:
+                effect = float(row.get('effect_size'))
+            except (TypeError, ValueError):
+                continue
+            if effect == 0:
+                continue
+            for symbol in str(row.get('gene_symbol') or '').split(','):
+                symbol = symbol.strip().upper()
+                if not symbol or symbol == 'NA':
+                    continue
+                previous = signs.get(symbol)
+                if previous is None or abs(effect) > previous[0]:
+                    signs[symbol] = (abs(effect), 1 if effect > 0 else -1)
+        return {symbol: sign for symbol, (_abs, sign) in signs.items()}
+
+    rmats = best_signs(os.path.join(dir_path, '%s.rmats.master.tsv' % comparison_id))
+    leafcutter = best_signs(os.path.join(dir_path, '%s.leafcutter.master.tsv' % comparison_id))
+    shared = set(rmats) & set(leafcutter)
+    if not shared:
+        return
+    mismatches = [g for g in shared if rmats[g] != leafcutter[g]]
+    if mismatches:
+        report.warn(
+            'sign disagreement between rMATS and LeafCutter for %d/%d shared '
+            'genes (%s) — check effect_size direction'
+            % (len(mismatches), len(shared), ', '.join(sorted(mismatches)[:5])))
 
 
 def check_sashimi_index(deliverables, comparison_id, report):
@@ -383,7 +479,8 @@ def main():
         _finish(report, args.report_file)
         sys.exit(report.exit_code)
 
-    run_manifest = os.path.join(run_info, 'run_manifest.yaml')
+    manifest_root = os.path.join(outdir, 'run_info')
+    run_manifest = os.path.join(manifest_root, 'run_manifest.yaml')
     sample_index = os.path.join(run_info, 'sample_index.tsv')
     software_versions = os.path.join(run_info, 'software_versions.yml')
     ignore_missing = set(args.ignore_missing or [])
@@ -398,11 +495,37 @@ def main():
         _finish(report, args.report_file)
         sys.exit(report.exit_code)
 
+    # Manifests are run metadata and must live outside the shipped deliverables/.
+    stray_manifests = []
+    for dirpath, _dirnames, filenames in os.walk(deliverables):
+        for name in filenames:
+            if name in ('run_manifest.yaml', 'contrast_manifest.yaml') or \
+               name.endswith('_contrast_manifest.yaml'):
+                stray_manifests.append(os.path.join(dirpath, name))
+    if stray_manifests:
+        # publishDir copies never delete old-layout files, so a re-run into an
+        # existing outdir leaves the previous manifests behind. Surface them
+        # (and how to clear them) without aborting the run.
+        report.warn(
+            'stale manifest files inside deliverables/ (remove them; manifests '
+            'now live under results/run_info/): %s'
+            % ', '.join(os.path.relpath(p, deliverables) for p in stray_manifests))
+
     manifest = parse_manifest_yaml(run_manifest)
+    # 2.2.0 added group/sign columns and moved manifests out of deliverables/.
+    # Legacy trees (pre-2.2.0) keep their old masters and stale manifests, so
+    # downgrade the new requirements instead of aborting validation.
+    legacy_layout = not contract_at_least(manifest, (2, 2, 0))
+    if legacy_layout:
+        new_cols = {'group1_name', 'group2_name', 'effect_size_direction'}
+        required_columns = [c for c in required_columns if c not in new_cols]
+        report.warn('run contract < 2.2.0: group1_name/group2_name/'
+                    'effect_size_direction columns not required')
     enabled_tools = set(manifest.get('tools_enabled', []))
     if isinstance(enabled_tools, str):
         enabled_tools = {enabled_tools} if enabled_tools else set()
     fdr_cutoff = float(manifest.get('fdr_cutoff', 0.05))
+    dpsi_cutoff = float(manifest.get('dpsi_cutoff', 0.1))
 
     comparisons = manifest.get('comparisons', [])
     if isinstance(comparisons, str):
@@ -415,9 +538,19 @@ def main():
         if not os.path.isdir(contrast_dir):
             report.error('missing contrast dir: %s' % contrast_dir)
             continue
-        contrast_manifest = os.path.join(contrast_dir, 'contrast_manifest.yaml')
+        contrast_manifest = os.path.join(
+            manifest_root, 'contrast_manifests',
+            '%s_contrast_manifest.yaml' % comparison_id)
+        contrast_meta = {}
         if not os.path.isfile(contrast_manifest):
-            report.error('missing contrast_manifest.yaml for %s' % comparison_id)
+            report.error('missing contrast manifest for %s (expected %s)'
+                         % (comparison_id, contrast_manifest))
+        else:
+            contrast_meta = parse_manifest_yaml(contrast_manifest)
+        effective_method = contrast_meta.get('effective_test_method', '')
+        if 'isar' in enabled_tools:
+            report.info('ISAR %s: effective_test_method=%s'
+                        % (comparison_id, effective_method or 'NA'))
 
         report_html = os.path.join(contrast_dir, '%s_splicing_report.html' % comparison_id)
         if not os.path.isfile(report_html):
@@ -438,10 +571,13 @@ def main():
                                required_columns,
                                not contract_at_least(manifest, (2, 1, 0)))
         if 'leafcutter' in enabled_tools:
-            check_leafcutter_master(deliverables, comparison_id, report, required_columns, fdr_cutoff)
+            check_leafcutter_master(deliverables, comparison_id, report,
+                                    required_columns, fdr_cutoff, dpsi_cutoff)
         if 'isar' in enabled_tools:
-            check_isar_master(deliverables, comparison_id, report, required_columns)
+            check_isar_master(deliverables, comparison_id, report,
+                              required_columns, effective_method)
         check_cross_tool(deliverables, comparison_id, report, enabled_tools)
+        check_sign_consistency(deliverables, comparison_id, report)
         if 'sashimi' in enabled_tools:
             check_sashimi_index(deliverables, comparison_id, report)
 
@@ -458,6 +594,10 @@ def _finish(report, report_file):
             handle.write('[ERROR] %s\n' % message)
         for message in report.warnings:
             handle.write('[WARN] %s\n' % message)
+        if report.infos:
+            handle.write('\n')
+            for message in report.infos:
+                handle.write('[INFO] %s\n' % message)
     print('errors: %d | warnings: %d' % (len(report.errors), len(report.warnings)))
 
 

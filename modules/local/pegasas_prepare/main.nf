@@ -15,6 +15,8 @@ process PEGASAS_PREPARE {
     input:
     path salmon_tpm
     path group_info
+    // Script as input so content edits invalidate the cache on -resume
+    path prepare_script
 
     output:
     path "pegasas_inputs/gene_exp_bySample.tsv", emit: gene_exp
@@ -23,7 +25,7 @@ process PEGASAS_PREPARE {
 
     script:
     """
-    prepare_pegasas_gene_matrix.py \\
+    python3 ${prepare_script} \\
         ${salmon_tpm} \\
         ${group_info} \\
         --out-dir pegasas_inputs/

@@ -8,6 +8,8 @@ process ISAR_EXTRACT_ORF {
     input:
     tuple val(comparison_id), path(rds_input)
     path gtf
+    // Script as input so content edits invalidate the cache on -resume
+    path extract_orf_script
     
     output:
     tuple val(comparison_id), path("${comparison_id}_orf.rds"), emit: rds
@@ -20,7 +22,7 @@ process ISAR_EXTRACT_ORF {
     export OMP_NUM_THREADS=1
     export MKL_NUM_THREADS=1
 
-    isar_extract_orf.R \\
+    Rscript ${extract_orf_script} \\
         --input ${rds_input} \\
         --gtf ${gtf} \\
         --output ${comparison_id}_orf.rds \\

@@ -76,16 +76,26 @@ def KS_test(l_hits, l_null, l_w, plotting, sample_name):
     return enrichment_score, enrichment_pvalue, med_hits
 
 
-def SampleEnrichment(gene_exp, gene_set, sample_name, group, outdir):
+def SampleEnrichment(gene_exp, gene_set, sample_name, group, outdir, min_tpm):
     make_plot = False
     fout = open(outdir + "/" + sample_name + ".txt", "w")
     if make_plot:
         os.system("mkdir -p " + outdir + "/fig/")
+    # Only expressed genes form the KS background: ranking against the full
+    # transcriptome makes every pathway look enriched (zero-inflated TPM).
+    expressed = {}
+    for gene, value in gene_exp.items():
+        try:
+            fvalue = float(value)
+        except (TypeError, ValueError):
+            continue
+        if fvalue >= min_tpm:
+            expressed[gene] = fvalue
     l_hits = []
     l_null = []
     l_w    = []
     for rank, k in enumerate(
-        sorted(gene_exp.keys(), key=lambda x: float(gene_exp[x]), reverse=True)
+        sorted(expressed.keys(), key=lambda x: expressed[x], reverse=True)
     ):
         if k in gene_set:
             l_w.append("Hit")
@@ -93,12 +103,24 @@ def SampleEnrichment(gene_exp, gene_set, sample_name, group, outdir):
         else:
             l_w.append("Non-Hit")
             l_null.append(rank)
+    n_background = len(expressed)
+    n_hits = len(l_hits)
+    if len(l_hits) < 2 or len(l_null) < 2:
+        # KS is undefined with an empty side; record the background instead.
+        fout.write(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                sample_name, group, "", "", "", n_background, n_hits
+            )
+        )
+        fout.close()
+        return
     enrichment_score, enrichment_pvalue, med_hits = KS_test(
         l_hits, l_null, l_w, make_plot, outdir + "/fig/" + sample_name
     )
     fout.write(
-        "{}\t{}\t{}\t{}\t{}\n".format(
-            sample_name, group, enrichment_score, enrichment_pvalue, med_hits
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+            sample_name, group, enrichment_score, enrichment_pvalue, med_hits,
+            n_background, n_hits
         )
     )
     fout.close()
@@ -109,6 +131,7 @@ def main(args):
     geneExp, header = loadExpSet(fin_exp_matrix)
     outdir      = args.out_dir.rstrip("/")
     numInterval = args.num_interval
+    min_tpm     = getattr(args, "min_tpm", 1.0)
     group_info  = args.groupInfo
     groupMap    = loadGroupInfo(group_info)
 
@@ -140,6 +163,7 @@ def main(args):
                                 batch_list_s[n],
                                 groupMap[batch_list_s[n]],
                                 score_outdir,
+                                min_tpm,
                             ),
                         )
                     )
@@ -162,6 +186,7 @@ def main(args):
                             batch_list_s[n],
                             groupMap[batch_list_s[n]],
                             score_outdir,
+                            min_tpm,
                         ),
                     )
                 )

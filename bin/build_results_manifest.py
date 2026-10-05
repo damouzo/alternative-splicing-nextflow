@@ -88,8 +88,10 @@ def load_payload(args):
 def build_run_manifest(pipeline):
     critical = {
         key: pipeline.get(key)
-        for key in ('fdr_cutoff', 'dpsi_cutoff', 'strandedness', 'read_length',
-                    'organism', 'genome_build', 'isar_test_method', 'rmats_cstat')
+        for key in ('fdr_cutoff', 'dpsi_cutoff', 'majiq_probability_threshold',
+                    'majiq_dpsi_cutoff', 'report_min_reads', 'strandedness',
+                    'read_length', 'organism', 'genome_build', 'isar_test_method',
+                    'rmats_cstat')
     }
     tools = pipeline.get('tools', [])
     enabled = [t['name'] for t in tools if t.get('enabled')]
@@ -181,19 +183,21 @@ def build_readme(pipeline):
     lines.append('```')
     lines.append('deliverables/')
     lines.append('  README.md                     # this file')
-    lines.append('  run_info/                     # what was run and how to read the tables')
-    lines.append('    run_manifest.yaml           # pipeline, params, tools, known issues')
+    lines.append('  run_info/                     # shipped run metadata')
     lines.append('    sample_index.tsv            # sample x comparison x group (no cluster paths)')
     lines.append('    software_versions.yml       # consolidated tool versions')
     lines.append('    qa_report.txt               # results-contract validation output')
     lines.append('    pipeline_info/              # Nextflow trace, timeline, report, DAG')
     lines.append('  contrasts/<comparison_id>/    # one folder per comparison')
     lines.append('    <comparison_id>_splicing_report.html')
-    lines.append('    contrast_manifest.yaml      # every deliverable of this comparison')
     lines.append('    tables/                     # <id>.<tool>.{master,significant,summary}.tsv')
     lines.append('    plots/sashimi/              # sashimi_index.tsv + <EVENT_TYPE>/*.pdf')
     lines.append('  cross_contrast/pegasas/       # pathway summary, heatmap, UpSet')
     lines.append('```')
+    lines.append('')
+    lines.append('Run manifests (`run_manifest.yaml`, per-contrast manifests) and the')
+    lines.append('native `raw/` output are audit metadata kept *outside* `deliverables/`,')
+    lines.append('alongside it in `results/`. They are not needed to interpret the results.')
     lines.append('')
     lines.append('## How to read the tables')
     lines.append('')
@@ -231,14 +235,38 @@ def build_readme(pipeline):
     lines.append('(e.g., RT-PCR/qPCR across the relevant junctions, or long-read')
     lines.append('sequencing) before being reported as confirmed splicing events.')
     lines.append('')
+    lines.append('## Thresholds and sign convention')
+    lines.append('')
+    lines.append('Every tool reports `effect_size` as **group2 - group1** (treatment minus')
+    lines.append('control). `group1_name`/`group2_name` name the contrast groups and')
+    lines.append('`effect_size_direction` is always `group2_minus_group1`.')
+    lines.append('')
+    lines.append('- Significance: FDR <= 0.05 and |effect_size| >= 0.1 (all tools).')
+    lines.append('- MAJIQ keeps its native default instead of the 0.1 rule:')
+    lines.append('  `|dpsi_mean| >= 0.2` with `probability_changing >= 0.95`. Its table is')
+    lines.append('  therefore more conservative than the others; this is intentional and')
+    lines.append('  documented here so counts are not compared directly.')
+    lines.append('- LeafCutter calls an intron significant when the cluster passes FDR')
+    lines.append('  and `|deltapsi| >= 0.1`; `cluster_significant` records the cluster-level')
+    lines.append('  call separately.')
+    lines.append('- PEGASAS is exploratory: its KS score is descriptive and no')
+    lines.append('  pathway is called significant. `n_sig_events` is the BH-adjusted')
+    lines.append('  count of event x pathway correlations using the analytic Pearson')
+    lines.append('  p-value (`n_sig_events_perm` is the permutation cross-check, which')
+    lines.append('  is floored at 1/N_PERMS and therefore cannot reject). Rank')
+    lines.append('  pathways by `n_sig_events`. `activity_diff` is group2 - group1,')
+    lines.append('  and with two groups a PSI-activity correlation can reflect group')
+    lines.append('  separation alone.')
+    lines.append('')
     lines.append('## This run')
     lines.append('')
     lines.append('- Tools enabled: %s' % (', '.join(enabled) if enabled else 'none'))
     lines.append('- Comparisons: %s' % (', '.join(comparisons) if comparisons else 'none'))
     lines.append('')
-    lines.append('Significance thresholds and per-tool reliability caveats are in')
-    lines.append('`run_info/run_manifest.yaml` and each `contrast_manifest.yaml`. Respect the')
-    lines.append('`known_issues` notes before using a tool table as authoritative.')
+    lines.append('Significance thresholds are summarised above and repeated in each')
+    lines.append('report. Per-tool reliability caveats and the full parameter record live')
+    lines.append('in the run manifests kept alongside this folder under `results/run_info/`.')
+    lines.append('Respect the reliability notes before using a tool table as authoritative.')
     lines.append('')
     with open('README.md', 'w', encoding='utf-8') as handle:
         handle.write('\n'.join(lines))
@@ -267,8 +295,80 @@ def group_counts_from_index(deliverables_root, comparison_id):
     return counts
 
 
+def isar_reliability_state(master_path, effective_method):
+    """(status, note) for ISAR given the engine and the master q-value spread."""
+    engine = str(effective_method or '').strip()
+    if engine and engine.lower() not in ('dexseq', 'na'):
+        return ('under_investigation',
+                'Switch-test engine is %s (not DEXSeq); q-values follow an '
+                'empirical FDR step. Treat ISAR significant calls cautiously.' % engine)
+    q_values = []
+    dmax = 0.0
+    if os.path.isfile(master_path):
+        with open(master_path, 'r', encoding='utf-8', errors='replace', newline='') as handle:
+            for row in csv.DictReader(handle, delimiter='\t'):
+                try:
+                    q_values.append(float(row.get('padj')))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    dmax = max(dmax, abs(float(row.get('effect_size'))))
+                except (TypeError, ValueError):
+                    pass
+    if len(q_values) > 10:
+        q_sorted = sorted(q_values)
+        iqr = q_sorted[len(q_sorted) // 4 * 3] - q_sorted[len(q_sorted) // 4]
+        if iqr < 0.05 and dmax >= 0.1:
+            return ('under_investigation',
+                    'ISAR q-values are pinned (IQR %.3f < 0.05) while |dIF| >= 0.1 '
+                    'exists. Treat ISAR significant calls cautiously.' % iqr)
+    return ('ok', '')
+
+
+def compute_reliability(pipeline, deliverables_root, comparison_id,
+                        effective_method, group_counts):
+    """Per-contrast tool states; overrides the run-wide defaults."""
+    tools = pipeline.get('tools', [])
+    enabled = [t['name'] for t in tools if t.get('enabled')]
+    defaults = {t.get('tool'): t for t in pipeline.get('tool_reliability', [])}
+    isar_master = os.path.join(
+        deliverables_root, 'contrasts', comparison_id, 'tables',
+        '%s.isar.master.tsv' % comparison_id)
+    isar_status, isar_note = isar_reliability_state(isar_master, effective_method)
+
+    issues = []
+    for name in enabled:
+        if name == 'isar':
+            issues.append({'tool': 'isar', 'status': isar_status, 'note': isar_note})
+            continue
+        default = defaults.get(name, {'status': 'ok', 'note': ''})
+        issues.append({
+            'tool': name,
+            'status': default.get('status', 'ok'),
+            'note': default.get('note', ''),
+        })
+
+    size_caveats = []
+    size_notes = []
+    n1 = group_counts.get('group1_n')
+    n2 = group_counts.get('group2_n')
+    if isinstance(n1, int) and isinstance(n2, int):
+        smallest = min(n1, n2)
+        if smallest < 3:
+            size_caveats.append(
+                'Low replication (n=%d vs n=%d, smallest group < 3): statistical '
+                'power for moderate deltaPSI is limited; interpret borderline calls '
+                'with caution.' % (n1, n2))
+        elif smallest == 3:
+            size_notes.append(
+                'Three replicates per group (n=%d vs n=%d): power for moderate '
+                'deltaPSI is limited; treat borderline calls descriptively.' % (n1, n2))
+    return issues, size_caveats, size_notes
+
+
 def build_contrast_manifest(comparison_id, group1_name, group2_name,
-                            deliverables_root, results_root, pipeline):
+                            deliverables_root, results_root, pipeline,
+                            effective_method=''):
     """Scan the published deliverables/ for one comparison and record it.
 
     Every shippable path is relative to the deliverables/ root (so the manifest
@@ -347,6 +447,7 @@ def build_contrast_manifest(comparison_id, group1_name, group2_name,
         ('comparison_id', comparison_id),
         ('group1_name', group1_name),
         ('group2_name', group2_name),
+        ('effective_test_method', effective_method or ''),
         ('group1_n', group_counts['group1_n']),
         ('group2_n', group_counts['group2_n']),
         ('report_html_path', report_path or ''),
@@ -385,13 +486,22 @@ def build_contrast_manifest(comparison_id, group1_name, group2_name,
     if missing:
         lines.append('skipped_tools: [%s]' % ', '.join(yaml_scalar(t) for t in sorted(missing)))
 
-    known = pipeline.get('tool_reliability', [])
-    if known:
+    issues, size_caveats, size_notes = compute_reliability(
+        pipeline, deliverables_root, comparison_id, effective_method, group_counts)
+    if issues:
         lines.append('known_issues:')
-        for item in known:
+        for item in issues:
             lines.append('- tool: %s' % yaml_scalar(item.get('tool')))
             lines.append('  status: %s' % yaml_scalar(item.get('status')))
             lines.append('  note: %s' % yaml_scalar(item.get('note') or ''))
+    if size_caveats:
+        lines.append('sample_size_caveats:')
+        for caveat in size_caveats:
+            lines.append('- %s' % yaml_scalar(caveat))
+    if size_notes:
+        lines.append('sample_size_notes:')
+        for note in size_notes:
+            lines.append('- %s' % yaml_scalar(note))
 
     with open('contrast_manifest.yaml', 'w', encoding='utf-8') as handle:
         handle.write('\n'.join(lines) + '\n')
@@ -421,7 +531,8 @@ def main():
             payload.get('group2_name'),
             deliverables_root,
             results_root,
-            pipeline
+            pipeline,
+            payload.get('effective_test_method', '')
         )
     print('[build_results_manifest] %s manifest(s) written to %s' % (args.mode, os.getcwd()))
 

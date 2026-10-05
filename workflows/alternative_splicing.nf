@@ -52,6 +52,8 @@ workflow ALTERNATIVE_SPLICING {
     ch_samples_bam      = INPUT_CHECK.out.samples_bam
     ch_samples_salmon   = INPUT_CHECK.out.samples_salmon
     ch_comparisons_meta = INPUT_CHECK.out.comparisons
+    // [comp_id, group1, group2] — reused for labels, sign columns and masters.
+    ch_comp_names = ch_comparisons_meta.map { meta -> [meta.id, meta.group1, meta.group2] }
 
     // Fan-out comparison IDs for disabled-tool fallback branches
     ch_comparisons_meta
@@ -113,16 +115,25 @@ workflow ALTERNATIVE_SPLICING {
      * SUBWORKFLOW: IsoformSwitchAnalyzeR (optional)
      */
     ch_isar_for_report = channel.empty()
+    ch_isar_method     = channel.empty()
     if (params.run_isar) {
         ISOFORMSWITCHR_ANALYSIS(
             ch_samples_salmon,
-            ch_gtf
+            ch_gtf,
+            ch_comparisons_meta
         )
         ch_isar_for_report = ISOFORMSWITCHR_ANALYSIS.out.results
+        // Resolved engine (dexseq/satuRn) per contrast, in memory so the
+        // deliverables layer does not depend on the raw/ publication level.
+        ch_isar_method = ISOFORMSWITCHR_ANALYSIS.out.effective_method
+            .map { comp_id, method_file -> [comp_id, (method_file.text ?: '').trim()] }
     } else {
         ch_ids_split.isar
             .map { comp_id -> [comp_id, no_isar_dir] }
             .set { ch_isar_for_report }
+        ch_ids_split.isar
+            .map { comp_id -> [comp_id, 'NA'] }
+            .set { ch_isar_method }
     }
 
     /*
@@ -132,7 +143,8 @@ workflow ALTERNATIVE_SPLICING {
     if (params.run_sashimi && params.run_rmats) {
         SASHIMI_ANALYSIS(
             ch_rmats_for_sashimi,
-            ch_samples_bam
+            ch_samples_bam,
+            ch_comp_names
         )
         ch_sashimi_for_report = SASHIMI_ANALYSIS.out.results
     } else {
@@ -199,8 +211,9 @@ workflow ALTERNATIVE_SPLICING {
         .join(ch_sample_ids_for_report, by: 0)
         // Condition names (group1/group2 columns of comparisons.csv) feed the
         // report legends so plots read Healthy vs Patient, not Group1 vs Group2.
-        .join(ch_comparisons_meta.map { meta -> [meta.id, meta.group1, meta.group2] }, by: 0)
-        .map { comp_id, rdir, mdir, idir, sdir, pdir, ldir, g1_ids, g2_ids, g1_name, g2_name ->
+        .join(ch_comp_names, by: 0)
+        .join(ch_isar_method, by: 0)
+        .map { comp_id, rdir, mdir, idir, sdir, pdir, ldir, g1_ids, g2_ids, g1_name, g2_name, isar_method ->
             [comp_id,
              rdir.name, rdir,
              mdir.name, mdir,
@@ -209,7 +222,8 @@ workflow ALTERNATIVE_SPLICING {
              pdir.name, pdir,
              ldir.name, ldir,
              g1_ids, g2_ids,
-             g1_name, g2_name]
+             g1_name, g2_name,
+             isar_method]
         }
         .set { ch_report_inputs }
 
@@ -320,53 +334,72 @@ fdr_cutoff:             params.report_fdr_cutoff,
         // ---- Fase C: rMATS master ----
         ch_rmats_master_input = ch_rmats_for_report
             .filter { comp_id, d -> d.name != 'NO_RMATS' }
-            .map { comp_id, d -> [comp_id, d] }
+            .join(ch_comp_names, by: 0)
+            .map { comp_id, d, g1, g2 -> [comp_id, d, g1, g2] }
         RMATS_MASTER(
             ch_rmats_master_input,
             params.report_fdr_cutoff,
             params.report_dpsi_cutoff,
+            params.report_min_reads,
             file("${projectDir}/bin/build_rmats_master.py")
         )
 
         // ---- Fase B: per-tool masters (MAJIQ / ISAR / LeafCutter / PEGASAS) ----
-        def majiq_params_json = to_json([
-            probability_threshold: params.majiq_probability_threshold,
-            dpsi_cutoff:           params.majiq_delta_psi_threshold
-        ])
-        def isar_params_json = to_json([
-            fdr_cutoff:  params.report_fdr_cutoff,
-            dpsi_cutoff: params.report_dpsi_cutoff
-        ])
-        def leafcutter_params_json = to_json([
-            fdr_cutoff: params.report_fdr_cutoff
-        ])
-
         ch_export_inputs = ch_majiq_for_report
             .filter { comp_id, d -> d.name != 'NO_MAJIQ' }
-            .map { comp_id, d -> [comp_id, 'majiq', d, majiq_params_json] }
+            .join(ch_comp_names, by: 0)
+            .map { comp_id, d, g1, g2 ->
+                [comp_id, 'majiq', d, to_json([
+                    probability_threshold: params.majiq_probability_threshold,
+                    dpsi_cutoff:           params.majiq_delta_psi_threshold,
+                    group1_name:           g1,
+                    group2_name:           g2
+                ])]
+            }
         ch_export_inputs = ch_export_inputs.mix(
             ch_isar_for_report
                 .filter { comp_id, d -> d.name != 'NO_ISAR' }
-                .map { comp_id, d -> [comp_id, 'isar', d, isar_params_json] }
+                .join(ch_isar_method, by: 0)
+                .join(ch_comp_names, by: 0)
+                .map { comp_id, d, method, g1, g2 ->
+                    [comp_id, 'isar', d, to_json([
+                        fdr_cutoff:  params.report_fdr_cutoff,
+                        dpsi_cutoff: params.report_dpsi_cutoff,
+                        effective_test_method: method,
+                        group1_name: g1,
+                        group2_name: g2
+                    ])]
+                }
         )
         ch_export_inputs = ch_export_inputs.mix(
             ch_leafcutter_for_report
                 .filter { comp_id, d -> d.name != 'NO_LEAFCUTTER' }
-                .map { comp_id, d -> [comp_id, 'leafcutter', d, leafcutter_params_json] }
+                .join(ch_comp_names, by: 0)
+                .map { comp_id, d, g1, g2 ->
+                    [comp_id, 'leafcutter', d, to_json([
+                        fdr_cutoff:  params.report_fdr_cutoff,
+                        dpsi_cutoff: params.report_dpsi_cutoff,
+                        group1_name: g1,
+                        group2_name: g2
+                    ])]
+                }
         )
         ch_export_inputs = ch_export_inputs.mix(
             ch_pegasas_for_report
                 .filter { comp_id, d -> d.name != 'NO_PEGASAS' }
-                .map { comp_id, d ->
+                .join(ch_comp_names, by: 0)
+                .map { comp_id, d, g1, g2 ->
                     def sig_path = "${outdir_root}/raw/${params.tool_ids.pegasas}/${comp_id}/${comp_id}_sig_pathways.tsv"
                     [comp_id, 'pegasas', d, to_json([
                         fdr_cutoff:   params.report_fdr_cutoff,
-                        sig_pathways: sig_path
+                        sig_pathways: sig_path,
+                        group1_name:  g1,
+                        group2_name:  g2
                     ])]
                 }
         )
 
-        EXPORT_TOOL_MASTERS(ch_export_inputs)
+        EXPORT_TOOL_MASTERS(ch_export_inputs, file("${projectDir}/bin/export_tool_masters.py"))
 
         // ---- Fase D: sashimi index ----
         ch_sashimi_index_input = ch_sashimi_for_report
@@ -384,7 +417,14 @@ fdr_cutoff:             params.report_fdr_cutoff,
             ch_master_files = ch_master_files.mix(
                 EXPORT_TOOL_MASTERS.out.tables.map { comp_id, _t, m, _s, _su -> [comp_id, m] }
             )
-            CROSS_TOOL_MASTER(ch_master_files.groupTuple(by: 0))
+            CROSS_TOOL_MASTER(
+                ch_master_files.groupTuple(by: 0)
+                    .join(ch_comp_names, by: 0)
+                    .map { comp_id, files, g1, g2 ->
+                        [comp_id, files, to_json([group1_name: g1, group2_name: g2])]
+                    },
+                file("${projectDir}/bin/export_tool_masters.py")
+            )
         }
 
 //        // ---- Fase A/B/D: per-comparison manifest ----
@@ -424,12 +464,11 @@ fdr_cutoff:             params.report_fdr_cutoff,
             .join(ch_sashimi_state,    by: 0)
             .join(ch_cross_state,      by: 0)
             .join(ch_report_state,     by: 0)
-            .join(ch_comparisons_meta.map { meta ->
-                [meta.id, meta.group1, meta.group2]
-            }, by: 0)
+            .join(ch_isar_method,      by: 0)
+            .join(ch_comp_names,       by: 0)
 .map { comp_id, s_rmats, s_majiq, s_isar, s_lc, s_pegasas,
-               s_sashimi, s_cross, s_report, g1, g2 ->
-            [comp_id, pipeline_json, outdir_root, deliverables_root, g1, g2]
+               s_sashimi, s_cross, s_report, isar_method, g1, g2 ->
+            [comp_id, pipeline_json, outdir_root, deliverables_root, g1, g2, isar_method]
         }
 
         CONTRAST_MANIFEST(
