@@ -20,6 +20,10 @@ process PEGASAS_PATHWAY {
     path gene_exp
     path group_info
     path gmt_file
+    // Run the repo copy of PEGASAS: the published image predates the per-sample
+    // min-TPM filter, so -m is unknown to the baked-in CLI. Staging the source
+    // also invalidates the cache on -resume when the package changes.
+    path pegasas_src
 
     output:
     path "pathway_out/", emit: results
@@ -27,7 +31,9 @@ process PEGASAS_PATHWAY {
 
     script:
     """
-    PEGASAS pathway \\
+    export PYTHONPATH="${pegasas_src}:\${PYTHONPATH:-}"
+
+    python3 ${pegasas_src}/bin/PEGASAS pathway \\
         ${gene_exp} \\
         ${gmt_file} \\
         ${group_info} \\
@@ -37,7 +43,7 @@ process PEGASAS_PATHWAY {
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
-        PEGASAS: \$(PEGASAS --version 2>&1 | head -1)
+        PEGASAS: \$(python3 ${pegasas_src}/bin/PEGASAS --version 2>&1 | head -1)
     END_VERSIONS
     """
 }

@@ -35,6 +35,27 @@ def parse_pdf_name(name):
     return rank, gene
 
 
+def load_site_classes(sashimi_root):
+    """(event_type, rank) -> 'annotated' | 'de_novo' from the SASHIMI_PLOTS manifest.
+
+    Written by filter_rmats_for_sashimi.py (rank == PDF <rank> prefix), so it is
+    the single source of truth for whether each plotted event used a de novo
+    splice site.
+    """
+    path = os.path.join(sashimi_root, 'site_classes.tsv')
+    classes = {}
+    if not os.path.isfile(path):
+        return classes
+    with open(path, 'r', encoding='utf-8', newline='') as handle:
+        for row in csv.DictReader(handle, delimiter='\t'):
+            try:
+                key = (row['event_type'], int(row['rank']))
+            except (KeyError, ValueError, TypeError):
+                continue
+            classes[key] = row.get('site_class') or 'annotated'
+    return classes
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--comparison-id', required=True)
@@ -44,6 +65,7 @@ def main():
     args = parser.parse_args()
 
     staged_root = os.path.abspath(args.sashimi_dir)
+    site_classes = load_site_classes(staged_root)
     rows = []
     for event_type in EVENT_TYPES:
         plot_dir = os.path.join(staged_root, event_type, 'Sashimi_plot')
@@ -64,11 +86,7 @@ def main():
                 'event_type': event_type,
                 'rank': rank,
                 'gene_symbol': gene,
-                # rmats2sashimiplot cannot draw unannotated splice sites, so
-                # filter_rmats_for_sashimi.py excludes de novo events upstream
-                # and every indexed plot is annotated. Kept explicit so the
-                # browser contract survives a future per-class split.
-                'site_class': 'annotated',
+                'site_class': site_classes.get((event_type, rank), 'annotated'),
                 'plot_id': name[:-4],
                 'pdf_path': pdf_rel,
             })

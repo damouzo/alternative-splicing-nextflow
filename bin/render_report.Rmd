@@ -23,7 +23,8 @@ params:
   sashimi_png_dpi: 150
   organism: "human"
   de_results: NULL
-  de_results_map: {}
+  de_results_map:
+    value: !r list()
   run_de_as: false
   publish_deliverables: false
   publish_level: "core_raw"
@@ -278,10 +279,11 @@ if (length(rmats_results_list) > 0) {
   all_rmats <- bind_rows(rmats_results_list) %>%
     mutate(
       FDR_plot       = pmax(FDR, .Machine$double.xmin),
-      # Cap -log10(FDR): underflowed --cstat p-values would otherwise push the
-      # priority score towards a single saturated value; past 1e-50 the ranking
-      # is effectively driven by |dPsi|.
-      neglog10FDR    = pmin(-log10(FDR_plot), 50),
+      # Cap -log10(FDR) at 300 so an underflowed --cstat p-value cannot dominate
+      # the score. This matches filter_rmats_for_sashimi.py (FDR clamped at
+      # 1e-300), so the report ranking and the sashimi top-N use the same
+      # priority; only past the cap does |dPsi| drive the order.
+      neglog10FDR    = pmin(-log10(FDR_plot), 300),
       Significant    = FDR <= params$fdr_cutoff & abs(IncLevelDifference) >= params$dpsi_cutoff,
       # Higher = more significant and larger PSI change.
       priority_score = round(neglog10FDR * abs(IncLevelDifference), 3),
@@ -695,15 +697,32 @@ if (length(sashimi_pdfs) > 0) {
 
   sashimi_data_uris <- vapply(sashimi_pdfs, embed_sashimi, character(1))
 
+  # Per-PDF splice-site class from the SASHIMI_PLOTS manifest. The manifest rank
+  # is the same 1-based <rank> prefix rmats2sashimiplot writes into the filename,
+  # so de novo events are labelled correctly instead of assumed annotated.
+  site_class_lookup <- list()
+  classes_path <- file.path(params$sashimi_dir, "site_classes.tsv")
+  if (file.exists(classes_path)) {
+    cls <- tryCatch(read.delim(classes_path, stringsAsFactors = FALSE),
+                    error = function(e) NULL)
+    if (!is.null(cls) && nrow(cls) > 0) {
+      for (i in seq_len(nrow(cls))) {
+        site_class_lookup[[paste0(cls$event_type[i], "|", cls$rank[i])]] <- cls$site_class[i]
+      }
+    }
+  }
+  pdf_event_type <- event_from_path(sashimi_pdfs)
+  pdf_rank <- suppressWarnings(as.integer(sub("^([0-9]+)_.*$", "\\1", basename(sashimi_pdfs))))
+  pdf_site_class <- vapply(seq_along(sashimi_pdfs), function(i) {
+    value <- site_class_lookup[[paste0(pdf_event_type[i], "|", pdf_rank[i])]]
+    if (is.null(value) || is.na(value) || !nzchar(value)) "annotated" else value
+  }, character(1))
+
   sashimi_table <- data.frame(
     file = basename(sashimi_pdfs),
-    event_type = event_from_path(sashimi_pdfs),
+    event_type = pdf_event_type,
     gene = extract_gene_symbol(basename(sashimi_pdfs)),
-    # rmats2sashimiplot cannot draw unannotated splice sites, so
-    # filter_rmats_for_sashimi.py excludes de novo events upstream and every
-    # generated plot is annotated. The column keeps the browser contract ready
-    # for a per-class split if plotting ever supports de novo sites.
-    site_class = "annotated",
+    site_class = pdf_site_class,
     data_uri = sashimi_data_uris,
     mime = ifelse(grepl("^data:image/png", sashimi_data_uris), "image/png", "application/pdf"),
     stringsAsFactors = FALSE

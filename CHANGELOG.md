@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (one shared sashimi payload, filtered client-side by `site_class`).
 - Volcano panels draw all significant events and subsample the
   non-significant background (20,000 points, seed 1); `-log10(FDR)` is capped
-  at 50 so the priority score cannot saturate on underflowed `--cstat` p-values.
+  at 300 so the priority score cannot saturate on underflowed `--cstat`
+  p-values. The cap matches `filter_rmats_for_sashimi.py` (FDR clamped at
+  1e-300), so the report ranking and the sashimi top-N agree.
 
 ### Added (report)
 - `report_min_reads` param (default 20): minimum junction reads (IJC+SJC per
@@ -46,9 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never coverage-filtered. The panel summary gains a `Significant_min_reads`
   column, saturated priority scores are tie-broken by the weakest group's
   coverage, and the PSI PCA event pool applies the same coverage filter.
-- `sashimi_index.tsv` carries a `site_class` column (always `annotated` today:
-  `filter_rmats_for_sashimi.py` excludes de novo events because
-  `rmats2sashimiplot` cannot draw unannotated splice sites).
+- `sashimi_index.tsv` carries a `site_class` column (`annotated`/`de_novo`),
+  sourced from the SASHIMI_PLOTS `site_classes.tsv` manifest. De novo
+  (unannotated) splice-site events are kept and plotted — `rmats2sashimiplot`
+  can draw them from rMATS 4.3 coordinates — and were previously mislabelled as
+  `annotated` in the index and the report browser.
 - Report tabs renamed to Annotated/De novo **splice sites** with a per-panel
   definition note: the class reflects splice-site novelty only, so
   novel-junction events with known splice sites stay in the annotated tab.

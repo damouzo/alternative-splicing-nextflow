@@ -536,9 +536,10 @@ offline with no companion files. The vector PDFs are published inside the
 deliverables folder under
 `deliverables/contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/` and indexed
 by `deliverables/contrasts/<comparison_id>/plots/sashimi/sashimi_index.tsv`
-(relative `pdf_path`; the `site_class` column is `annotated` for every row —
-`filter_rmats_for_sashimi.py` excludes de novo events because
-`rmats2sashimiplot` cannot draw unannotated splice sites). If the report
+(relative `pdf_path`; the `site_class` column is `annotated` or `de_novo` per
+event, taken from the SASHIMI_PLOTS manifest `site_classes.tsv` — de novo
+events are kept and plotted because `rmats2sashimiplot` can draw them from
+rMATS 4.3 coordinates). If the report
 container has no `pdftoppm`, sashimi PDFs fall back to being embedded directly
 (functional, but heavier).
 

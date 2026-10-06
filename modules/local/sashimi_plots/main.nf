@@ -67,6 +67,12 @@ process SASHIMI_PLOTS {
 
     mkdir -p sashimi_out
 
+    # Carry the per-event splice-site class next to the plots so the report and
+    # the PDF index can label de novo events correctly (rank == PDF <rank> prefix).
+    if [ -f filtered_events/site_classes.tsv ]; then
+        cp filtered_events/site_classes.tsv sashimi_out/site_classes.tsv
+    fi
+
     # Resolve rmats2sashimiplot executable across image layouts
     SASHIMI_BIN=\$(command -v rmats2sashimiplot || true)
     if [ -z "\$SASHIMI_BIN" ] && [ -x /rmats2sashimiplot/conda_env/bin/rmats2sashimiplot ]; then

@@ -47,7 +47,8 @@ workflow PEGASAS_ANALYSIS {
     PEGASAS_PATHWAY(
         PEGASAS_PREPARE.out.gene_exp,
         PEGASAS_PREPARE.out.group_info,
-        ch_gmt
+        ch_gmt,
+        file("${projectDir}/containers/pegasas")
     )
 
     // === PER CONTRAST: PSI matrix + 2-group order ===
