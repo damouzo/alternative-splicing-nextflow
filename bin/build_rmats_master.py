@@ -70,9 +70,6 @@ STANDARD_COLUMNS = [
     'is_significant', 'significance_rule', 'source_file',
 ]
 
-# Legacy SE-shaped coordinate columns (contract 2.0.x): only SE rows carry
-# values, every other event type leaves them empty. Superseded by
-# event_locus/event_coords; kept for backward compatibility until 3.0.0.
 NATIVE_COLUMNS = [
     # rMATS-native IncLevelDifference (group1 - group2). Kept verbatim so the
     # sign flip into group2 - group1 is auditable; all other columns use the
@@ -84,8 +81,7 @@ NATIVE_COLUMNS = [
     'event_class',
     # canonical assembly chromosome (IGV-able); false for scaffolds/MT.
     'is_igv_supported',
-    'exon_start_0base', 'exon_end', 'upstream_es', 'upstream_ee',
-    'downstream_es', 'downstream_ee', 'ijc_sample_1_total', 'sjc_sample_1_total',
+    'ijc_sample_1_total', 'sjc_sample_1_total',
     'ijc_sample_2_total', 'sjc_sample_2_total', 'inc_form_len', 'skip_form_len',
 ]
 
@@ -284,7 +280,8 @@ def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff,
                 'feature_type': event_type,
                 'feature_id': row.get('ID', ''),
                 'gene_id': norm_gene_id(row.get('GeneID')),
-                'gene_symbol': (row.get('geneSymbol') or '').strip('"'),
+                'gene_symbol': '' if (row.get('geneSymbol') or '').strip('"') in ('', 'NA')
+                               else (row.get('geneSymbol') or '').strip('"'),
                 'group1_name': group1_name,
                 'group2_name': group2_name,
                 'effect_size_direction': 'group2_minus_group1',
@@ -330,18 +327,6 @@ def iter_jc_rows(comparison_id, rmats_dir, event_type, fdr_cutoff, dpsi_cutoff,
                 normalize_chrom(row.get('chr'))) else 'false'
             out['event_locus'], out['event_coords'] = build_event_locus(
                 event_type, row, full)
-            if 'exonStart_0base' in full:
-                out['exon_start_0base'] = num(row.get('exonStart_0base'))
-            if 'exonEnd' in full:
-                out['exon_end'] = num(row.get('exonEnd'))
-            if 'upstreamES' in full:
-                out['upstream_es'] = num(row.get('upstreamES'))
-            if 'upstreamEE' in full:
-                out['upstream_ee'] = num(row.get('upstreamEE'))
-            if 'downstreamES' in full:
-                out['downstream_es'] = num(row.get('downstreamES'))
-            if 'downstreamEE' in full:
-                out['downstream_ee'] = num(row.get('downstreamEE'))
             if 'IJC_SAMPLE_1' in full:
                 count = parse_count_vector(row.get('IJC_SAMPLE_1'))
                 out['ijc_sample_1_total'] = '' if count is None else count
@@ -366,6 +351,13 @@ def percentile_sorted(values, q):
         return ''
     idx = int(round(q * (len(values) - 1)))
     return values[idx]
+
+
+def sort_number(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def main():
@@ -394,6 +386,7 @@ def main():
     n_total = 0
     n_significant = 0
     summary_rows = []
+    sig_rows = []
 
     with open(master_path, 'w', encoding='utf-8', newline='') as master_handle, \
          open(sig_path, 'w', encoding='utf-8', newline='') as sig_handle:
@@ -420,7 +413,7 @@ def main():
                 if row['is_novel_splice_site'] == 'true':
                     type_novel += 1
                 if is_significant:
-                    sig_writer.writerow(row)
+                    sig_rows.append(row)
                     type_sig += 1
                 try:
                     dpsi_abs.append(abs(float(row['inc_level_difference'])))
@@ -441,6 +434,13 @@ def main():
             })
             n_total += type_total
             n_significant += type_sig
+
+        # significant.tsv is ordered for reading: most significant first, ties by
+        # strongest effect size.
+        sig_rows.sort(key=lambda row: (sort_number(row.get('padj'), float('inf')),
+                                       -abs(sort_number(row.get('effect_size'), 0.0))))
+        for row in sig_rows:
+            sig_writer.writerow(row)
 
     if n_total == 0:
         print('[build_rmats_master] no events found in %s' % args.rmats_dir,

@@ -32,6 +32,7 @@ Stdlib only.
 import argparse
 import csv
 import os
+import re
 import sys
 
 DEFAULT_REQUIRED_COLUMNS = ['comparison_id', 'tool', 'feature_type', 'feature_id',
@@ -51,6 +52,7 @@ class Report:
         self.errors = []
         self.warnings = []
         self.infos = []
+        self.notes = []  # [(comparison_id, text)]
 
     def error(self, message):
         self.errors.append(message)
@@ -60,6 +62,9 @@ class Report:
 
     def info(self, message):
         self.infos.append(message)
+
+    def note(self, comparison_id, message):
+        self.notes.append((comparison_id, message))
 
     @property
     def exit_code(self):
@@ -233,7 +238,7 @@ def check_leafcutter_master(deliverables, comparison_id, report, required_column
     for row in iter_tsv(master):
         if row.get('status') == 'Success' and row.get('padj') != '':
             try:
-                if float(row['padj']) < fdr_cutoff:
+                if float(row['padj']) <= fdr_cutoff:
                     n_ok_with_p += 1
             except (TypeError, ValueError):
                 pass
@@ -256,7 +261,7 @@ def check_leafcutter_master(deliverables, comparison_id, report, required_column
 
 
 def check_isar_master(deliverables, comparison_id, report, required_columns,
-                      effective_method=''):
+                      effective_method='', strict=False):
     master = os.path.join(tables_dir(deliverables, comparison_id),
                           '%s.isar.master.tsv' % comparison_id)
     if not os.path.isfile(master):
@@ -267,6 +272,7 @@ def check_isar_master(deliverables, comparison_id, report, required_columns,
     dmax = 0.0
     n_sig = 0
     padj_methods = set()
+    non_ensg_gene_id = 0
     for row in iter_tsv(master):
         try:
             q_values.append(float(row.get('padj')))
@@ -281,6 +287,15 @@ def check_isar_master(deliverables, comparison_id, report, required_columns,
         value = (row.get('padj_method') or '').strip()
         if value:
             padj_methods.add(value.lower())
+        gene_id = (row.get('gene_id') or '').strip()
+        # Contract >= 2.4.0: gene_id is an Ensembl ID or empty; never a symbol.
+        if gene_id and not gene_id.startswith('ENS'):
+            non_ensg_gene_id += 1
+
+    if non_ensg_gene_id:
+        message = ('ISAR %s: %d rows have a non-Ensembl gene_id (e.g. a symbol); '
+                   'gene_id must be ENSG or empty' % (comparison_id, non_ensg_gene_id))
+        report.error(message) if strict else report.warn(message)
 
     if q_values and n_sig == 0:
         report.warn(
@@ -326,54 +341,93 @@ def check_cross_tool(deliverables, comparison_id, report, enabled_tools):
             'the overlap/master: %s' % (comparison_id, ', '.join(empty)))
 
 
-def check_sign_consistency(deliverables, comparison_id, report):
-    """WARN on gene-level sign disagreement between rMATS and LeafCutter.
+def check_leafcutter_summary(deliverables, comparison_id, report):
+    """Summary must describe real introns/clusters, not synthetic rows.
 
-    Both tools now report effect_size = group2 - group1, so a gene called by
-    both should agree in sign on its strongest hit.
+    The master no longer carries synthetic cluster-only rows, so n_introns must
+    equal the number of rows with a non-empty feature_id and n_clusters_success
+    must be a true cluster count (<= n_clusters).
     """
-    dir_path = tables_dir(deliverables, comparison_id)
-
-    def best_signs(path):
-        # symbol -> (max_abs_effect, sign): keep the strongest hit per gene, the
-        # masters are not ordered by effect size.
-        signs = {}
-        if not os.path.isfile(path):
-            return signs
-        for row in iter_tsv(path):
-            if row.get('is_significant') != 'true':
-                continue
-            try:
-                effect = float(row.get('effect_size'))
-            except (TypeError, ValueError):
-                continue
-            if effect == 0:
-                continue
-            for symbol in str(row.get('gene_symbol') or '').split(','):
-                symbol = symbol.strip().upper()
-                if not symbol or symbol == 'NA':
-                    continue
-                previous = signs.get(symbol)
-                if previous is None or abs(effect) > previous[0]:
-                    signs[symbol] = (abs(effect), 1 if effect > 0 else -1)
-        return {symbol: sign for symbol, (_abs, sign) in signs.items()}
-
-    rmats = best_signs(os.path.join(dir_path, '%s.rmats.master.tsv' % comparison_id))
-    leafcutter = best_signs(os.path.join(dir_path, '%s.leafcutter.master.tsv' % comparison_id))
-    shared = set(rmats) & set(leafcutter)
-    if not shared:
+    master = os.path.join(tables_dir(deliverables, comparison_id),
+                          '%s.leafcutter.master.tsv' % comparison_id)
+    summary_path = os.path.join(tables_dir(deliverables, comparison_id),
+                                '%s.leafcutter.summary.tsv' % comparison_id)
+    if not os.path.isfile(summary_path) or not os.path.isfile(master):
         return
-    mismatches = [g for g in shared if rmats[g] != leafcutter[g]]
-    if mismatches:
-        report.warn(
-            'sign disagreement between rMATS and LeafCutter for %d/%d shared '
-            'genes (%s) — check effect_size direction'
-            % (len(mismatches), len(shared), ', '.join(sorted(mismatches)[:5])))
+    stats = {}
+    for row in iter_tsv(summary_path):
+        stats[row.get('statistic', '')] = row.get('value', '')
+    n_introns_master = 0
+    empty_feature = 0
+    for row in iter_tsv(master):
+        if (row.get('feature_id') or '').strip():
+            n_introns_master += 1
+        else:
+            empty_feature += 1
+    if empty_feature:
+        report.error(
+            'LeafCutter %s: %d master rows with empty feature_id — synthetic '
+            'cluster rows must not be published in the master'
+            % (comparison_id, empty_feature))
+    try:
+        if int(float(stats.get('n_introns') or 0)) != n_introns_master:
+            report.error(
+                'LeafCutter %s: summary n_introns (%s) != master intron rows (%d)'
+                % (comparison_id, stats.get('n_introns'), n_introns_master))
+    except (TypeError, ValueError):
+        pass
+    try:
+        if int(float(stats.get('n_clusters_success') or 0)) > int(float(stats.get('n_clusters') or 0)):
+            report.error(
+                'LeafCutter %s: n_clusters_success (%s) > n_clusters (%s) — '
+                'the success count must be a cluster count'
+                % (comparison_id, stats.get('n_clusters_success'), stats.get('n_clusters')))
+    except (TypeError, ValueError):
+        pass
+
+
+def check_upset_membership(deliverables, comparison_id, report):
+    """Compare the UpSet membership TSV against cross_tool.master.tsv.
+
+    The report builds the membership from its own gene sets (same data frame as
+    the plot), so small differences from the cross-tool master are expected and
+    documented; only WARN, never fail.
+    """
+    path = os.path.join(deliverables, 'contrasts', comparison_id, 'plots',
+                        'cross_tool_overlap', 'cross_tool_upset_membership.tsv')
+    if not os.path.isfile(path):
+        report.warn('cross_tool_upset_membership.tsv missing for %s' % comparison_id)
+        return
+    rows = list(iter_tsv(path))
+    if not rows:
+        return
+    meta_cols = {'gene_id', 'gene_symbol', 'n_tools', 'intersection'}
+    tools = [c for c in rows[0].keys() if c not in meta_cols]
+    cross = os.path.join(tables_dir(deliverables, comparison_id),
+                         '%s.cross_tool.master.tsv' % comparison_id)
+    expected = {}
+    if os.path.isfile(cross):
+        for row in iter_tsv(cross):
+            try:
+                if float(row.get('n_significant_features') or 0) > 0:
+                    tool = row.get('tool', '')
+                    expected[tool] = expected.get(tool, 0) + 1
+            except (TypeError, ValueError):
+                pass
+    tool_key = {'rMATS': 'rmats', 'MAJIQ': 'majiq', 'ISAR': 'isar', 'LeafCutter': 'leafcutter'}
+    for col in tools:
+        got = sum(1 for r in rows if r.get(col) == '1')
+        key = tool_key.get(col, col.lower())
+        if key in expected and got != expected[key]:
+            report.warn(
+                'UpSet membership %s: column %s has %d genes but cross_tool.master '
+                'has %d for this tool (UpSet filters may explain the difference)'
+                % (comparison_id, col, got, expected[key]))
 
 
 def check_sashimi_index(deliverables, comparison_id, report):
-    path = os.path.join(deliverables, 'contrasts', comparison_id, 'plots', 'sashimi',
-                        'sashimi_index.tsv')
+    path = os.path.join(deliverables, 'contrasts', comparison_id, 'plots', 'rmats',
+                        'sashimi', 'sashimi_index.tsv')
     if not os.path.isfile(path):
         report.error('sashimi_index.tsv missing for %s (sashimi enabled)' % comparison_id)
         return
@@ -397,6 +451,62 @@ def check_sashimi_index(deliverables, comparison_id, report):
         report.error(
             'sashimi_index.tsv %s: %d indexed PDFs missing or not deliverables-relative: %s'
             % (comparison_id, len(missing_pdfs), missing_pdfs[0]))
+
+
+def check_legacy_sashimi_path(deliverables, comparison_id, report):
+    """Warn about the pre-2.3.0 plots/sashimi/ tree left in a reused outdir."""
+    legacy_dir = os.path.join(deliverables, 'contrasts', comparison_id, 'plots', 'sashimi')
+    if os.path.isdir(legacy_dir):
+        report.warn(
+            'legacy sashimi deliverables still present for %s at contrasts/%s/plots/sashimi/; '
+            'remove before shipping (sashimi now lives under plots/rmats/sashimi/)'
+            % (comparison_id, comparison_id))
+
+
+# /Type /Page objects in a PDF; the preceding blank page of an UpSetR plot shows
+# up as an extra Page object. Robust for the pdf()/ggsave output used here.
+PDF_PAGE_RE = re.compile(rb'/Type\s*/Page[^s]')
+
+
+def count_pdf_pages(path):
+    try:
+        with open(path, 'rb') as handle:
+            return len(PDF_PAGE_RE.findall(handle.read()))
+    except OSError:
+        return -1
+
+
+def check_plot_pdf_pages(deliverables, comparison_id, report):
+    """Every deliverable plot is a single-page PDF. A leading blank page (e.g.
+    UpSetR opening a page at construction time) silently ships as a 2-page
+    deliverable, so assert one page per plot. Sashimi event PDFs are multi-panel
+    by design and excluded."""
+    plots_root = os.path.join(deliverables, 'contrasts', comparison_id, 'plots')
+    if not os.path.isdir(plots_root):
+        report.warn('plots/ dir missing for %s' % comparison_id)
+        return
+    offenders = []
+    unreadable = []
+    for dirpath, _dirnames, filenames in os.walk(plots_root):
+        rel_parts = os.path.relpath(dirpath, plots_root).replace('\\', '/').split(os.sep)
+        if 'sashimi' in rel_parts:
+            continue
+        for name in filenames:
+            if not name.endswith('.pdf'):
+                continue
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, plots_root)
+            pages = count_pdf_pages(path)
+            if pages < 0:
+                unreadable.append(rel)
+            elif pages != 1:
+                offenders.append('%s (%d pages)' % (rel, pages))
+    if offenders:
+        report.error('multi-page deliverable plot(s) for %s: %s'
+                     % (comparison_id, ', '.join(offenders)))
+    if unreadable:
+        report.warn('could not read page count for %s: %s'
+                    % (comparison_id, ', '.join(unreadable)))
 
 
 def parse_version_tuple(text):
@@ -449,6 +559,60 @@ def parse_manifest_yaml(path):
                     value = [v for v in (v.strip() for v in value[1:-1].split(',')) if v]
                 result.setdefault(key, value)
     return result
+
+
+def parse_known_issues(path):
+    """[(tool, status, note)] from the `known_issues:` block of a manifest."""
+    items = []
+    if not path or not os.path.isfile(path):
+        return items
+    current = None
+    in_block = False
+    with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped == 'known_issues:':
+                in_block = True
+                continue
+            if not in_block:
+                continue
+            if stripped.startswith('- tool:'):
+                if current:
+                    items.append(current)
+                current = {'tool': stripped.split(':', 1)[1].strip().strip('"\''),
+                           'status': '', 'note': ''}
+            elif stripped.startswith('status:') and current is not None:
+                current['status'] = stripped.split(':', 1)[1].strip().strip('"\'')
+            elif stripped.startswith('note:') and current is not None:
+                current['note'] = stripped.split(':', 1)[1].strip().strip('"\'')
+            elif stripped and not line.startswith(' ') and not stripped.startswith('-'):
+                items.append(current) if current else None
+                current = None
+                in_block = False
+    if current:
+        items.append(current)
+    return items
+
+
+def parse_list_block(path, key):
+    """Bare list items ('- ...') under a top-level `key:` in a manifest."""
+    out = []
+    if not path or not os.path.isfile(path):
+        return out
+    in_block = False
+    with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped == key + ':':
+                in_block = True
+                continue
+            if not in_block:
+                continue
+            if stripped.startswith('- '):
+                out.append(stripped[2:].strip().strip('"\''))
+            elif stripped and not line.startswith(' '):
+                break
+    return out
 
 
 def main():
@@ -573,13 +737,31 @@ def main():
         if 'leafcutter' in enabled_tools:
             check_leafcutter_master(deliverables, comparison_id, report,
                                     required_columns, fdr_cutoff, dpsi_cutoff)
+            check_leafcutter_summary(deliverables, comparison_id, report)
         if 'isar' in enabled_tools:
             check_isar_master(deliverables, comparison_id, report,
-                              required_columns, effective_method)
+                              required_columns, effective_method,
+                              strict=contract_at_least(manifest, (2, 4, 0)))
         check_cross_tool(deliverables, comparison_id, report, enabled_tools)
-        check_sign_consistency(deliverables, comparison_id, report)
+        check_upset_membership(deliverables, comparison_id, report)
+        check_plot_pdf_pages(deliverables, comparison_id, report)
+        check_legacy_sashimi_path(deliverables, comparison_id, report)
         if 'sashimi' in enabled_tools:
             check_sashimi_index(deliverables, comparison_id, report)
+
+        # Per-contrast limitations: run-wide known_issues + this contrast's
+        # sample-size caveats. qa_report.txt spans every contrast, so the notes
+        # are grouped by comparison_id.
+        issues = parse_known_issues(run_manifest)
+        for issue in issues:
+            if issue.get('status') in ('', 'ok'):
+                continue
+            report.note(comparison_id, '%s [%s]: %s'
+                        % (issue.get('tool', '?'), issue.get('status', '?'),
+                           issue.get('note', '')))
+        for caveat in (parse_list_block(contrast_manifest, 'sample_size_caveats') +
+                       parse_list_block(contrast_manifest, 'sample_size_notes')):
+            report.note(comparison_id, caveat)
 
     _finish(report, args.report_file)
     sys.exit(report.exit_code)
@@ -598,6 +780,16 @@ def _finish(report, report_file):
             handle.write('\n')
             for message in report.infos:
                 handle.write('[INFO] %s\n' % message)
+        if report.notes:
+            handle.write('\n')
+            handle.write('Notas y limitaciones (por contraste)\n')
+            handle.write('====================================\n')
+            current = None
+            for comparison_id, message in report.notes:
+                if comparison_id != current:
+                    handle.write('\n[%s]\n' % comparison_id)
+                    current = comparison_id
+                handle.write('  - %s\n' % message)
     print('errors: %d | warnings: %d' % (len(report.errors), len(report.warnings)))
 
 

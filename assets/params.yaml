@@ -36,7 +36,7 @@ run_isar: true
 # - run_sashimi    : Sashimi plots for the top rMATS events (requires run_rmats: true)
 # - run_pegasas    : pathway activity x PSI correlation (requires run_rmats: true
 #                    and --salmon_merged_tpm pointing to the nf-core/rnaseq gene TPM file)
-# - run_de_as      : DE + AS dual-hit integration in the report (requires --de_results)
+# - run_de_as      : DE + AS dual-hit integration in the report (requires --dge_dirs)
 run_leafcutter: false
 run_sashimi:    false
 run_pegasas:    false
@@ -49,9 +49,13 @@ run_de_as:      false
 # (results/star_salmon/salmon.merged.gene_tpm.tsv)
 salmon_merged_tpm: /path/to/nfcore_rnaseq/results/star_salmon/salmon.merged.gene_tpm.tsv
 
-# DE + AS integration — directory of DESeq2 results (one subdir per DGE
-# comparison, each containing a *_DESeq2_results.csv), e.g. from bulkAnnex.
-de_results: /path/to/bulk/de/results/dge
+# DE + AS integration — one or more directories of DESeq2 results (one subdir per
+# DGE comparison, each containing a *_DESeq2_results.csv), e.g. from bulkAnnex.
+# Each contrast is matched to its DGE subdir by name; add de_results_map entries
+# for names that do not follow the reverse group pattern.
+dge_dirs:
+  - /path/to/bulk/de/results/dge
+  - /path/to/bulk/de/results_SF3B1/dge
 
 # MAJIQ license key path.
 # If MAJIQ_LICENSE_FILE is exported in your environment,

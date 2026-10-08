@@ -146,7 +146,7 @@ results/
 │   │       ├── control_vs_treatment_splicing_report.html
 │   │       ├── contrast_manifest.yaml
 │   │       ├── tables/             # <id>.<tool>.{master,significant,summary}.tsv + cross_tool.*
-│   │       └── plots/sashimi/      # sashimi_index.tsv + <EVENT_TYPE>/*.pdf
+│   │       └── plots/              # PDF figures per tool (rmats/, majiq/, isar/, ...)
 │   └── cross_contrast/pegasas/     # summary, heatmap, UpSet
 └── raw/                            # native per-tool output (audit-only, not shipped)
     ├── rmats/control_vs_treatment/...
@@ -511,9 +511,16 @@ nextflow run main.nf -profile docker \
 
 Overlay DESeq2/edgeR results on the splicing report as a dual-hit volcano plot.
 
+DGE results are read from one or more directories. Each immediate subdirectory is a DGE
+comparison holding a `*_DESeq2_results.csv` (columns: `gene_name`, `log2FoldChange`,
+`padj`). The pipeline comparison id is matched to a subdirectory by the reverse group name;
+`de_results_map` provides explicit overrides when the names do not follow that pattern.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--de_results` | file | `null` | TSV with DE results (columns: gene_name, log2FoldChange, padj) |
+| `--dge_dirs` | list/string | `[]` | DGE directories to search. In YAML: `dge_dirs: [res/dge, res_SF3B1/dge]`; on the CLI a comma-separated string is also accepted |
+| `--de_results` | file | `null` | Deprecated single-directory alias (appended to `dge_dirs`) |
+| `--de_results_map` | map | `{}` | Explicit `comparison_id -> DGE subdirectory` overrides |
 
 ### LeafCutter
 

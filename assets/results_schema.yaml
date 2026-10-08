@@ -10,7 +10,7 @@
 #   run_info/      run metadata (run_manifest.yaml, contrast manifests), not shipped
 # All paths *inside* deliverables/ (sashimi_index.tsv) are relative to the
 # deliverables/ root, so the folder survives renaming/moving.
-schema_version: 2.2.0
+schema_version: 2.4.0
 
 shippable_root: deliverables/
 
@@ -26,8 +26,16 @@ shippable:
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.<tool>.summary.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.cross_tool.master.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.cross_tool.gene_summary.tsv
-  - deliverables/contrasts/<comparison_id>/plots/sashimi/sashimi_index.tsv
-  - deliverables/contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/<plot>.pdf
+  - deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv
+  - deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/<plot>.pdf
+  - deliverables/contrasts/<comparison_id>/plots/rmats/{Volcano,PCA,Coverage,ORA}/*.pdf
+  - deliverables/contrasts/<comparison_id>/plots/majiq/*.pdf
+  - deliverables/contrasts/<comparison_id>/plots/isar/*.pdf
+  - deliverables/contrasts/<comparison_id>/plots/leafcutter/*.pdf
+  - deliverables/contrasts/<comparison_id>/plots/pegasas/*.pdf
+  - deliverables/contrasts/<comparison_id>/plots/cross_tool_overlap/*.pdf
+  - deliverables/contrasts/<comparison_id>/plots/cross_tool_overlap/*.tsv
+  - deliverables/contrasts/<comparison_id>/plots/de_as/*.pdf
   - deliverables/cross_contrast/pegasas/
 
 # Audit evidence. Not part of the shipment.
@@ -108,7 +116,7 @@ cross_tool_gene_columns:
 # Paths that must stay relative (never absolute, never pointing at raw/) inside
 # the shippable layer.
 relative_paths:
-  - deliverables/contrasts/<comparison_id>/plots/sashimi/sashimi_index.tsv: pdf_path
+  - deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv: pdf_path
   - deliverables/contrasts/<comparison_id>/contrast_manifest.yaml: all entries
 
 # padj_method vocabulary.
@@ -128,14 +136,3 @@ padj_methods:
 rmats_location_columns:
   - event_locus
   - event_coords
-
-# Legacy columns following the SE event shape. Only SE rows are populated;
-# non-SE event types leave them empty. Superseded by event_locus/event_coords;
-# scheduled for removal in 3.0.0.
-rmats_legacy_coordinate_columns:
-  - exon_start_0base
-  - exon_end
-  - upstream_es
-  - upstream_ee
-  - downstream_es
-  - downstream_ee

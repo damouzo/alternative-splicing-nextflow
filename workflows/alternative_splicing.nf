@@ -37,6 +37,7 @@ workflow ALTERNATIVE_SPLICING {
     def no_majiq_dir      = file("${workflow.projectDir}/assets/empty/NO_MAJIQ")
     def no_isar_dir       = file("${workflow.projectDir}/assets/empty/NO_ISAR")
     def no_sashimi_dir    = file("${workflow.projectDir}/assets/empty/NO_SASHIMI")
+    def no_sashimi_index  = file("${workflow.projectDir}/assets/empty/NO_SASHIMI_INDEX")
     def no_pegasas_dir    = file("${workflow.projectDir}/assets/empty/NO_PEGASAS")
     def no_leafcutter_dir = file("${workflow.projectDir}/assets/empty/NO_LEAFCUTTER")
 
@@ -200,12 +201,33 @@ workflow ALTERNATIVE_SPLICING {
     }
 
     /*
+     * MODULE: Sashimi PDF index
+     * Built before the report so the report publishes it inside plots/, the
+     * single-owned output tree. Publishing the index separately would be wiped
+     * when RENDER_REPORT re-publishes the parent plots/ directory.
+     */
+    ch_sashimi_index_for_report = channel.empty()
+    if (params.run_sashimi && params.run_rmats) {
+        SASHIMI_INDEX(
+            ch_sashimi_for_report,
+            file("${projectDir}/bin/build_sashimi_index.py")
+        )
+        ch_sashimi_index_for_report = SASHIMI_INDEX.out.index
+    } else {
+        ch_ids_split.sashimi
+            .map { comp_id -> [comp_id, no_sashimi_index] }
+            .set { ch_sashimi_index_for_report }
+    }
+
+    ch_sashimi_pair = ch_sashimi_for_report.join(ch_sashimi_index_for_report, by: 0)
+
+    /*
      * MODULE: Render per-comparison HTML report
      */
     ch_rmats_for_report
         .join(ch_majiq_for_report,      by: 0)
         .join(ch_isar_for_report,       by: 0)
-        .join(ch_sashimi_for_report,    by: 0)
+        .join(ch_sashimi_pair,          by: 0)
         .join(ch_pegasas_for_report,    by: 0)
         .join(ch_leafcutter_for_report, by: 0)
         .join(ch_sample_ids_for_report, by: 0)
@@ -213,12 +235,13 @@ workflow ALTERNATIVE_SPLICING {
         // report legends so plots read Healthy vs Patient, not Group1 vs Group2.
         .join(ch_comp_names, by: 0)
         .join(ch_isar_method, by: 0)
-        .map { comp_id, rdir, mdir, idir, sdir, pdir, ldir, g1_ids, g2_ids, g1_name, g2_name, isar_method ->
+        .map { comp_id, rdir, mdir, idir, sdir, sidx, pdir, ldir, g1_ids, g2_ids, g1_name, g2_name, isar_method ->
             [comp_id,
              rdir.name, rdir,
              mdir.name, mdir,
              idir.name, idir,
              sdir.name, sdir,
+             sidx,
              pdir.name, pdir,
              ldir.name, ldir,
              g1_ids, g2_ids,
@@ -366,6 +389,7 @@ fdr_cutoff:             params.report_fdr_cutoff,
                         fdr_cutoff:  params.report_fdr_cutoff,
                         dpsi_cutoff: params.report_dpsi_cutoff,
                         effective_test_method: method,
+                        gtf: params.gtf,
                         group1_name: g1,
                         group2_name: g2
                     ])]
@@ -400,15 +424,6 @@ fdr_cutoff:             params.report_fdr_cutoff,
         )
 
         EXPORT_TOOL_MASTERS(ch_export_inputs, file("${projectDir}/bin/export_tool_masters.py"))
-
-        // ---- Fase D: sashimi index ----
-        ch_sashimi_index_input = ch_sashimi_for_report
-            .filter { comp_id, d -> d.name != 'NO_SASHIMI' }
-            .map { comp_id, d -> [comp_id, d] }
-        SASHIMI_INDEX(
-            ch_sashimi_index_input,
-            file("${projectDir}/bin/build_sashimi_index.py")
-        )
 
         // ---- Fase B/E: cross-tool gene master ----
         ch_master_files = channel.empty()
@@ -481,8 +496,10 @@ fdr_cutoff:             params.report_fdr_cutoff,
             .mix(EXPORT_METADATA.out.versions)
             .mix(RMATS_MASTER.out.versions)
             .mix(EXPORT_TOOL_MASTERS.out.versions)
-            .mix(SASHIMI_INDEX.out.versions)
             .mix(CONTRAST_MANIFEST.out.versions)
+        if (sashimi_enabled) {
+            ch_versions = ch_versions.mix(SASHIMI_INDEX.out.versions)
+        }
         if (params.build_cross_tool_master && params.run_rmats) {
             ch_versions = ch_versions.mix(CROSS_TOOL_MASTER.out.versions)
         }

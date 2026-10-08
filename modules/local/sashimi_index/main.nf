@@ -4,15 +4,15 @@
  * ========================================================================================
  *  Index entries point at the published outdir paths so the table stays valid
  *  after the run finishes (addresses PDF discoverability).
+ *
+ *  No publishDir: the index is consumed by RENDER_REPORT, which publishes it
+ *  inside its single-owned plots/ tree. Publishing it separately would be wiped
+ *  when the report re-publishes the parent plots/ directory.
  */
 
 process SASHIMI_INDEX {
     tag "$comparison_id"
     label 'process_low'
-
-    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/plots/sashimi",
-        mode: params.publish_dir_mode,
-        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
 
     input:
     tuple val(comparison_id), path(sashimi_dir)

@@ -2,10 +2,10 @@
 """
 Build the navigable sashimi PDF index (shippable deliverable):
 
-  deliverables/contrasts/<comparison_id>/plots/sashimi/sashimi_index.tsv
+  deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv
 
 One row per final PDF. The final PDFs are published next to this index under
-deliverables/contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/<file>.pdf,
+deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/<file>.pdf,
 and pdf_path is stored relative to the deliverables/ root (no absolute cluster
 paths, no references to the audit-only raw/ layer), so the table stays valid
 wherever the shipped deliverables/ folder is unpacked or renamed.
@@ -33,6 +33,11 @@ def parse_pdf_name(name):
     rank = int(match.group(1))
     gene = match.group(2)
     return rank, gene
+
+
+def _has_pdfs(directory):
+    return os.path.isdir(directory) and any(
+        name.endswith('.pdf') for name in os.listdir(directory))
 
 
 def load_site_classes(sashimi_root):
@@ -68,17 +73,22 @@ def main():
     site_classes = load_site_classes(staged_root)
     rows = []
     for event_type in EVENT_TYPES:
+        # rmats2sashimiplot versions differ: some write into <ETYPE>/Sashimi_plot/,
+        # others straight into <ETYPE>/. Mirror the copy in RENDER_REPORT and
+        # SASHIMI_PLOTS so the index always lists the PDFs that get published.
         plot_dir = os.path.join(staged_root, event_type, 'Sashimi_plot')
-        if not os.path.isdir(plot_dir):
+        if not _has_pdfs(plot_dir):
+            plot_dir = os.path.join(staged_root, event_type)
+        if not _has_pdfs(plot_dir):
             continue
         for name in sorted(os.listdir(plot_dir)):
             if not name.endswith('.pdf'):
                 continue
             rank, gene = parse_pdf_name(name)
             # Published layout, relative to the deliverables/ root:
-            #   contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/<file>.pdf
+            #   contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/<file>.pdf
             pdf_rel = '/'.join([
-                'contrasts', args.comparison_id, 'plots', 'sashimi',
+                'contrasts', args.comparison_id, 'plots', 'rmats', 'sashimi',
                 event_type, name,
             ])
             rows.append({

@@ -2,17 +2,9 @@ process SASHIMI_PLOTS {
     tag "$comparison_id"
     label 'process_medium'
 
-    // Final PDFs are a shipped deliverable. They are copied to the work-dir
-    // layout deliv/<EVENT_TYPE>/<file>.pdf so publishDir can remap them per
-    // file: saveAs is only invoked per file for file globs, never for a
-    // directory output (there it receives the top-level dir name).
-    publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}/plots/sashimi",
-        mode: params.publish_dir_mode,
-        saveAs: { f ->
-            def p = f.toString()
-            if (!p.startsWith('deliv/') || !p.endsWith('.pdf')) return null
-            p.substring('deliv/'.length())
-        }
+    // Final PDFs are a shipped deliverable, but RENDER_REPORT publishes them
+    // under its single-owned plots/ tree (a separate publishDir under plots/
+    // would be wiped when the report re-creates that directory on publish).
     // Intermediates are audit-only: publish the whole sashimi_out/ tree to raw/.
     publishDir "${params.outdir}/raw/${params.tool_ids.sashimi}/${comparison_id}",
         mode: params.publish_dir_mode,

@@ -191,7 +191,7 @@ def build_readme(pipeline):
     lines.append('  contrasts/<comparison_id>/    # one folder per comparison')
     lines.append('    <comparison_id>_splicing_report.html')
     lines.append('    tables/                     # <id>.<tool>.{master,significant,summary}.tsv')
-    lines.append('    plots/sashimi/              # sashimi_index.tsv + <EVENT_TYPE>/*.pdf')
+    lines.append('    plots/rmats/sashimi/        # sashimi_index.tsv + <EVENT_TYPE>/*.pdf')
     lines.append('  cross_contrast/pegasas/       # pathway summary, heatmap, UpSet')
     lines.append('```')
     lines.append('')
@@ -222,9 +222,7 @@ def build_readme(pipeline):
     lines.append('')
     lines.append('rMATS rows carry `event_locus` (`chr:start-end`, 1-based inclusive — paste')
     lines.append('it straight into IGV) and `event_coords` (native 0-based coordinates named')
-    lines.append('per event type, e.g. `long=…;short=…;flanking=…` for A5SS/A3SS). The legacy')
-    lines.append('`exon_start_0base…downstream_ee` columns follow the SE event shape and are')
-    lines.append('empty for non-SE event types; use `event_locus`/`event_coords` instead.')
+    lines.append('per event type, e.g. `long=…;short=…;flanking=…` for A5SS/A3SS).')
     lines.append('')
     lines.append('Prefer `cross_tool.gene_summary.tsv` for a quick gene list: one row per gene')
     lines.append('with the number of tools that called it significant.')
@@ -391,10 +389,10 @@ def build_contrast_manifest(comparison_id, group1_name, group2_name,
                 'contrasts', comparison_id, 'tables', name).replace(os.sep, '/')
 
     plots = {}
-    sashimi_index = os.path.join(cdir, 'plots', 'sashimi', 'sashimi_index.tsv')
+    sashimi_index = os.path.join(cdir, 'plots', 'rmats', 'sashimi', 'sashimi_index.tsv')
     if os.path.isfile(sashimi_index):
         plots['sashimi'] = {'index': os.path.join(
-            'contrasts', comparison_id, 'plots', 'sashimi',
+            'contrasts', comparison_id, 'plots', 'rmats', 'sashimi',
             'sashimi_index.tsv').replace(os.sep, '/')}
 
     cross_tool = {}

@@ -30,7 +30,10 @@ The pipeline does not migrate or delete outputs from a previous run/layout, and
 | `full`     | published                             | always published              |
 
 Sashimi final PDFs are always a shippable deliverable (they live under
-`deliverables/contrasts/<id>/plots/sashimi/`), independent of `publish_level`.
+`deliverables/contrasts/<id>/plots/rmats/sashimi/`), independent of `publish_level`.
+Every report plot is exported as a PDF under
+`deliverables/contrasts/<id>/plots/` (grouped per tool), so the figures exist as
+standalone files in addition to being embedded in the HTML.
 
 `--publish_raw=false` behaves like `core` for the `raw/` layer.
 
@@ -59,10 +62,21 @@ results/
 │   │       │   ├── <c>.pegasas.{master,significant,summary}.tsv    (when run_pegasas)
 │   │       │   ├── <c>.cross_tool.master.tsv                       (when build_cross_tool_master)
 │   │       │   └── <c>.cross_tool.gene_summary.tsv
-│   │       └── plots/
-│   │           └── sashimi/
-│   │               ├── sashimi_index.tsv                           (when run_sashimi)
-│   │               └── <EVENT_TYPE>/*.pdf                          final sashimi PDFs
+│   │       └── plots/                                              PDF figures per tool
+│   │           ├── rmats/
+│   │           │   ├── sashimi/                                    (when run_sashimi)
+│   │           │   │   ├── sashimi_index.tsv
+│   │           │   │   └── <EVENT_TYPE>/*.pdf
+│   │           │   ├── Volcano/volcano_{combined,annotated,de_novo}.pdf
+│   │           │   ├── PCA/pca_{combined,annotated,de_novo}.pdf
+│   │           │   ├── Coverage/coverage_{combined,annotated,de_novo}.pdf
+│   │           │   └── ORA/rmats_{GO_BP,KEGG}.pdf
+│   │           ├── majiq/        majiq_dpsi_distribution.pdf, majiq_{GO_BP,KEGG}.pdf
+│   │           ├── isar/         isar_dif_distribution.pdf, isar_consequence_barplot.pdf, isar_{GO_BP,KEGG}.pdf
+│   │           ├── leafcutter/   leafcutter_dpsi_distribution.pdf, leafcutter_{GO_BP,KEGG}.pdf
+│   │           ├── pegasas/      pegasas_pathway_{activity,ranking}.pdf
+│   │           ├── cross_tool_overlap/  cross_tool_upset.pdf, cross_tool_upset_membership.tsv, {shared_genes,global}_{GO_BP,KEGG}.pdf
+│   │           └── de_as/        de_as_genes_by_tool.pdf, de_as_volcano_<tool>.pdf, de_as_volcano_all_tools.pdf
 │   └── cross_contrast/
 │       └── pegasas/                 # cross_contrast_summary.tsv, heatmap, UpSet
 ├── run_info/                        # run metadata, NOT shipped
@@ -120,9 +134,8 @@ rMATS location columns (contract 2.1.0): `event_locus` is `chr:start-end`
 `event_coords` keeps the native 0-based coordinates named per event type:
 `exon=…;upstream=…;downstream=…` for SE, `long=…;short=…;flanking=…` for A5SS/A3SS,
 `1stExon=…;2ndExon=…;upstream=…;downstream=…` for MXE and
-`riExon=…;upstream=…;downstream=…` for RI. The legacy
-`exon_start_0base…downstream_ee` columns follow the SE event shape and are empty
-for non-SE event types; they are scheduled for removal in 3.0.0.
+`riExon=…;upstream=…;downstream=…` for RI. The six legacy SE-shaped coordinate
+columns were removed in contract 2.4.0; use `event_locus`/`event_coords`.
 
 Per-tool significance rules (identical to the report):
 
@@ -130,7 +143,7 @@ Per-tool significance rules (identical to the report):
 |------|------|
 | rMATS | `padj <= fdr_cutoff & |inc_level_difference| >= dpsi_cutoff` |
 | MAJIQ | `probability_changing >= 0.95 & |dpsi_mean| >= 0.2` |
-| ISAR | `isoform_switch_q_value < fdr_cutoff & |dIF| >= dpsi_cutoff` |
+| ISAR | `isoform_switch_q_value <= fdr_cutoff & |dIF| >= dpsi_cutoff` |
 | LeafCutter | `status == "Success" & padj_cluster <= fdr_cutoff & |deltapsi| >= dpsi_cutoff` (per intron) |
 | PEGASAS | no boolean call: exploratory; `n_sig_events` is the BH-adjusted event x pathway correlation count (analytic Pearson p; `n_sig_events_perm` is the permutation cross-check), rank pathways by it |
 
@@ -149,6 +162,22 @@ table for an enabled tool, or an indexed sashimi PDF that does not exist), and a
 rMATS row has an empty `event_locus` (contract 2.1.0 — events must be localizable in IGV).
 Content warnings (FDR==0 fraction, pinned ISAR q-values, tools with 0 significant genes in the cross-tool
 table, ...) are reported without blocking.
+
+The report also renders one effect-size distribution per AS tool (MAJIQ, LeafCutter,
+ISAR) from a single helper: bars are stacked and coloured by `is_significant`, and a
+dashed line marks the tool's own cutoff (0.1 for ISAR/LeafCutter, `majiq_dpsi_cutoff`
+for MAJIQ). MAJIQ and LeafCutter plot |delta PSI|; ISAR plots |delta IF| (isoform
+fraction), which is a different quantity and not comparable on the x-axis. The
+per-tool GO/KEGG dotplots under `plots/<tool>/` are written only when terms pass the
+enrichment thresholds; when a tool folder lacks them, the report's ORA status table
+states whether there were no terms (`ran, no enriched terms`) or an enrichment error,
+so a missing PDF is never silently ambiguous. Each distribution logs
+`distribution <title>: n=… n_sig=…` while rendering, so the significant-bar count can
+be cross-checked against `<id>.<tool>.master.tsv` (`is_significant == true`).
+
+Every deliverable plot is a single-page PDF. `validate_results_contract.py` fails the
+run when a non-sashimi PDF under `plots/` has more than one page — the guard against a
+leading blank page (sashimi event PDFs are multi-panel by design and excluded).
 
 ---
 
@@ -360,6 +389,13 @@ The shippable version of this table is `tables/<comparison_id>.isar.master.tsv`
 | `ORF_seq_similarity` | Sequence similarity between isoforms | `0.87` |
 | `NMD_status` | Nonsense-mediated decay sensitivity | `sensitive/insensitive` |
 
+In the shippable `.isar.master.tsv` (contract 2.4.0) `gene_id` is the Ensembl gene
+id resolved from `isoform_id` through the pipeline GTF (empty for unannotated
+transcripts such as MSTRG) and `gene_symbol` carries the symbol; the redundant
+native columns `ref_gene_id`, `condition_1`, `condition_2` and `gene_id_original`
+are no longer shipped. `pvalue` is empty by design: ISAR reports no raw p-value,
+only the isoform- and gene-level q-values.
+
 **Interpretation**:
 - **IF** (Isoform Fraction): Proportion of gene expression from this isoform (0-1)
 - **dIF > 0**: Isoform more abundant in condition 2
@@ -508,8 +544,10 @@ Interactive HTML report integrating all three tools' results with visualizations
    - UpSet plot of genes significant across rMATS, MAJIQ, ISAR, and LeafCutter
    - List of high-confidence genes (found by multiple tools)
 
-8. **DE + AS Integration** (when `--de_results` provided)
+8. **DE + AS Integration** (when `--dge_dirs`/`--de_results` provided)
    - Dual-hit volcano plot overlaying DESeq2/edgeR results with AS hits
+   - DGE results can be spread across multiple directories; each contrast is matched to its
+     DGE subdirectory by name (or via `de_results_map`)
 
 9. **GO/KEGG Enrichment**
     - clusterProfiler enrichment for differentially spliced gene sets
@@ -534,8 +572,8 @@ The report is self-contained: sashimi plots are embedded as PNGs
 (resolution controlled by `--sashimi_png_dpi`, default 150) so the HTML opens
 offline with no companion files. The vector PDFs are published inside the
 deliverables folder under
-`deliverables/contrasts/<comparison_id>/plots/sashimi/<EVENT_TYPE>/` and indexed
-by `deliverables/contrasts/<comparison_id>/plots/sashimi/sashimi_index.tsv`
+`deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/` and indexed
+by `deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv`
 (relative `pdf_path`; the `site_class` column is `annotated` or `de_novo` per
 event, taken from the SASHIMI_PLOTS manifest `site_classes.tsv` — de novo
 events are kept and plotted because `rmats2sashimiplot` can draw them from
@@ -556,7 +594,10 @@ column counts how many significant events clear the minimum. Saturated
 priority scores (past the -log10(FDR) cap of 50) are tie-broken by the
 weakest group's coverage, and the PSI PCA applies the same coverage filter to
 its event pool. The junction-coverage barplot uses a fixed-seed random sample
-of SE events with counts (not the first rows in file order).
+of SE events with counts (not the first rows in file order). Note that
+`is_novel_splice_site` can be high in total RNA-seq with this annotation (for
+example ~41% of SE events in the reference run); it is a property of the
+annotation, not a quality flag.
 
 ---
 
@@ -632,7 +673,7 @@ Only `results/deliverables/` ships; `results/raw/` is audit evidence. What to ke
   Optional: drop `run_info/pipeline_info/` if you do not need the Nextflow trace.
 - **Minimal set** (for publications): each `deliverables/contrasts/<comparison>/`
   folder — the HTML report, `tables/*.master.tsv` / `*.significant.tsv` and
-  `plots/sashimi/`.
+  `plots/`.
 - **Audit (keep, do not ship):** `results/raw/` (native tool outputs, MAJIQ
   binaries, rMATS fromGTF/JCEC, sashimi intermediates), `results/run_info/`
   (`run_manifest.yaml` + per-contrast manifests) and

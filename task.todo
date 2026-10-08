@@ -1,5 +1,31 @@
 # alternative-splicing-nextflow — task tracking
 
+## Report deliverables & QA hardening — batch_2026_04 (2026-10-08) — DONE
+
+Bugs detectados y corregidos sobre el run CRUK batch_2026_04
+(`results/deliverables/contrasts/`).
+
+- [x] UpSet `cross_tool_upset.pdf`: eliminada la página en blanco inicial.
+      Causa raíz: `UpSetR::upset()` abre una página vacía al construirse con un
+      dispositivo activo. El objeto se construye ahora en un device temporal y se
+      imprime en el PDF. Los 12 contrastes pasan de 2 a 1 página.
+- [x] Distribución LeafCutter: join intron→cluster corregido
+      (`chr:start:end:clu_N_strand` → `chr:clu_N_strand`). Antes marcaba 0
+      significativos; ahora `n_sig` = `<id>.leafcutter.master.tsv` (MNC: 15025/95939).
+- [x] `significance_dist_plot()`: audit log `distribution <title>: n=… n_sig=…`
+      para cruzar las barras con el master en cada contraste.
+- [x] Validador: `check_plot_pdf_pages()` — cada PDF no-sashimi bajo `plots/` debe
+      tener 1 página (sashimi excluido por multi-panel); exclusión por relpath.
+- [x] Regla FDR LeafCutter alineada a `<=` en report, exporter y validador.
+- [x] `build_sashimi_index.py`: enumera ambos layouts (`<ETYPE>/Sashimi_plot/` y
+      `<ETYPE>/`), igual que la copia en `RENDER_REPORT`/`SASHIMI_PLOTS`.
+- [x] `tool_reliability`: retirado el plumbing muerto del report (sigue vivo en
+      workflow/manifests).
+- [x] Contrato 2.4.0 documentado en CHANGELOG (columnas legacy rMATS eliminadas,
+      orden de significant.tsv); config/schema ya declaraban 2.4.0.
+- Nota: GO/KEGG vacío en contrastes con pocos significativos (p. ej. ISAR/MAJIQ en
+  MSC) es esperado, no un fallo; la tabla "ORA status per set" lo distingue.
+
 ## Status vs Eleni's pipeline (last reviewed May 2026)
 
 Eleni's pipeline is a script-based (non-Nextflow) workflow that runs rMATS + MAJIQ
@@ -165,7 +191,7 @@ results/
 │   ├── run_info/              # run_manifest, sample_index (sin rutas), software_versions,
 │   │                          # qa_report, pipeline_info/
 │   ├── contrasts/<id>/        # <id>_splicing_report.html, contrast_manifest.yaml,
-│   │                          # tables/, plots/sashimi/ (index + PDFs finales)
+│   │                          # tables/, plots/ (Figuras PDF por tool; rmats/sashimi/ index + PDFs)
 │   └── cross_contrast/pegasas/
 └── raw/<tool>/<comparison_id>/ # audit-only (solo publish_level >= core_raw)
 ```
@@ -175,7 +201,7 @@ Cambios P0/P1 aplicados:
 - Todas las rutas internas de la capa enviable son relativas a `deliverables/`:
   `sashimi_index.tsv.pdf_path` y `contrast_manifest.yaml`.
 - PDFs finales de sashimi movidos a
-  `deliverables/contrasts/<id>/plots/sashimi/<EVENT_TYPE>/`; el índice ya no
+  `deliverables/contrasts/<id>/plots/rmats/sashimi/<EVENT_TYPE>/`; el índice ya no
   apunta a `raw/`. `contrast_manifest.yaml` lista los nativos como
   `raw_outputs_audit_only` (no enviables).
 - Doble anidación `<comp>/<comp>/` eliminada en rmats/majiq/isar/leafcutter;
@@ -248,8 +274,8 @@ e `is_novel_splice_site`.
 **Reglas de significancia idénticas a las del report HTML** (para que
 significant.tsv y el report nunca discrepen): rMATS `FDR<=fdr & |dPSI|>=dpsi`;
 MAJIQ `probability_changing>=0.95 & |dpsi_mean|>=0.2`; ISAR
-`isoform_switch_q_value<fdr & |dIF|>=dpsi`; LeafCutter
-`status=="Success" & p.adjust<fdr` (vocabulario real de leafcutter_ds.R, no "OK").
+`isoform_switch_q_value<=fdr & |dIF|>=dpsi`; LeafCutter
+`status=="Success" & p.adjust<=fdr` (vocabulario real de leafcutter_ds.R, no "OK").
 
 ### Cómo se ha implementado (arquitectura)
 
@@ -332,10 +358,10 @@ isar_switch_consequences, leafcutter_ds, pegasas_collate, sashimi_plots).
 - [x] `deliverables/metadata/{run_manifest.yaml, sample_index.tsv, tools_matrix.tsv}` presentes y con valores correctos (outdir, fdr/dpsi, comparisons, known_issues).
 - [x] `deliverables/contrasts/<id>/{data_tables, plots, metadata/contrast_manifest.yaml}` completos para cada herramienta activa.
 - [x] `results_contract_report.txt` con 0 errors (1 warning esperado: FDR floor del dataset sintético).
-- [ ] Repetir E2E en los datos reales CRUK (batch_2026_04) con el próximo run programado, confirmando masters ISAR/MAJIQ/LeafCutter/PEGASAS + sashimi index.
+- [x] Repetir E2E en los datos reales CRUK (batch_2026_04) con el próximo run programado, confirmando masters ISAR/MAJIQ/LeafCutter/PEGASAS + sashimi index. Verificado 2026-10-08: 12 contrastes con masters + plots; conteos report↔master coinciden (ISAR/MAJIQ/LeafCutter).
 
 **2. Bugs de fiabilidad de herramientas (auditoría del catedrático)**
-- [x] **LeafCutter**: export usa `status=="Success"` y el validador FALLA si hay clusters con p.adjust<cutoff y significant.tsv vacío (regresión del filtro). Falta confirmarlo en un run con LeafCutter activo (CRUK real).
+- [x] **LeafCutter**: export usa `status=="Success"` y el validador FALLA si hay clusters con p.adjust<cutoff y significant.tsv vacío (regresión del filtro). Confirmado en run CRUK real (batch_2026_04, LeafCutter activo).
 - [x] **ISAR**: `known_issues: under_investigation` en manifests y report (visible en el HTML). Cuando se cierre el diagnóstico del pinning de q-values (RDS pending), actualizar `tool_reliability` y re-render.
 - [x] **rMATS**: `fdr_floor_flag` presente; % FDR==0 > 25% se reporta como warning (verificado: warning de 100% en datos sintéticos).
 - [x] **PEGASAS**: nota "sin corrección por múltiples tests" en significance_rule + manifests (verificar con run pegasas en CRUK).

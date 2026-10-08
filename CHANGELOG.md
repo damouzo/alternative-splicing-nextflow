@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- DE + AS integration can read DGE results from multiple directories via
+  `--dge_dirs` (a list in `params.yaml`, or a comma-separated string on the CLI).
+  Useful when contrasts live in separate DGE runs, e.g. a SF3B1 mut/wt split run
+  alongside the main run.
+
+### Changed
+- `--de_results` is kept as a deprecated single-directory alias and is appended to
+  `dge_dirs`.
+- DGE matching hardened for multiple directories: exact name match first; the loose
+  `grepl` fallback runs only with a single directory, since with several roots an
+  ambiguous match could pair the wrong DGE. Duplicate subdirectory names across roots
+  and multiple exact matches now emit warnings, and the chosen subdir + root is logged.
+
+## [2.4.0] - 2026-10-08
+
+### Changed (BREAKING — results contract 2.4.0)
+- Removed the six legacy SE-shaped rMATS coordinate columns from the master
+  (`exon_start_0base`, `exon_end`, `upstream_es`, `upstream_ee`, `downstream_es`,
+  `downstream_ee`). `event_locus` and `event_coords` are now the only coordinate
+  columns. The corresponding key was dropped from `assets/results_schema.yaml`.
+- rMATS `significant.tsv` is now ordered by adjusted p-value (strongest effect
+  size breaking ties) instead of event-type order.
+- `results_contract_version` and `assets/results_schema.yaml` bumped to `2.4.0`.
+
+## [2.3.0] - 2026-10-07
+
+### Added
+- Every report plot is now exported as a PDF deliverable under
+  `deliverables/contrasts/<id>/plots/`, grouped per tool: `rmats/` (`Volcano/`,
+  `PCA/`, `Coverage/`, `ORA/`), `majiq/`, `isar/`, `leafcutter/`, `pegasas/`,
+  `cross_tool_overlap/` (UpSet + shared/global ORA) and `de_as/`. Files are
+  written only when the underlying plot exists (empty panels produce no file).
+- `RENDER_REPORT` declares `plots/` as a process output; the existing
+  publishDir ships it with the report. Plot exports are best-effort: a save
+  failure never aborts rendering.
+
+### Changed (BREAKING — results layout, contract 2.3.0)
+- Sashimi deliverables moved from `deliverables/contrasts/<id>/plots/sashimi/`
+  to `deliverables/contrasts/<id>/plots/rmats/sashimi/`; `sashimi_index.tsv`
+  `pdf_path` values follow the new location. No legacy alias is kept.
+- `results_contract_version` and `assets/results_schema.yaml` bumped to `2.3.0`
+  to signal the new plot tree and relocated sashimi paths.
+
+### Changed (report)
+- Removed the "How to read the sign" / "PEGASAS is exploratory" summary
+  paragraphs and the whole low-replication `summary_warnings` block (the n<3
+  warning and the neutral n=3 note).
+- Removed the long de novo splice-site class note and the expanded
+  `rMATS Event Summary by Event Type` caption (the note now prints only when
+  non-empty).
+
 ## [2.1.0] - 2026-10-01
 
 ### Added

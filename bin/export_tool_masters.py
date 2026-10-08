@@ -223,8 +223,38 @@ def export_majiq(comparison_id, input_dir, out_dir, params):
 # IsoformSwitchAnalyzeR
 # ---------------------------------------------------------------------------
 
-ISAR_NATIVE = ['IF1', 'IF2', 'gene_switch_q_value', 'condition_1', 'condition_2',
-               'ref_gene_id', 'gene_id_original', 'switchConsequencesGene',
+def strip_version(identifier):
+    return str(identifier or '').split('.')[0]
+
+
+def load_transcript_gene_map(gtf_path):
+    """ENST (unversioned) -> ENSG from a GTF. Empty dict when unavailable.
+
+    Used to recover the Ensembl gene id for ISAR rows, whose CSV carries the
+    gene symbol in gene_id and no ref_gene_id.
+    """
+    mapping = {}
+    if not gtf_path or not os.path.isfile(gtf_path):
+        return mapping
+    pattern = re.compile(r'gene_id "([^"]+)".*?transcript_id "([^"]+)"')
+    with open(gtf_path, 'r', encoding='utf-8', errors='replace') as handle:
+        for line in handle:
+            if not line or line.startswith('#'):
+                continue
+            fields = line.rstrip('\n').split('\t')
+            if len(fields) < 9 or fields[2] != 'transcript':
+                continue
+            match = pattern.search(fields[8])
+            if not match:
+                continue
+            gene_id = strip_version(match.group(1))
+            transcript_id = strip_version(match.group(2))
+            if gene_id.startswith('ENSG') and transcript_id:
+                mapping[transcript_id] = gene_id
+    return mapping
+
+
+ISAR_NATIVE = ['IF1', 'IF2', 'gene_switch_q_value', 'switchConsequencesGene',
                'effective_test_method']
 
 
@@ -248,7 +278,8 @@ def export_isar(comparison_id, input_dir, out_dir, params):
         padj_method = 'BH'
     else:
         padj_method = 'BH'
-    rule = 'isoform_switch_q_value < %s & |dIF| >= %s' % (fdr_cutoff, dpsi_cutoff)
+    rule = 'isoform_switch_q_value <= %s & |dIF| >= %s' % (fdr_cutoff, dpsi_cutoff)
+    ensg_map = load_transcript_gene_map(params.get('gtf'))
 
     rows = []
     with open(csv_path, 'r', encoding='utf-8', errors='replace', newline='') as handle:
@@ -265,21 +296,22 @@ def export_isar(comparison_id, input_dir, out_dir, params):
             except (TypeError, ValueError):
                 pass
             significant = bool(q is not None and dif is not None and
-                               q < fdr_cutoff and abs(dif) >= dpsi_cutoff)
-            # ISAR writes gene_id as the gene symbol in some annotations; the
-            # real Ensembl gene id lives in ref_gene_id. Keep the original in
-            # gene_id_original so the cross-tool join can use ENSG.
-            original_id = str(raw.get('gene_id') or '').strip()
-            ref_gene = str(raw.get('ref_gene_id') or '').strip()
-            if ref_gene in ('', 'NA', 'None'):
-                ref_gene = original_id
+                               q <= fdr_cutoff and abs(dif) >= dpsi_cutoff)
+            # The ISAR CSV carries the gene symbol in gene_id and has no
+            # ref_gene_id. Recover the Ensembl gene id from the transcript id via
+            # the pipeline GTF; leave it empty for unannotated transcripts.
+            transcript_id = strip_version(raw.get('isoform_id'))
+            gene_id = ensg_map.get(transcript_id, '')
+            consequence = str(raw.get('switchConsequencesGene') or '').strip()
+            if consequence in ('NA', 'None'):
+                consequence = ''
             row = {
                 'comparison_id': comparison_id,
                 'tool': 'isar',
                 'feature_type': 'isoform',
                 'feature_id': raw.get('isoform_id', ''),
-                'gene_id': ref_gene,
-                'gene_symbol': raw.get('gene_name', ''),
+                'gene_id': gene_id,
+                'gene_symbol': str(raw.get('gene_name') or '').strip(),
                 'group1_name': group1_name,
                 'group2_name': group2_name,
                 'effect_size_direction': 'group2_minus_group1',
@@ -295,8 +327,8 @@ def export_isar(comparison_id, input_dir, out_dir, params):
             for col in ISAR_NATIVE:
                 if col == 'effective_test_method':
                     row[col] = effective_method
-                elif col == 'gene_id_original':
-                    row[col] = original_id
+                elif col == 'switchConsequencesGene':
+                    row[col] = consequence
                 else:
                     row[col] = raw.get(col, '')
             rows.append(row)
@@ -456,49 +488,6 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
         row['psi_group2'] = eff.get('psi_group2', '')
         rows.append(row)
 
-    # introns without effect sizes (cluster significance exists but no intron row)
-    eff_clusters = {leafcluster_from_intron(k) for k in effects}
-    for cluster_id, cluster in clusters.items():
-        if cluster_id in eff_clusters:
-            continue
-        status = cluster.get('status', '')
-        padj = None
-        try:
-            padj = float(cluster.get('p.adjust'))
-        except (TypeError, ValueError):
-            pass
-        cluster_significant = bool(status == 'Success' and padj is not None and padj <= fdr_cutoff)
-        rows.append({
-            'comparison_id': comparison_id,
-            'tool': 'leafcutter',
-            'feature_type': 'intron',
-            'feature_id': '',
-            'gene_id': '',
-            'gene_symbol': cluster.get('genes', '') or '',
-            'group1_name': group1_name,
-            'group2_name': group2_name,
-            'effect_size_direction': 'group2_minus_group1',
-            'effect_size': '',
-            'effect_size_type': 'delta_psi',
-            'pvalue': cluster.get('p', ''),
-            'padj': cluster.get('p.adjust', ''),
-            'padj_method': 'BH',
-            # No intron-level deltapsi to test, so this cluster row is never
-            # intron-significant; cluster_significant records the cluster call.
-            'is_significant': 'false',
-            'significance_rule': rule,
-            'source_file': os.path.basename(sig_file),
-            'cluster': cluster_id,
-            'status': status,
-            'cluster_significant': 'true' if cluster_significant else 'false',
-            'loglr': cluster.get('loglr', ''),
-            'df': cluster.get('df', ''),
-            'logef': '',
-            'deltapsi': '',
-            'psi_group1': '',
-            'psi_group2': '',
-        })
-
     columns = STANDARD_COLUMNS + LEAFCUTTER_NATIVE
     write_rows(os.path.join(out_dir, '%s.leafcutter.master.tsv' % comparison_id),
                columns, rows)
@@ -506,8 +495,9 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
     write_rows(os.path.join(out_dir, '%s.leafcutter.significant.tsv' % comparison_id),
                columns, significant)
 
-    with_ok = sum(1 for r in rows if r['status'] == 'Success')
     n_clusters = len(clusters)
+    n_clusters_success = len({r['cluster'] for r in rows if r['status'] == 'Success'})
+    n_clusters_untested = n_clusters - len({r['cluster'] for r in rows})
     genes = set()
     for r in rows:
         for g in str(r['gene_symbol']).split(','):
@@ -516,7 +506,8 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
                 genes.add(g)
     _write_long_summary(out_dir, comparison_id, 'leafcutter', [
         ('n_clusters', n_clusters),
-        ('n_clusters_success', with_ok),
+        ('n_clusters_success', n_clusters_success),
+        ('n_clusters_untested', n_clusters_untested),
         ('n_introns', len(rows)),
         ('n_significant_clusters', len({r['cluster'] for r in significant if r['cluster']})),
         ('n_significant_introns', len(significant)),
