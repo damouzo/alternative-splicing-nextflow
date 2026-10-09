@@ -47,23 +47,45 @@ def transpose_tpm(fin: str, sample_order: list, out_path: str) -> None:
     """
     Convert salmon.merged.gene_tpm.tsv (genes × samples) to PEGASAS format
     (samples × genes, first col = sample_id).
+
+    gene_name is not unique (several Ensembl gene_ids can share a symbol), so
+    duplicated symbols are collapsed by keeping the row with the highest mean
+    TPM across samples. That keeps the most-expressed gene_id per symbol and
+    avoids duplicate matrix columns.
+
+    Keep the collapse rule in sync with prepare_pegasas_inputs.py.transpose_tpm
+    (the two scripts share no import path, so the logic is mirrored).
     """
     with open(fin) as fh:
         reader = csv.DictReader(fh, delimiter="\t")
-        genes = []
-        expr  = {}
+        order = []
+        chosen = {}   # symbol -> (mean_tpm, {sample: tpm})
+        n_duplicates = 0
         for row in reader:
             gene = row.get("gene_name") or row.get("gene_id")
             if not gene:
                 continue
-            genes.append(gene)
-            expr[gene] = {}
+            values = {}
             for k, v in row.items():
                 if k not in ("gene_id", "gene_name"):
                     try:
-                        expr[gene][k] = float(v)
+                        values[k] = float(v)
                     except (ValueError, TypeError):
-                        expr[gene][k] = 0.0
+                        values[k] = 0.0
+            mean_tpm = (sum(values.values()) / len(values)) if values else 0.0
+            if gene not in chosen:
+                order.append(gene)
+                chosen[gene] = (mean_tpm, values)
+            else:
+                n_duplicates += 1
+                if mean_tpm > chosen[gene][0]:
+                    chosen[gene] = (mean_tpm, values)
+
+    genes = order
+    expr = {g: chosen[g][1] for g in genes}
+    if n_duplicates:
+        print(f"[INFO] collapsed {n_duplicates} duplicate gene symbol row(s) "
+              "by highest mean TPM")
 
     all_tpm_samples = set()
     if genes:

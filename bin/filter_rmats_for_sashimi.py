@@ -28,6 +28,11 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
                   fdr_cutoff: float, dpsi_cutoff: float) -> None:
     os.makedirs(out_dir, exist_ok=True)
     selected = {}
+    # (event_type, rank, event_id, site_class) for every plotted event. rank is
+    # the 1-based row order in the .top.txt file, which is exactly the <rank>
+    # prefix rmats2sashimiplot writes into the PDF filename, so downstream
+    # consumers can recover each PDF's splice-site class.
+    manifest_rows = []
 
     for event_type in EVENT_TYPES:
         jc_file = os.path.join(rmats_dir, f"{event_type}.MATS.JC.txt")
@@ -58,7 +63,7 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
             continue
 
         candidates = []
-        excluded_novel = 0
+        n_novel = 0
         with open(jc_file) as fh:
             fh.readline()  # skip header
             for line in fh:
@@ -71,18 +76,17 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
                 except ValueError:
                     continue
 
-                # Skip unannotated (de novo) splice-site events: negative
-                # coordinates cannot be drawn by rmats2sashimiplot.
+                # novelSS events are kept: rMATS 4.3 no longer encodes them as
+                # negative coordinates, so rmats2sashimiplot can draw them.
                 if parts[0] in novel_ids:
-                    excluded_novel += 1
-                    continue
+                    n_novel += 1
 
                 if fdr_val <= fdr_cutoff and abs(dpsi_val) >= dpsi_cutoff:
                     score = priority_score(fdr_val, dpsi_val)
-                    candidates.append((score, line))
+                    candidates.append((score, parts[0], line))
 
-        if excluded_novel > 0:
-            print(f"[WARN] {event_type}: excluded {excluded_novel} novel-splice-site events (ID)",
+        if n_novel > 0:
+            print(f"[INFO] {event_type}: included {n_novel} novel-splice-site events",
                   file=sys.stderr)
 
         if not candidates:
@@ -97,8 +101,14 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
             # Write header as-is from original file
             with open(jc_file) as src:
                 fh.write(src.readline())
-            for _, line in top:
+            for rank, (_, event_id, line) in enumerate(top, start=1):
                 fh.write(line)
+                manifest_rows.append((
+                    event_type,
+                    rank,
+                    event_id,
+                    "de_novo" if event_id in novel_ids else "annotated",
+                ))
 
         selected[event_type] = len(top)
         print(f"[INFO] {event_type}: selected {len(top)} / {len(candidates)} significant events")
@@ -107,6 +117,15 @@ def filter_events(rmats_dir: str, out_dir: str, top_n: int,
         print("[WARN] No significant events found for any event type. "
               "Check FDR/dPSI cutoffs.", file=sys.stderr)
         sys.exit(0)
+
+    # Note that novel-splice-site events are kept and plotted: rmats2sashimiplot
+    # can draw them from rMATS 4.3 coordinates, so annotation is a label, not a
+    # filter. Every selected event is recorded below so the report and the PDF
+    # index never mislabel a de novo plot as annotated.
+    with open(os.path.join(out_dir, "site_classes.tsv"), "w") as fh:
+        fh.write("event_type\trank\tevent_id\tsite_class\n")
+        for event_type, rank, event_id, site_class in manifest_rows:
+            fh.write(f"{event_type}\t{rank}\t{event_id}\t{site_class}\n")
 
     # Write a summary JSON for the report
     import json

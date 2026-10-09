@@ -6,6 +6,8 @@ process ISAR_RUN_IUPRED {
 
     input:
     tuple val(comparison_id), path(rds_input)
+    // Script as input so content edits invalidate the cache on -resume
+    path iupred_script
 
     output:
     tuple val(comparison_id), path("${comparison_id}_iupred.txt"), emit: results
@@ -40,7 +42,7 @@ process ISAR_RUN_IUPRED {
         # No sequences — write empty output so analyzeIUPred2A can be skipped downstream
         touch ${comparison_id}_iupred.txt
     else
-        run_iupred3.py \$AA_FASTA --output ${comparison_id}_iupred.txt
+        python3 ${iupred_script} \$AA_FASTA --output ${comparison_id}_iupred.txt
     fi
 
     cat <<-END_VERSIONS > versions.yml

@@ -5,7 +5,23 @@ process RMATS_POST {
     
     container 'docker.io/xinglab/rmats:v4.3.0'
     
-    publishDir "${params.outdir}/rmats/${comparison_id}", mode: params.publish_dir_mode
+    // Publication gating (reestructure_plan.md §9): raw/rmats drops the whole
+    // native layer in 'core' mode except b1/b2_samples; JCEC / individual counts
+    // are optional in 'core_raw' and always kept in 'full'. versions.yml is
+    // never published here — VALIDATE_RESULTS consolidates it in run_info/.
+    publishDir "${params.outdir}/raw/${params.tool_ids.rmats}", mode: params.publish_dir_mode,
+        saveAs: { f ->
+            def name = f.toString().contains('/') ? f.toString().substring(f.toString().lastIndexOf('/') + 1) : f.toString()
+            if (name == 'versions.yml') return null
+            if (params.publish_level == 'core' || !params.publish_raw) {
+                return name in ['b1_samples.txt', 'b2_samples.txt'] ? f : null
+            }
+            if (params.publish_level != 'full') {
+                if (name.endsWith('.MATS.JCEC.txt') && !params.publish_rmats_jcec) return null
+                if (name.startsWith('individualCounts.') && !params.publish_rmats_individual_counts) return null
+            }
+            f
+        }
     
     input:
     val  comparison_id

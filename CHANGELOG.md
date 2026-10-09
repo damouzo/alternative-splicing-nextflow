@@ -7,8 +7,212 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-08
+
+As of 2.4.0 the pipeline version (`manifest.version`) and the results contract
+version (`results_contract_version`) are kept aligned.
+
+### Changed (BREAKING — results contract 2.4.0)
+- Removed the six legacy SE-shaped rMATS coordinate columns from the master
+  (`exon_start_0base`, `exon_end`, `upstream_es`, `upstream_ee`, `downstream_es`,
+  `downstream_ee`). `event_locus` and `event_coords` are now the only coordinate
+  columns. The corresponding key was dropped from `assets/results_schema.yaml`.
+- rMATS `significant.tsv` is now ordered by adjusted p-value (strongest effect
+  size breaking ties) instead of event-type order.
+- LeafCutter significance is now called with `status == "Success"` and
+  `p.adjust <= fdr` consistently in the report, the master exporter and the
+  validator.
+- `results_contract_version` and `assets/results_schema.yaml` bumped to `2.4.0`.
+  This folds in the 2.3.0 layout bump below; no separate 2.3.0 release was tagged.
+
+### Changed (BREAKING — results layout, contract 2.3.0)
+- Sashimi deliverables moved from `deliverables/contrasts/<id>/plots/sashimi/`
+  to `deliverables/contrasts/<id>/plots/rmats/sashimi/`; `sashimi_index.tsv`
+  `pdf_path` values follow the new location. No legacy alias is kept.
+
+### Added
+- Every report plot is now exported as a PDF deliverable under
+  `deliverables/contrasts/<id>/plots/`, grouped per tool: `rmats/` (`Volcano/`,
+  `PCA/`, `Coverage/`, `ORA/`), `majiq/`, `isar/`, `leafcutter/`, `pegasas/`,
+  `cross_tool_overlap/` (UpSet + shared/global ORA) and `de_as/`. Files are
+  written only when the underlying plot exists (empty panels produce no file).
+- `RENDER_REPORT` declares `plots/` as a process output; the existing
+  publishDir ships it with the report. Plot exports are best-effort: a save
+  failure never aborts rendering.
+- DE + AS integration can read DGE results from multiple directories via
+  `--dge_dirs` (a list in `params.yaml`, or a comma-separated string on the CLI).
+  Useful when contrasts live in separate DGE runs, e.g. a SF3B1 mut/wt split run
+  alongside the main run.
+
+### Changed
+- `--de_results` is kept as a deprecated single-directory alias and is appended to
+  `dge_dirs`.
+- DGE matching hardened for multiple directories: exact name match first; the loose
+  `grepl` fallback runs only with a single directory, since with several roots an
+  ambiguous match could pair the wrong DGE. Duplicate subdirectory names across roots
+  and multiple exact matches now emit warnings, and the chosen subdir + root is logged.
+
+### Changed (report)
+- Removed the "How to read the sign" / "PEGASAS is exploratory" summary
+  paragraphs and the whole low-replication `summary_warnings` block (the n<3
+  warning and the neutral n=3 note).
+- Removed the long de novo splice-site class note and the expanded
+  `rMATS Event Summary by Event Type` caption (the note now prints only when
+  non-empty).
+
+## [2.1.0] - 2026-10-01
+
+### Added
+- rMATS master/significant tables carry two location columns (results contract
+  2.1.0, additive): `event_locus` (`chr:start-end`, 1-based inclusive, spans
+  every coordinate of the event — paste-ready for IGV) and `event_coords`
+  (native 0-based coordinates named per event type: `exon/upstream/downstream`
+  for SE, `long/short/flanking` for A5SS/A3SS, `1stExon/2ndExon/upstream/`
+  `downstream` for MXE, `riExon/upstream/downstream` for RI). Fixes shipped
+  tables being unlocalizable for A5SS/A3SS (and partially for MXE/RI).
+- `validate_results_contract.py` FAILs when any rMATS master row has an empty
+  `event_locus`, or when the column is missing entirely.
+
+### Changed
+- The six SE-shaped coordinate columns (`exon_start_0base…downstream_ee`) are
+  marked legacy: they are only populated for SE events and are scheduled for
+  removal in 3.0.0. Use `event_locus`/`event_coords` instead.
+- Report rMATS summary: `Mean_deltaPSI` renamed to `Mean_abs_deltaPSI_all_events`
+  and its caption now states it is the mean |ΔΨ| over all events of the type,
+  not only the significant ones.
+
+### Changed (report)
+- The repeated computational-predictions disclaimer was removed from the report
+  sections; a single mention now lives in `deliverables/README.md`.
+- Report legends use the condition names from `comparisons.csv`
+  (`group1`/`group2` columns, passed to the report as `group1_name`/
+  `group2_name`) instead of Group1/Group2.
+- The rMATS report section is split into three tabs — Combined (default),
+  Annotated and De novo — each with its own summary table, volcano,
+  top-events ranking, PSI PCA, junction-coverage plot and sashimi browser
+  (one shared sashimi payload, filtered client-side by `site_class`).
+- Volcano panels draw all significant events and subsample the
+  non-significant background (20,000 points, seed 1); `-log10(FDR)` is capped
+  at 300 so the priority score cannot saturate on underflowed `--cstat`
+  p-values. The cap matches `filter_rmats_for_sashimi.py` (FDR clamped at
+  1e-300), so the report ranking and the sashimi top-N agree.
+
+### Added (report)
+- `report_min_reads` param (default 20): minimum junction reads (IJC+SJC per
+  group) required for the report ranking tables only; significance calling is
+  never coverage-filtered. The panel summary gains a `Significant_min_reads`
+  column, saturated priority scores are tie-broken by the weakest group's
+  coverage, and the PSI PCA event pool applies the same coverage filter.
+- `sashimi_index.tsv` carries a `site_class` column (`annotated`/`de_novo`),
+  sourced from the SASHIMI_PLOTS `site_classes.tsv` manifest. De novo
+  (unannotated) splice-site events are kept and plotted — `rmats2sashimiplot`
+  can draw them from rMATS 4.3 coordinates — and were previously mislabelled as
+  `annotated` in the index and the report browser.
+- Report tabs renamed to Annotated/De novo **splice sites** with a per-panel
+  definition note: the class reflects splice-site novelty only, so
+  novel-junction events with known splice sites stay in the annotated tab.
+- Junction-coverage barplot uses a fixed-seed random sample (seed 1) of SE
+  events with junction counts instead of the first 500 rows in file order.
+- `validate_results_contract.py` gates the `event_locus` checks on the
+  declared contract version: FAIL for runs declaring >= 2.1.0, WARN for older
+  runs whose tables predate the column.
+
 ### Fixed
-- Data-integrity fixes from the internal audit (see `internal_audition.md`):
+- Cache invalidation on `-resume`: `RMATS_MASTER`, `SASHIMI_INDEX`,
+  `EXPORT_METADATA`, `CONTRAST_MANIFEST` and `VALIDATE_RESULTS` now declare
+  their `bin/` scripts (and the results schema) as `path` inputs. Nextflow
+  hashes the content of scripts it finds by bare name in the project `bin/`
+  dir, but not files referenced via `${projectDir}/bin/...` paths — without
+  this, script edits were silently served from cache while the report
+  re-rendered against stale tables.
+
+## [2.0.0] - 2026-09-30
+
+### Changed (BREAKING — results layout)
+- The shippable layer is nested under `results/deliverables/`, a sibling of the
+  audit-only `results/raw/`. Shipping is `mv deliverables <name> && zip -r
+  <name>.zip <name>`; everything inside is self-contained.
+  - `deliverables/run_info/`: `run_manifest.yaml`, `sample_index.tsv`,
+    consolidated `software_versions.yml`, `qa_report.txt`, `pipeline_info/`.
+  - `deliverables/contrasts/<comparison_id>/`: the HTML report, `tables/`,
+    `plots/sashimi/` (index + final PDFs) and `contrast_manifest.yaml`.
+  - `deliverables/cross_contrast/pegasas/` for the cross-contrast summary/heatmap/UpSet.
+  - `raw/<tool>/<comparison_id>/` for every native output (no more double
+    `<comparison_id>/<comparison_id>/` nesting; rMATS/MAJIQ/ISAR/LeafCutter,
+    sashimi and PEGASAS now share one layout).
+- Every path stored in the shippable layer (`sashimi_index.tsv` `pdf_path`,
+  `contrast_manifest.yaml`) is now relative to the
+  `deliverables/` root, so renaming/moving the folder does not break it.
+- Sashimi final PDFs moved from `raw/sashimi/` into
+  `deliverables/contrasts/<id>/plots/sashimi/<EVENT_TYPE>/`; the shippable index
+  no longer points at `raw/`. `contrast_manifest.yaml` records the native
+  outputs under `raw_outputs_audit_only` (explicitly not shipped).
+- `tools_matrix.tsv` removed (redundant with `tools_enabled`/`tools_disabled`).
+- `results_contract_report.txt` → `run_info/qa_report.txt`; the validator now
+  also consolidates `software_versions.yml`.
+- `sample_index.tsv` no longer carries BAM/BAI/Salmon absolute paths
+  (portability); those live only in `raw/_internal/sample_paths.tsv`.
+- Tool identity unified on `isar` (raw dir was `isoformswitchr`), driven by the
+  new `params.tool_ids` map.
+- `sashimi_index.tsv` stores only outdir-relative `pdf_path`.
+
+### Added
+- Standard master columns now use `padj` + `padj_method` (`BH`, `rmats_cstat`,
+  `satuRn_empirical`, `none`) and `effect_size_type` instead of an ambiguous
+  empty `fdr`. MAJIQ exposes `probability_changing`; PEGASAS p-values are
+  Benjamini-Hochberg corrected across pathway x sample KS tests.
+- `cross_tool.gene_summary.tsv` (one row per gene: `n_tools_significant`,
+  `tools`).
+- `assets/results_schema.yaml`: single source of truth for the layout and
+  columns; `validate_results_contract.py` reads it.
+- Generated `README.md` in the results root describing the layout and columns.
+- Nextflow report/trace/timeline/DAG are written to `run_info/pipeline_info/`.
+- `--publish_dir_mode` defaults to `copy` (documented), so shipped files are
+  real files, not symlinks into `work/`.
+
+### Removed
+- Per-process `versions.yml` files are no longer published in the shippable
+  layer (one consolidated `run_info/software_versions.yml` instead).
+
+## [1.2.0]
+
+### Added
+- Deliverables publication layer (reestructure_plan.md, contract v1.0.0):
+  - `deliverables/metadata/`: `run_manifest.yaml`, `sample_index.tsv`,
+    `tools_matrix.tsv` with the per-tool `known_issues` reliability record.
+  - `deliverables/contrasts/<id>/data_tables/`: standardised
+    master/significant/summary tables per enabled tool (rMATS, MAJIQ, ISAR,
+    LeafCutter, PEGASAS) + `cross_tool.master.tsv` gene-level union.
+  - rMATS masters flag the `--cstat` numeric floor (`fdr_floor_flag`) and
+    mark `is_novel_splice_site`; significant sets use the same rule as the
+    HTML report.
+  - `deliverables/contrasts/<id>/plots/sashimi/sashimi_index.tsv`: navigable
+    PDF index with outdir-relative paths (fixes PDF discoverability).
+  - `deliverables/contrasts/<id>/metadata/contrast_manifest.yaml` listing all
+    deliverables, thresholds and known issues per comparison.
+  - QA gate: `validate_results_contract.py` (structure + content sanity
+    checks: LeafCutter status-filter regression, rMATS FDR==0 fraction, pinned
+    ISAR q-values, silent cross-tool dropouts); report at
+    `deliverables/metadata/results_contract_report.txt`; structural failures
+    abort the run.
+- New params: `publish_deliverables`, `publish_level` (`core`|`core_raw`|`full`),
+  `publish_raw`, `publish_rmats_jcec`, `publish_rmats_individual_counts`,
+  `results_contract_version`, `tool_reliability` (known-issues record).
+- Report: new "Data exports" section listing the CORE deliverable paths with
+  their reliability caveats, plus an early "Known tool reliability issues"
+  summary. `RENDER_REPORT` now emits `(comparison_id, html)`.
+- `containers/report/Dockerfile` installs `python3` for the deliverables
+  exporters.
+
+### Changed
+- rMATS RAW publishing: `*.MATS.JCEC.txt` and `individualCounts.*` are no
+  longer published by default (`--publish_rmats_jcec` /
+  `--publish_rmats_individual_counts` re-enable them).
+- `INPUT_CHECK` emits `samples_full` (meta + bam + bai + salmon_dir) for the
+  metadata layer.
+
+### Fixed
+- Data-integrity fixes from the internal audit:
   rMATS, MAJIQ and LeafCutter no longer rely on two independent `groupTuple`
   calls producing the same internal order (Nextflow only guarantees alignment
   *within* one `groupTuple`). Each tool now groups sample ids, BAMs/juncs and

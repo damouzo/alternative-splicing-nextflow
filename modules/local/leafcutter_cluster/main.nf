@@ -16,11 +16,12 @@ process LEAFCUTTER_CLUSTER {
     printf '%s\n' ${junc_files.join(' ')} | tr ' ' '\n' > junc_file_list.txt
 
     # leafcutter_cluster_regtools.py in the pinned container expects
-    # short/legacy options (-j/-o/-m).
+    # short/legacy options (-j/-o/-m). -m 30 = minimum intron coverage
+    # (reads supporting the intron) required in at least one sample.
     python3 /opt/leafcutter-src/clustering/leafcutter_cluster_regtools.py \
         -j junc_file_list.txt \
         -o ${comparison_id} \
-        -m 1
+        -m 30
 
     # Rename outputs to include comparison_id prefix — fail loudly instead of
     # letting a missing rename surface later as an opaque "missing output" error.
@@ -40,6 +41,7 @@ process LEAFCUTTER_CLUSTER {
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
         leafcutter: \$(python3 -c "import leafcutter; print(getattr(leafcutter, '__version__', 'unknown'))" 2>/dev/null || echo "unknown")
+        regtools: \$(regtools --version 2>&1 | grep -oEm1 '[0-9]+\\.[0-9]+(\\.[0-9]+)?' || echo "unknown")
     END_VERSIONS
     """
 }

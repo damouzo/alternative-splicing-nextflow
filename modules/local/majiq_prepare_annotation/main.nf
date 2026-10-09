@@ -9,6 +9,8 @@ process MAJIQ_PREPARE_ANNOTATION {
 
     input:
     path gtf
+    // Script as input so content edits invalidate the cache on -resume
+    path convert_script
 
     output:
     path "annotation.gff3", emit: gff3
@@ -16,7 +18,7 @@ process MAJIQ_PREPARE_ANNOTATION {
 
     script:
     """
-    gtf_to_gff3.py ${gtf} annotation.gff3
+    python3 ${convert_script} ${gtf} annotation.gff3
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

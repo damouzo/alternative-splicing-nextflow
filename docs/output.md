@@ -2,54 +2,188 @@
 
 This document describes all output files produced by the alternative-splicing-nextflow pipeline.
 
+Outputs are organised so that the folder that gets shipped is physically separate
+from the audit evidence (see `assets/results_schema.yaml`):
+
+- **Shippable** — `results/deliverables/` (`README.md`, `run_info/`, `contrasts/` and
+  `cross_contrast/`). This is what the recipient opens; it follows the results contract
+  (`results_contract_version`) and is QA-checked by `validate_results_contract.py` at the
+  end of every run. All paths *inside* it are relative to `deliverables/`, so the folder
+  can be renamed, moved and zipped without breaking anything.
+- **Audit-only** — `results/raw/` and `deliverables/run_info/pipeline_info/`. Native
+  per-tool output and the Nextflow execution artefacts. Not needed to interpret the
+  results; not part of the shipment.
+
+Shipping is therefore: `mv deliverables <name> && zip -r <name>.zip <name>`.
+
+The pipeline does not migrate or delete outputs from a previous run/layout, and
+`publish_dir_mode=copy` never removes old files. Start from a clean `--outdir`
+(or keep previous runs in a separate directory) so stale tables cannot end up in
+`deliverables/`.
+
+`--publish_level` controls how much of the audit-only `raw/` layer is written:
+
+| Level      | `raw/` native tool dirs                | rMATS JCEC / individual counts |
+|------------|----------------------------------------|--------------------------------|
+| `core`     | not published                          | not published |
+| `core_raw` | published (default)                    | only with `--publish_rmats_jcec` / `--publish_rmats_individual_counts` |
+| `full`     | published                             | always published              |
+
+Sashimi final PDFs are always a shippable deliverable (they live under
+`deliverables/contrasts/<id>/plots/rmats/sashimi/`), independent of `publish_level`.
+Every report plot is exported as a PDF under
+`deliverables/contrasts/<id>/plots/` (grouped per tool), so the figures exist as
+standalone files in addition to being embedded in the HTML.
+
+`--publish_raw=false` behaves like `core` for the `raw/` layer.
+
+`publish_dir_mode` defaults to `copy`, so the shipped files are real files and not
+symlinks into `work/`.
+
 ## Directory Structure
 
 ```
 results/
-├── rmats/
-│   └── <comparison_id>/
-│       ├── SE.MATS.JC.txt
-│       ├── A5SS.MATS.JC.txt
-│       ├── A3SS.MATS.JC.txt
-│       ├── MXE.MATS.JC.txt
-│       ├── RI.MATS.JC.txt
-│       └── summary.txt
-├── majiq/
-│   └── <comparison_id>/
-│       ├── splicegraph/
-│       │   └── *.majiq
-│       ├── deltapsi/
-│       │   └── *.deltapsi.voila
-│       └── deltapsi.tsv
-├── isoformswitchanalyzer/
-│   └── <comparison_id>/
-│       ├── switchAnalyzeRlist_final.rds
-│       ├── isoform_switches.txt
-│       ├── consequences_summary.txt
-│       └── isoformSwitchAnalyzeR_AA.fasta
-├── leafcutter/
-│   └── <comparison_id>/           # when --run_leafcutter true
-│       ├── <comparison_id>_cluster_significance.txt
-│       └── <comparison_id>_effect_sizes.txt
-├── sashimi_plots/
-│   └── <comparison_id>/           # when --run_sashimi true
-├── pegasas/
-│   └── <comparison_id>/           # when --run_pegasas true
-├── report/
-│   └── <comparison_id>_splicing_report.html
-├── multiqc/
-│   └── multiqc_report.html
-└── pipeline_info/
-    ├── execution_report.html
-    ├── execution_timeline.html
-    └── execution_trace.txt
+├── deliverables/                    # SHIPPABLE: rename + zip to send
+│   ├── README.md                    # what each folder is, how to read the TSVs
+│   ├── run_info/                    # what was run and how to read the tables
+│   │   ├── sample_index.tsv         # sample x comparison x group (no cluster paths)
+│   │   ├── software_versions.yml    # single consolidated tool-version record
+│   │   ├── qa_report.txt            # results-contract validation output
+│   │   └── pipeline_info/           # Nextflow report, trace, timeline, DAG (audit-only)
+│   ├── contrasts/
+│   │   └── <comparison_id>/
+│   │       ├── <comparison_id>_splicing_report.html
+│   │       ├── tables/
+│   │       │   ├── <c>.rmats.{master,significant,summary}.tsv
+│   │       │   ├── <c>.majiq.{master,significant,summary}.tsv      (when run_majiq)
+│   │       │   ├── <c>.isar.{master,significant,summary}.tsv       (when run_isar)
+│   │       │   ├── <c>.leafcutter.{master,significant,summary}.tsv (when run_leafcutter)
+│   │       │   ├── <c>.pegasas.{master,significant,summary}.tsv    (when run_pegasas)
+│   │       │   ├── <c>.cross_tool.master.tsv                       (when build_cross_tool_master)
+│   │       │   └── <c>.cross_tool.gene_summary.tsv
+│   │       └── plots/                                              PDF figures per tool
+│   │           ├── rmats/
+│   │           │   ├── sashimi/                                    (when run_sashimi)
+│   │           │   │   ├── sashimi_index.tsv
+│   │           │   │   └── <EVENT_TYPE>/*.pdf
+│   │           │   ├── Volcano/volcano_{combined,annotated,de_novo}.pdf
+│   │           │   ├── PCA/pca_{combined,annotated,de_novo}.pdf
+│   │           │   ├── Coverage/coverage_{combined,annotated,de_novo}.pdf
+│   │           │   └── ORA/rmats_{GO_BP,KEGG}.pdf
+│   │           ├── majiq/        majiq_dpsi_distribution.pdf, majiq_{GO_BP,KEGG}.pdf
+│   │           ├── isar/         isar_dif_distribution.pdf, isar_consequence_barplot.pdf, isar_{GO_BP,KEGG}.pdf
+│   │           ├── leafcutter/   leafcutter_dpsi_distribution.pdf, leafcutter_{GO_BP,KEGG}.pdf
+│   │           ├── pegasas/      pegasas_pathway_{activity,ranking}.pdf
+│   │           ├── cross_tool_overlap/  cross_tool_upset.pdf, cross_tool_upset_membership.tsv, {shared_genes,global}_{GO_BP,KEGG}.pdf
+│   │           └── de_as/        de_as_genes_by_tool.pdf, de_as_volcano_<tool>.pdf, de_as_volcano_all_tools.pdf
+│   └── cross_contrast/
+│       └── pegasas/                 # cross_contrast_summary.tsv, heatmap, UpSet
+├── run_info/                        # run metadata, NOT shipped
+│   ├── run_manifest.yaml            # pipeline, schema_version, params, tools, known issues
+│   └── contrast_manifests/
+│       └── <comparison_id>_contrast_manifest.yaml
+└── raw/                             # audit-only, NOT shipped
+    ├── rmats/<comparison_id>/…
+    ├── majiq/<comparison_id>/…
+    ├── isar/<comparison_id>/…
+    ├── leafcutter/<comparison_id>/…
+    ├── sashimi/<comparison_id>/sashimi_out/…   # intermediates (final PDFs are a deliverable)
+    ├── pegasas/<comparison_id>/…    # + _shared/ pathway scores (cohort-level)
+    └── _internal/sample_paths.tsv   # absolute input paths for audit
 ```
+
+Manifests (`run_manifest.yaml`, per-contrast manifests) are run metadata and live in
+`results/run_info/`, outside the shipped `deliverables/` tree.
+
+## Shippable layer (`deliverables/`)
+
+### run_info/
+
+| File | Description |
+|------|-------------|
+| `sample_index.tsv` | `sample_id, condition, replicate, comparison_id, group` — deliberately free of absolute paths |
+| `software_versions.yml` | every per-process `versions.yml` merged into one file |
+| `qa_report.txt` | output of `validate_results_contract.py` (errors + warnings) |
+| `pipeline_info/` | Nextflow `execution_report.html`, `execution_trace.txt`, `execution_timeline.html`, `pipeline_dag.svg` (audit-only) |
+
+`run_manifest.yaml` and the per-contrast manifests are in `results/run_info/` (outside
+`deliverables/`), together with the embedded `params_criticos`, `tools_enabled`/
+`tools_disabled`, `known_issues` and per-contrast manifests.
+
+The absolute BAM/BAI/Salmon paths live only in `raw/_internal/sample_paths.tsv`, so they
+do not leak into the shippable layer.
+
+### Master table standard columns
+
+Every `<tool>.master.tsv` starts with:
+
+`comparison_id, tool, feature_type, feature_id, gene_id, gene_symbol, group1_name,
+group2_name, effect_size_direction, effect_size, effect_size_type, pvalue, padj,
+padj_method, is_significant, significance_rule, source_file`
+
+followed by the tool-native columns (never dropped). `effect_size` is always
+`group2 - group1` and `effect_size_direction` is `group2_minus_group1`. `padj` is always
+accompanied by `padj_method` (`BH`, `rmats_cstat`, `empirical_FDR`, `BH_event_wise` or
+`none`) so nobody filters on an ambiguous empty `fdr`. rMATS tables add
+`event_type/event_id`, `fdr_floor_flag` (FDR==0 rows are the numeric floor of
+`--cstat`), `event_class`, `reads_ok` and `is_igv_supported`.
+
+rMATS location columns (contract 2.1.0): `event_locus` is `chr:start-end`
+(1-based inclusive) spanning every coordinate of the event — paste it into IGV.
+`event_coords` keeps the native 0-based coordinates named per event type:
+`exon=…;upstream=…;downstream=…` for SE, `long=…;short=…;flanking=…` for A5SS/A3SS,
+`1stExon=…;2ndExon=…;upstream=…;downstream=…` for MXE and
+`riExon=…;upstream=…;downstream=…` for RI. The six legacy SE-shaped coordinate
+columns were removed in contract 2.4.0; use `event_locus`/`event_coords`.
+
+Per-tool significance rules (identical to the report):
+
+| Tool | Rule |
+|------|------|
+| rMATS | `padj <= fdr_cutoff & |inc_level_difference| >= dpsi_cutoff` |
+| MAJIQ | `probability_changing >= 0.95 & |dpsi_mean| >= 0.2` |
+| ISAR | `isoform_switch_q_value <= fdr_cutoff & |dIF| >= dpsi_cutoff` |
+| LeafCutter | `status == "Success" & padj_cluster <= fdr_cutoff & |deltapsi| >= dpsi_cutoff` (per intron) |
+| PEGASAS | no boolean call: exploratory; `n_sig_events` is the BH-adjusted event x pathway correlation count (analytic Pearson p; `n_sig_events_perm` is the permutation cross-check), rank pathways by it |
+
+### cross_tool tables
+
+- `cross_tool.master.tsv` — long format, one row per gene x tool.
+- `cross_tool.gene_summary.tsv` — one row per gene: `n_tools_significant`, `tools`,
+  `best_effect_size`, `best_padj`. This is the quick gene list to open first.
+
+### QA validator
+
+`run_info/qa_report.txt` is produced by `validate_results_contract.py` after all
+deliverables are published, using `assets/results_schema.yaml` as the source of truth for
+expected paths and columns. The run aborts if structural pieces are missing (e.g. a master
+table for an enabled tool, or an indexed sashimi PDF that does not exist), and also if any
+rMATS row has an empty `event_locus` (contract 2.1.0 — events must be localizable in IGV).
+Content warnings (FDR==0 fraction, pinned ISAR q-values, tools with 0 significant genes in the cross-tool
+table, ...) are reported without blocking.
+
+The report also renders one effect-size distribution per AS tool (MAJIQ, LeafCutter,
+ISAR) from a single helper: bars are stacked and coloured by `is_significant`, and a
+dashed line marks the tool's own cutoff (0.1 for ISAR/LeafCutter, `majiq_dpsi_cutoff`
+for MAJIQ). MAJIQ and LeafCutter plot |delta PSI|; ISAR plots |delta IF| (isoform
+fraction), which is a different quantity and not comparable on the x-axis. The
+per-tool GO/KEGG dotplots under `plots/<tool>/` are written only when terms pass the
+enrichment thresholds; when a tool folder lacks them, the report's ORA status table
+states whether there were no terms (`ran, no enriched terms`) or an enrichment error,
+so a missing PDF is never silently ambiguous. Each distribution logs
+`distribution <title>: n=… n_sig=…` while rendering, so the significant-bar count can
+be cross-checked against `<id>.<tool>.master.tsv` (`is_significant == true`).
+
+Every deliverable plot is a single-page PDF. `validate_results_contract.py` fails the
+run when a non-sashimi PDF under `plots/` has more than one page — the guard against a
+leading blank page (sashimi event PDFs are multi-panel by design and excluded).
 
 ---
 
 ## rMATS Output
 
-**Location**: `results/rmats/<comparison_id>/`
+**Location**: `results/raw/rmats/<comparison_id>/` (audit-only)
 
 rMATS-turbo detects five types of alternative splicing events and performs statistical testing for differential splicing between conditions.
 
@@ -123,7 +257,7 @@ Uses both junction-spanning reads AND exon body reads. Generally more sensitive 
 library(tidyverse)
 
 # Read rMATS results
-se_events <- read_tsv("results/rmats/control_vs_treatment/SE.MATS.JC.txt")
+se_events <- read_tsv("results/raw/rmats/control_vs_treatment/SE.MATS.JC.txt")
 
 # Filter significant events
 sig_events <- se_events %>%
@@ -142,7 +276,7 @@ print(top10)
 
 ## MAJIQ Output
 
-**Location**: `results/majiq/<comparison_id>/`
+**Location**: `results/raw/majiq/<comparison_id>/` (audit-only)
 
 MAJIQ uses a Bayesian framework to quantify Local Splicing Variations (LSVs) and compute deltaPSI posteriors.
 
@@ -190,7 +324,7 @@ majiq/<comparison_id>/
 # Python example
 import pandas as pd
 
-majiq = pd.read_csv("results/majiq/control_vs_treatment/deltapsi.tsv", sep="\t")
+majiq = pd.read_csv("results/raw/majiq/control_vs_treatment/deltapsi.tsv", sep="\t")
 
 # High-confidence changing LSVs
 sig_lsvs = majiq[majiq['probability_changing'] >= 0.95]
@@ -219,15 +353,17 @@ voila view splicegraph.sql deltapsi/*.deltapsi.voila -o voila_output/
 
 ## IsoformSwitchAnalyzeR Output
 
-**Location**: `results/isoformswitchanalyzer/<comparison_id>/`
+**Location**: `results/raw/isar/<comparison_id>/` (audit-only)
 
 IsoformSwitchAnalyzeR identifies isoform switches with predicted functional consequences.
 
 ### Primary Outputs
 
-#### `isoform_switches.txt`
+#### `top_isoform_switches.csv`
 
 **Main result table** with all significant isoform switches and their consequences.
+The shippable version of this table is `tables/<comparison_id>.isar.master.tsv`
+(standard columns + these native ones).
 
 **Key columns**:
 
@@ -253,6 +389,13 @@ IsoformSwitchAnalyzeR identifies isoform switches with predicted functional cons
 | `ORF_seq_similarity` | Sequence similarity between isoforms | `0.87` |
 | `NMD_status` | Nonsense-mediated decay sensitivity | `sensitive/insensitive` |
 
+In the shippable `.isar.master.tsv` (contract 2.4.0) `gene_id` is the Ensembl gene
+id resolved from `isoform_id` through the pipeline GTF (empty for unannotated
+transcripts such as MSTRG) and `gene_symbol` carries the symbol; the redundant
+native columns `ref_gene_id`, `condition_1`, `condition_2` and `gene_id_original`
+are no longer shipped. `pvalue` is empty by design: ISAR reports no raw p-value,
+only the isoform- and gene-level q-values.
+
 **Interpretation**:
 - **IF** (Isoform Fraction): Proportion of gene expression from this isoform (0-1)
 - **dIF > 0**: Isoform more abundant in condition 2
@@ -263,7 +406,7 @@ IsoformSwitchAnalyzeR identifies isoform switches with predicted functional cons
 ```r
 library(tidyverse)
 
-switches <- read_tsv("results/isoformswitchanalyzer/control_vs_treatment/isoform_switches.txt")
+switches <- read_tsv("results/deliverables/contrasts/control_vs_treatment/tables/control_vs_treatment.isar.master.tsv")
 
 # Significant switches with functional consequences
 sig_with_consequences <- switches %>%
@@ -275,9 +418,10 @@ domain_switches <- sig_with_consequences %>%
   filter(str_detect(domains_affected, "gained|lost"))
 ```
 
-#### `consequences_summary.txt`
+#### `consequence_summary.csv`
 
-Summary table counting functional consequence types across all switches.
+Summary table counting functional consequence types across all switches
+(produced as `consequence_summary.csv` under `raw/isar/<comparison_id>/<comparison_id>/`).
 
 **Columns**:
 - `consequence_type`: e.g., "Domain gain", "Signal peptide loss", "NMD sensitive"
@@ -293,7 +437,7 @@ ORF length changes         123       0.63
 NMD status changes          34       0.17
 ```
 
-#### `switchAnalyzeRlist_final.rds`
+#### `<comparison_id>_final.rds`
 
 Complete R object containing all data and analysis results. Load in R for custom downstream analyses:
 
@@ -301,7 +445,7 @@ Complete R object containing all data and analysis results. Load in R for custom
 library(IsoformSwitchAnalyzeR)
 
 # Load the switchAnalyzeRlist
-aSwitchList <- readRDS("results/isoformswitchanalyzer/control_vs_treatment/switchAnalyzeRlist_final.rds")
+aSwitchList <- readRDS("results/raw/isar/control_vs_treatment/control_vs_treatment/control_vs_treatment_final.rds")
 
 # Custom plots
 switchPlotTopSwitches(aSwitchList, n = 10, pathToOutput = "my_plots/")
@@ -310,18 +454,16 @@ switchPlotTopSwitches(aSwitchList, n = 10, pathToOutput = "my_plots/")
 isoform_features <- extractSwitchSummary(aSwitchList)
 ```
 
-#### `isoformSwitchAnalyzeR_AA.fasta`
+#### `switchplots/`
 
-Amino acid sequences for all annotated isoforms. Use for:
-- External domain prediction tools
-- Sequence alignment
-- Structural modeling
+Per-switch PDF plots written by `switchPlotTopN()` (top switches with
+consequences), under `raw/isar/<comparison_id>/<comparison_id>/switchplots/`.
 
 ---
 
 ## LeafCutter Output
 
-**Location**: `results/leafcutter/<comparison_id>/`
+**Location**: `results/raw/leafcutter/<comparison_id>/` (audit-only)
 
 LeafCutter quantifies intron usage ratios (not exon inclusion) and is especially sensitive to complex splicing and unannotated introns.
 
@@ -357,7 +499,7 @@ LeafCutter quantifies intron usage ratios (not exon inclusion) and is especially
 
 ## Consolidated Report
 
-**Location**: `results/report/<comparison_id>_splicing_report.html`
+**Location**: `results/deliverables/contrasts/<comparison_id>/<comparison_id>_splicing_report.html`
 
 ### Overview
 
@@ -402,8 +544,10 @@ Interactive HTML report integrating all three tools' results with visualizations
    - UpSet plot of genes significant across rMATS, MAJIQ, ISAR, and LeafCutter
    - List of high-confidence genes (found by multiple tools)
 
-8. **DE + AS Integration** (when `--de_results` provided)
+8. **DE + AS Integration** (when `--dge_dirs`/`--de_results` provided)
    - Dual-hit volcano plot overlaying DESeq2/edgeR results with AS hits
+   - DGE results can be spread across multiple directories; each contrast is matched to its
+     DGE subdirectory by name (or via `de_results_map`)
 
 9. **GO/KEGG Enrichment**
     - clusterProfiler enrichment for differentially spliced gene sets
@@ -426,38 +570,58 @@ Interactive HTML report integrating all three tools' results with visualizations
 
 The report is self-contained: sashimi plots are embedded as PNGs
 (resolution controlled by `--sashimi_png_dpi`, default 150) so the HTML opens
-offline with no companion files. The vector PDFs are still published under
-`results/sashimi/<comparison_id>/` for publication-quality figures. If the
-report container has no `pdftoppm`, sashimi PDFs fall back to being embedded
-directly (functional, but heavier).
+offline with no companion files. The vector PDFs are published inside the
+deliverables folder under
+`deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/` and indexed
+by `deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv`
+(relative `pdf_path`; the `site_class` column is `annotated` or `de_novo` per
+event, taken from the SASHIMI_PLOTS manifest `site_classes.tsv` — de novo
+events are kept and plotted because `rmats2sashimiplot` can draw them from
+rMATS 4.3 coordinates). If the report
+container has no `pdftoppm`, sashimi PDFs fall back to being embedded directly
+(functional, but heavier).
+
+The report splits the rMATS section into three tabs — Combined (default),
+Annotated splice sites and De novo splice sites — each with its own summary,
+volcano, top-events ranking, PSI PCA, junction-coverage plot and sashimi
+browser. Splice-site class comes from `is_novel_splice_site`
+(`fromGTF.novelSpliceSite`): it reflects **splice-site novelty only**, so
+events with known splice sites but a novel junction (`fromGTF.novelJunction`)
+remain in the annotated tab. Ranking tables filter to events with >=
+`report_min_reads` junction reads (IJC+SJC summed per group); significance
+calling is never coverage-filtered, and the summary's `Significant_min_reads`
+column counts how many significant events clear the minimum. Saturated
+priority scores (past the -log10(FDR) cap of 50) are tie-broken by the
+weakest group's coverage, and the PSI PCA applies the same coverage filter to
+its event pool. The junction-coverage barplot uses a fixed-seed random sample
+of SE events with counts (not the first rows in file order). Note that
+`is_novel_splice_site` can be high in total RNA-seq with this annotation (for
+example ~41% of SE events in the reference run); it is a property of the
+annotation, not a quality flag.
 
 ---
 
-## MultiQC Report
+## Upstream QC (MultiQC)
 
-**Location**: `results/multiqc/multiqc_report.html`
-
-Aggregates QC metrics from all tools into a single report.
-
-**Includes**:
-- rMATS event detection statistics
-- Sample-level QC metrics (if upstream logs provided)
-- Junction read counts
-- Splice graph complexity
+MultiQC is **not** run by this pipeline: it is delivered by the upstream
+nf-core/rnaseq run that produces the BAMs. Point `--nfcore_multiqc_dir` (or reuse
+that run's `multiqc/multiqc_report.html`) if you need the QC report alongside the
+splicing results.
 
 ---
 
 ## Pipeline Info
 
-**Location**: `results/pipeline_info/`
+**Location**: `results/deliverables/run_info/pipeline_info/` (audit-only)
 
-Nextflow automatically generates execution reports:
+Nextflow generates these execution artefacts (enabled in `nextflow.config`):
 
 | File | Description |
 |------|-------------|
 | `execution_report.html` | Visual summary of pipeline execution |
 | `execution_timeline.html` | Timeline of process execution (useful for optimization) |
 | `execution_trace.txt` | Detailed resource usage per process (CPU, memory, time) |
+| `pipeline_dag.svg` | Workflow DAG |
 
 **Use cases**:
 - **Debugging**: Identify failed processes
@@ -503,69 +667,51 @@ The `work/` directory contains all intermediate files from Nextflow processes:
 
 ### Long-term Storage
 
-Only `results/` directory needs long-term storage. Key files for publications/downstream analysis:
+Only `results/deliverables/` ships; `results/raw/` is audit evidence. What to keep:
 
-**Minimal set** (for publications):
-- `report/<comparison>_splicing_report.html`
-- `rmats/<comparison>/SE.MATS.JC.txt` (and other event types)
-- `majiq/<comparison>/deltapsi.tsv`
-- `isoformswitchanalyzer/<comparison>/isoform_switches.txt`
-
-**Complete set** (for re-analysis):
-- Everything in `results/` (includes binary files for MAJIQ VOILA, R objects, etc.)
+- **Ship (compact):** the whole `deliverables/` folder (rename it and zip it).
+  Optional: drop `run_info/pipeline_info/` if you do not need the Nextflow trace.
+- **Minimal set** (for publications): each `deliverables/contrasts/<comparison>/`
+  folder — the HTML report, `tables/*.master.tsv` / `*.significant.tsv` and
+  `plots/`.
+- **Audit (keep, do not ship):** `results/raw/` (native tool outputs, MAJIQ
+  binaries, rMATS fromGTF/JCEC, sashimi intermediates), `results/run_info/`
+  (`run_manifest.yaml` + per-contrast manifests) and
+  `deliverables/run_info/pipeline_info/`.
 
 ---
 
 ## Example Analysis Workflows
 
-### Extract Top Events from All Tools
+### Read the standardised tables (recommended)
 
 ```r
 library(tidyverse)
 
-# rMATS top SE events
-rmats_se <- read_tsv("results/rmats/control_vs_treatment/SE.MATS.JC.txt") %>%
-  filter(FDR <= 0.05, abs(IncLevelDifference) >= 0.1) %>%
-  select(geneSymbol, IncLevelDifference, FDR)
+comp <- "control_vs_treatment"
+tables <- sprintf("results/deliverables/contrasts/%s/tables", comp)
 
-# MAJIQ top LSVs
-majiq <- read_tsv("results/majiq/control_vs_treatment/deltapsi.tsv") %>%
-  filter(probability_changing >= 0.95)
+# One row per gene with the tools that called it significant
+gene_summary <- read_tsv(file.path(tables, sprintf("%s.cross_tool.gene_summary.tsv", comp)))
+top_genes <- gene_summary %>% filter(n_tools_significant >= 2)
 
-# ISAR top switches
-isar <- read_tsv("results/isoformswitchanalyzer/control_vs_treatment/isoform_switches.txt") %>%
-  filter(isoform_switch_q_value <= 0.05, abs(dIF) >= 0.1)
-
-# Find genes in common
-common_genes <- reduce(
-  list(
-    rmats = unique(rmats_se$geneSymbol),
-    majiq = unique(majiq$gene_name),
-    isar = unique(isar$gene_name)
-  ),
-  intersect
-)
-
-print(paste("Genes significant in all 3 tools:", length(common_genes)))
+# Full rMATS master (all events), then the significant subset
+rmats <- read_tsv(file.path(tables, sprintf("%s.rmats.master.tsv", comp)))
+rmats_sig <- read_tsv(file.path(tables, sprintf("%s.rmats.significant.tsv", comp)))
 ```
 
-### Export for Pathway Analysis
+`significant.tsv` already encodes the report rule; use `padj` + `padj_method`
+rather than a raw `fdr` column.
+
+### Export a gene list for enrichment
 
 ```python
 import pandas as pd
 
-# Load rMATS SE results
-se = pd.read_csv("results/rmats/control_vs_treatment/SE.MATS.JC.txt", sep="\t")
-
-# Filter significant
-sig = se[(se['FDR'] <= 0.05) & (abs(se['IncLevelDifference']) >= 0.1)]
-
-# Extract gene list for GSEA/GO enrichment
-gene_list = sig['geneSymbol'].unique().tolist()
-
-# Save for enrichment analysis
-with open("genes_with_differential_splicing.txt", "w") as f:
-    f.write("\n".join(gene_list))
+tables = "results/deliverables/contrasts/control_vs_treatment/tables"
+sig = pd.read_csv(f"{tables}/control_vs_treatment.rmats.significant.tsv", sep="\t")
+gene_list = sig["gene_symbol"].dropna().unique().tolist()
+print(len(gene_list), "genes")
 ```
 
 ---

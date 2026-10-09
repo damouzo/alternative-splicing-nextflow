@@ -5,7 +5,7 @@
 FROM bioconductor/bioconductor_docker:RELEASE_3_20
 
 LABEL org.opencontainers.image.description="LeafCutter for intron usage quantification and differential splicing"
-LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
+LABEL org.opencontainers.image.source="https://github.com/damouzo/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # System tools: samtools + build deps for regtools

@@ -23,6 +23,7 @@ workflow ISOFORMSWITCHR_ANALYSIS {
     take:
     samples_salmon  // channel: [meta, salmon_dir] with meta.comparison_id
     gtf             // path: annotation.gtf
+    comparisons_meta // channel: [meta] with meta.id, meta.group1, meta.group2
     
     main:
     
@@ -60,38 +61,46 @@ workflow ISOFORMSWITCHR_ANALYSIS {
                 .collect { it.join(',') }
             [comparison_id, rows, salmon_dirs]
         }
-        .set { ch_comparison_data }
+        // Carry group names so ISAR_IMPORT can pin control (group1) as the
+        // reference factor level and report dIF as group2 - group1.
+        .join(comparisons_meta.map { meta -> [meta.id, meta.group1, meta.group2] }, by: 0)
+        .set { ch_comparison_data }  // [comparison_id, rows, salmon_dirs, group1, group2]
 
     /*
      * Write per-comparison partial samplesheets (sample,condition,replicate) inside
      * proper Nextflow work directories. salmon_dir column added in ISAR_IMPORT.
      */
     ISAR_WRITE_SAMPLESHEET(
-        ch_comparison_data.map { id, _rows, _dirs -> id },
-        ch_comparison_data.map { _id, rows, _dirs -> rows }
+        ch_comparison_data.map { id, _rows, _dirs, _g1, _g2 -> id },
+        ch_comparison_data.map { _id, rows, _dirs, _g1, _g2 -> rows }
     )
 
-    // Join samplesheet output with salmon_dirs so ISAR_IMPORT gets both in sync
+    // Join samplesheet output with salmon_dirs and group names so ISAR_IMPORT
+    // gets both in sync.
     ISAR_WRITE_SAMPLESHEET.out.samplesheet
-        .join(ch_comparison_data.map { id, _rows, dirs -> [id, dirs] })
-        .set { ch_isar_import_input }
+        .join(ch_comparison_data.map { id, _rows, dirs, g1, g2 -> [id, dirs, g1, g2] })
+        .set { ch_isar_import_input }  // [id, samplesheet, dirs, g1, g2]
 
     /*
      * Run ISAR IMPORT
      */
     ISAR_IMPORT(
-        ch_isar_import_input.map { id, _f, _dirs -> id },
-        ch_isar_import_input.map { _id, f, _dirs -> f },
+        ch_isar_import_input.map { id, _f, _dirs, _g1, _g2 -> id },
+        ch_isar_import_input.map { _id, _f, _dirs, g1, _g2 -> g1 },
+        ch_isar_import_input.map { _id, _f, _dirs, _g1, g2 -> g2 },
+        ch_isar_import_input.map { _id, f, _dirs, _g1, _g2 -> f },
         gtf,
         ch_transcript_fasta,
-        ch_isar_import_input.map { _id, _f, dirs -> dirs }
+        ch_isar_import_input.map { _id, _f, dirs, _g1, _g2 -> dirs },
+        file("${projectDir}/bin/isar_import.R")
     )
     
     /*
      * Run ISAR SWITCH TEST
      */
     ISAR_SWITCH_TEST(
-        ISAR_IMPORT.out.rds
+        ISAR_IMPORT.out.rds,
+        file("${projectDir}/bin/isar_switch_test.R")
     )
     
     /*
@@ -99,7 +108,8 @@ workflow ISOFORMSWITCHR_ANALYSIS {
      */
     ISAR_EXTRACT_ORF(
         ISAR_SWITCH_TEST.out.rds,
-        gtf
+        gtf,
+        file("${projectDir}/bin/isar_extract_orf.R")
     )
 
     /*
@@ -112,7 +122,7 @@ workflow ISOFORMSWITCHR_ANALYSIS {
     ch_orf_rds = ISAR_EXTRACT_ORF.out.rds
 
     if (params.run_isar_full_annotation) {
-        ISAR_RUN_IUPRED(ch_orf_rds)
+        ISAR_RUN_IUPRED(ch_orf_rds, file("${projectDir}/bin/run_iupred3.py"))
 
         if (params.pfam_hmm) {
             ch_pfam_hmm = channel.fromPath(params.pfam_hmm, checkIfExists: true).first()
@@ -137,10 +147,13 @@ workflow ISOFORMSWITCHR_ANALYSIS {
     /*
      * Run ISAR SWITCH CONSEQUENCES
      */
-    ISAR_SWITCH_CONSEQUENCES(ch_consequences_input)
+    ISAR_SWITCH_CONSEQUENCES(ch_consequences_input, file("${projectDir}/bin/isar_switch_consequences.R"))
 
     emit:
     results  = ISAR_SWITCH_CONSEQUENCES.out.results  // [comparison_id, results_dir]
+    // Resolved switch-test engine per contrast (dexseq/satuRn), carried to the
+    // deliverables layer so padj_method and the reliability state match reality.
+    effective_method = ISAR_SWITCH_TEST.out.effective_method  // [comparison_id, file]
     versions = ch_gffread_versions
         .mix(ISAR_IMPORT.out.versions)
         .mix(ISAR_SWITCH_TEST.out.versions)

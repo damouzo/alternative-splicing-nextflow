@@ -23,6 +23,8 @@ process PEGASAS_PREPARE_CONTRAST {
           path(group_info),
           val(g1_ids),
           val(g2_ids)
+    // Script as input so content edits invalidate the cache on -resume
+    path prepare_contrast_script
 
     output:
     tuple val(comparison_id),
@@ -45,7 +47,7 @@ process PEGASAS_PREPARE_CONTRAST {
     def s1_flag = b1_samples ? "--g1-samples-file ${b1_samples}" : ""
     def s2_flag = b2_samples ? "--g2-samples-file ${b2_samples}" : ""
     """
-    "${projectDir}/bin/prepare_pegasas_inputs.py" \\
+    python3 ${prepare_contrast_script} \\
         ${rmats_se} \\
         ${group_info} \\
         --g1-ids "${g1_arg}" \\

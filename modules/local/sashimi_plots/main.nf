@@ -2,7 +2,17 @@ process SASHIMI_PLOTS {
     tag "$comparison_id"
     label 'process_medium'
 
-    publishDir "${params.outdir}/sashimi/${comparison_id}", mode: params.publish_dir_mode
+    // Final PDFs are a shipped deliverable, but RENDER_REPORT publishes them
+    // under its single-owned plots/ tree (a separate publishDir under plots/
+    // would be wiped when the report re-creates that directory on publish).
+    // Intermediates are audit-only: publish the whole sashimi_out/ tree to raw/.
+    publishDir "${params.outdir}/raw/${params.tool_ids.sashimi}/${comparison_id}",
+        mode: params.publish_dir_mode,
+        saveAs: { f ->
+            def p = f.toString()
+            if (p != 'sashimi_out' && p != 'sashimi_out/') return null
+            (params.publish_level != 'core' && params.publish_raw) ? f : null
+        }
 
     input:
     tuple val(comparison_id),
@@ -12,11 +22,16 @@ process SASHIMI_PLOTS {
           val(b1_ids),
           path(b2_bams,     stageAs: 'b2_bams/*'),
           path(b2_bais,     stageAs: 'b2_bams/*'),
-          val(b2_ids)
+          val(b2_ids),
+          val(group1_name),
+          val(group2_name)
+    // Script as input so content edits invalidate the cache on -resume
+    path filter_script
 
     output:
-    tuple val(comparison_id), path("sashimi_out/"), emit: results
-    path  "versions.yml",                           emit: versions
+    tuple val(comparison_id), path("sashimi_out/"),      emit: results
+    tuple val(comparison_id), path("deliv/*/*.pdf"),    emit: pdfs, optional: true
+    path  "versions.yml",                               emit: versions
 
     script:
     def top_n       = params.sashimi_top_n
@@ -24,6 +39,10 @@ process SASHIMI_PLOTS {
     def dpsi        = params.report_dpsi_cutoff
     def exon_scale  = params.sashimi_exon_scale
     def intron_scale = params.sashimi_intron_scale
+    // Real condition labels; fall back to the configured labels only when the
+    // comparison has none.
+    def g1_label = group1_name ?: params.sashimi_group1_label
+    def g2_label = group2_name ?: params.sashimi_group2_label
     // Written as literal lines inside a quoted heredoc (below) so ids are never
     // interpolated as shell syntax, even if they contain $()/backticks/quotes.
     def b1_ids_lines = b1_ids.join('\n')
@@ -31,7 +50,7 @@ process SASHIMI_PLOTS {
 
     """
     # Step 1: filter rMATS output to top-N events per event type
-    filter_rmats_for_sashimi.py \\
+    python3 ${filter_script} \\
         rmats_results/ \\
         filtered_events/ \\
         --top-n ${top_n} \\
@@ -39,6 +58,12 @@ process SASHIMI_PLOTS {
         --dpsi  ${dpsi}
 
     mkdir -p sashimi_out
+
+    # Carry the per-event splice-site class next to the plots so the report and
+    # the PDF index can label de novo events correctly (rank == PDF <rank> prefix).
+    if [ -f filtered_events/site_classes.tsv ]; then
+        cp filtered_events/site_classes.tsv sashimi_out/site_classes.tsv
+    fi
 
     # Resolve rmats2sashimiplot executable across image layouts
     SASHIMI_BIN=\$(command -v rmats2sashimiplot || true)
@@ -141,8 +166,8 @@ B2_IDS_EOF
             --b2 "\$B2_BAMS" \\
             --event-type "\$ETYPE" \\
             -e   "\$EFILE" \\
-            --l1 "group1" \\
-            --l2 "group2" \\
+            --l1 "${g1_label}" \\
+            --l2 "${g2_label}" \\
             --exon_s  ${exon_scale} \\
             --intron_s ${intron_scale} \\
             --group-info "\$GROUP_FILE" \\
@@ -161,6 +186,19 @@ B2_IDS_EOF
         echo "[ERROR] Failed to generate sashimi plots for all event types" >&2
         exit 1
     fi
+
+    # Stage the final PDFs in the shippable layout deliv/<EVENT_TYPE>/<file>.pdf.
+    # publishDir remaps these to deliverables/.../plots/sashimi/<EVENT_TYPE>/.
+    mkdir -p deliv
+    for ETYPE in SE A5SS A3SS MXE RI; do
+        if compgen -G "sashimi_out/\${ETYPE}/Sashimi_plot/*.pdf" >/dev/null; then
+            mkdir -p "deliv/\${ETYPE}"
+            cp sashimi_out/\${ETYPE}/Sashimi_plot/*.pdf "deliv/\${ETYPE}/"
+        elif compgen -G "sashimi_out/\${ETYPE}/*.pdf" >/dev/null; then
+            mkdir -p "deliv/\${ETYPE}"
+            cp sashimi_out/\${ETYPE}/*.pdf "deliv/\${ETYPE}/"
+        fi
+    done
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

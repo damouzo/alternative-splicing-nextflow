@@ -2,7 +2,10 @@ process LEAFCUTTER_DS {
     tag "$comparison_id"
     label 'process_high'
 
-    publishDir "${params.outdir}/leafcutter/${comparison_id}", mode: params.publish_dir_mode
+    // raw/ layer — unpublished in 'core' mode; versions.yml goes to run_info/
+    publishDir "${params.outdir}/raw/${params.tool_ids.leafcutter}", mode: params.publish_dir_mode,
+        saveAs: { f -> (f.toString() == 'versions.yml' ||
+                        params.publish_level == 'core' || !params.publish_raw) ? null : f }
 
     input:
     tuple val(comparison_id), path(counts_gz), val(sample_ids), val(conditions)
@@ -86,6 +89,7 @@ PYEOF
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
         leafcutter: \$(Rscript -e "cat(as.character(packageVersion('leafcutter')))" 2>/dev/null || echo "unknown")
+        R: \$(Rscript -e "cat(as.character(getRversion()))" 2>/dev/null || echo "unknown")
     END_VERSIONS
     """
 }

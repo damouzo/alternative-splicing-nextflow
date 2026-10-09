@@ -25,6 +25,8 @@ process PEGASAS_CORRELATION {
           path(psi_matrix),
           path(group_order),
           path(contrast_samples)
+    // Script as input so content edits invalidate the cache on -resume
+    path cor_script
 
     output:
     tuple val(comparison_id), path("correlation_out/"), emit: results
@@ -58,7 +60,7 @@ process PEGASAS_CORRELATION {
         # Step 3: Pearson correlation + permutation test (vendored fixed R script).
         REFINED=\$(ls "correlation_out/\$SIG"/refinedBySample.*.txt 2>/dev/null | head -1)
         if [ -n "\$REFINED" ]; then
-            ${projectDir}/bin/cor_matrix_direct_perm.R \\
+            Rscript ${cor_script} \\
                 "correlation_out/\$SIG/\$SIG.sorted.txt" \\
                 "\$REFINED" \\
                 "correlation_out/\$SIG" \\

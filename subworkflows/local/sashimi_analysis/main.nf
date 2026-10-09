@@ -19,6 +19,7 @@ workflow SASHIMI_ANALYSIS {
     take:
     ch_rmats_results  // [comp_id, rmats_dir]
     ch_samples_bam    // [meta, bam, bai]
+    ch_comp_names     // [comp_id, group1_name, group2_name]
 
     main:
     // Build per-comparison BAM channels from validated metadata.
@@ -63,16 +64,18 @@ workflow SASHIMI_ANALYSIS {
             ]
         }
 
-    // Join rMATS results with BAMs for each comparison
+    // Join rMATS results with BAMs and real condition labels for each comparison
     ch_sashimi_input = ch_rmats_results
         .join(ch_b1, by: 0)
         .join(ch_b2, by: 0)
-        .map { comp_id, rmats_dir, b1_bams, b1_bais, b1_ids, b2_bams, b2_bais, b2_ids ->
-            [comp_id, rmats_dir, b1_bams, b1_bais, b1_ids, b2_bams, b2_bais, b2_ids]
+        .join(ch_comp_names, by: 0)
+        .map { comp_id, rmats_dir, b1_bams, b1_bais, b1_ids, b2_bams, b2_bais, b2_ids, g1, g2 ->
+            [comp_id, rmats_dir, b1_bams, b1_bais, b1_ids, b2_bams, b2_bais, b2_ids, g1, g2]
         }
 
-    SASHIMI_PLOTS(ch_sashimi_input)
+    SASHIMI_PLOTS(ch_sashimi_input, file("${projectDir}/bin/filter_rmats_for_sashimi.py"))
 
     emit:
-    results = SASHIMI_PLOTS.out.results
+    results  = SASHIMI_PLOTS.out.results
+    versions = SASHIMI_PLOTS.out.versions
 }

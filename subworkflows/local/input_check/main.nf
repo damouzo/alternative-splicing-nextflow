@@ -51,8 +51,14 @@ workflow INPUT_CHECK {
     comparisons
         .splitCsv(header: true, sep: ',')
         .map { row ->
+            def comparison_id = "${row.group1}_vs_${row.group2}"
+            // comparison_id is interpolated into bash commands (report name,
+            // deliverables); keep it filesystem- and shell-safe
+            if (!(comparison_id ==~ /^[A-Za-z0-9._-]+$/)) {
+                error("Invalid comparison id '${comparison_id}' — group names may only contain letters, numbers, '.', '_' and '-'")
+            }
             def comparison_meta = [
-                id:     "${row.group1}_vs_${row.group2}",
+                id:     comparison_id,
                 group1: row.group1,
                 group2: row.group2
             ]
@@ -115,9 +121,25 @@ workflow INPUT_CHECK {
         }
         .set { ch_samples_salmon_with_comparison }
     
+    ch_samples_all
+        .combine(ch_comparisons)
+        .filter { meta, _bam, _bai, _salmon_dir, comp ->
+            meta.condition == comp.group1 || meta.condition == comp.group2
+        }
+        .map { meta, bam, bai, salmon_dir, comp ->
+            def group_number = (meta.condition == comp.group1) ? 1 : 2
+            def meta_updated = meta + [
+                comparison_id: comp.id,
+                group: group_number
+            ]
+            [meta_updated, bam, bai, salmon_dir]
+        }
+        .set { ch_samples_full_with_comparison }
+
     emit:
     samples_bam    = ch_samples_bam_with_comparison  // [meta, bam, bai]
     samples_salmon = ch_samples_salmon_with_comparison // [meta, salmon_dir]
+    samples_full   = ch_samples_full_with_comparison  // [meta, bam, bai, salmon_dir] enriched with comparison_id/group
     comparisons    = ch_comparisons                    // [comparison_meta]
     versions       = VALIDATE_INPUT.out.versions
 }

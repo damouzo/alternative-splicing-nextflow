@@ -13,8 +13,20 @@ process PEGASAS_COLLATE {
 
     container 'local/pegasas:latest'
 
-    publishDir "${params.outdir}/pegasas/${comparison_id}", mode: params.publish_dir_mode,
-        saveAs: { f -> f.startsWith('pegasas_out/') ? f.substring('pegasas_out/'.length()) : f }
+    // raw/ layer — unpublished in 'core' mode, except *_sig_pathways.tsv which
+    // feeds the pegasas master (n_sig_events) and must survive at every level.
+    // versions.yml goes to run_info/.
+    publishDir "${params.outdir}/raw/${params.tool_ids.pegasas}/${comparison_id}", mode: params.publish_dir_mode,
+        saveAs: { f ->
+            def name = f.toString()
+            if (name == 'versions.yml') {
+                return null
+            }
+            if (params.publish_level == 'core' || !params.publish_raw) {
+                return name.endsWith('_sig_pathways.tsv') ? f : null
+            }
+            f.startsWith('pegasas_out/') ? f.substring('pegasas_out/'.length()) : f
+        }
 
     input:
     tuple val(comparison_id),
@@ -22,6 +34,8 @@ process PEGASAS_COLLATE {
           path(shared_scores),
           val(g1_ids),
           val(g2_ids)
+    // Script as input so content edits invalidate the cache on -resume
+    path collate_script
 
     output:
     tuple val(comparison_id), path("pegasas_out/"), emit: results
@@ -33,12 +47,13 @@ process PEGASAS_COLLATE {
     def g2_arg = g2_ids instanceof List ? g2_ids.join(',') : g2_ids
     """
     mkdir -p pegasas_out
-    pegasas_collate_scores.py \\
+    python3 ${collate_script} \\
         ${shared_scores} \\
         ${correlation_out} \\
         --g1-ids "${g1_arg}" \\
         --g2-ids "${g2_arg}" \\
         --comp-id "${comparison_id}" \\
+        --fdr-cutoff ${params.report_fdr_cutoff} \\
         --out-dir pegasas_out \\
         --sig-out .
 

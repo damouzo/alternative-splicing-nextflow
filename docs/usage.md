@@ -133,27 +133,26 @@ executor >  local (12)
 
 ## Output Structure
 
-Results are written to the directory specified by `--outdir`:
+Results are written to the directory specified by `--outdir`. The shippable
+folder is `deliverables/`; `raw/` is audit-only and is not sent:
 
 ```
 results/
-├── rmats/
-│   └── control_vs_treatment/
-│       ├── SE.MATS.JC.txt
-│       ├── A5SS.MATS.JC.txt
-│       └── ...
-├── majiq/
-│   └── control_vs_treatment/
-│       ├── splicegraph.sql
-│       ├── control_vs_treatment.tsv
-│       └── ...
-├── isoformswitchr/
-│   └── control_vs_treatment/
-│       ├── top_isoform_switches.csv
-│       ├── consequence_summary.csv
-│       └── switchplots/
-└── report/
-    └── control_vs_treatment_splicing_report.html
+├── deliverables/                   # SHIPPABLE: rename + zip to send
+│   ├── README.md
+│   ├── run_info/                   # run_manifest, sample_index, software_versions, qa_report
+│   ├── contrasts/
+│   │   └── control_vs_treatment/
+│   │       ├── control_vs_treatment_splicing_report.html
+│   │       ├── contrast_manifest.yaml
+│   │       ├── tables/             # <id>.<tool>.{master,significant,summary}.tsv + cross_tool.*
+│   │       └── plots/              # PDF figures per tool (rmats/, majiq/, isar/, ...)
+│   └── cross_contrast/pegasas/     # summary, heatmap, UpSet
+└── raw/                            # native per-tool output (audit-only, not shipped)
+    ├── rmats/control_vs_treatment/...
+    ├── majiq/control_vs_treatment/...
+    ├── isar/control_vs_treatment/...
+    └── ...
 ```
 
 See [output.md](output.md) for detailed descriptions of all output files.
@@ -512,9 +511,16 @@ nextflow run main.nf -profile docker \
 
 Overlay DESeq2/edgeR results on the splicing report as a dual-hit volcano plot.
 
+DGE results are read from one or more directories. Each immediate subdirectory is a DGE
+comparison holding a `*_DESeq2_results.csv` (columns: `gene_name`, `log2FoldChange`,
+`padj`). The pipeline comparison id is matched to a subdirectory by the reverse group name;
+`de_results_map` provides explicit overrides when the names do not follow that pattern.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `--de_results` | file | `null` | TSV with DE results (columns: gene_name, log2FoldChange, padj) |
+| `--dge_dirs` | list/string | `[]` | DGE directories to search. In YAML: `dge_dirs: [res/dge, res_SF3B1/dge]`; on the CLI a comma-separated string is also accepted |
+| `--de_results` | file | `null` | Deprecated single-directory alias (appended to `dge_dirs`) |
+| `--de_results_map` | map | `{}` | Explicit `comparison_id -> DGE subdirectory` overrides |
 
 ### LeafCutter
 

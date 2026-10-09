@@ -3,7 +3,7 @@
  * ========================================================================================
  *  alternative-splicing-nextflow: Multi-tool differential alternative splicing pipeline
  * ========================================================================================
- *  Github: https://github.com/BCI-KRP/alternative-splicing-nextflow
+ *  Github: https://github.com/damouzo/alternative-splicing-nextflow
  * ----------------------------------------------------------------------------------------
  */
 
@@ -118,6 +118,13 @@ Tool Selection:
 
 MAJIQ:
   majiq_license     : ${params.majiq_license ?: 'not provided'}
+
+Deliverables (shippable layer):
+  publish_deliverables            : ${params.publish_deliverables}
+  publish_level                   : ${params.publish_level}
+  publish_rmats_jcec              : ${params.publish_rmats_jcec}
+  publish_rmats_individual_counts : ${params.publish_rmats_individual_counts}
+  results_contract_version        : ${params.results_contract_version}
 
 Resources:
   max_cpus          : ${params.max_cpus}

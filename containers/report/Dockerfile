@@ -7,12 +7,13 @@
 FROM bioconductor/bioconductor_docker:RELEASE_3_20
 
 LABEL org.opencontainers.image.description="R Markdown report renderer for alternative-splicing-nextflow"
-LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
+LABEL org.opencontainers.image.source="https://github.com/damouzo/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # pandoc is required by rmarkdown for HTML rendering;
-# poppler-utils provides pdftoppm to embed sashimi PDFs as PNGs in the report
-RUN apt-get update && apt-get install -y --no-install-recommends pandoc poppler-utils \
+# poppler-utils provides pdftoppm to embed sashimi PDFs as PNGs in the report;
+# python3 runs the deliverables exporters (build_results_manifest.py, masters, QA)
+RUN apt-get update && apt-get install -y --no-install-recommends pandoc poppler-utils python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # R Markdown stack + visualization packages

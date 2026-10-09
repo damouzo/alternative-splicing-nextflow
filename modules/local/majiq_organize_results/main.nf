@@ -6,7 +6,10 @@ process MAJIQ_ORGANIZE_RESULTS {
 
     container 'local/majiq:3.0'
 
-    publishDir "${params.outdir}/majiq/${comparison_id}", mode: params.publish_dir_mode
+    // raw/ layer — unpublished in 'core' mode; versions.yml goes to run_info/
+    publishDir "${params.outdir}/raw/${params.tool_ids.majiq}", mode: params.publish_dir_mode,
+        saveAs: { f -> (f.toString() == 'versions.yml' ||
+                        params.publish_level == 'core' || !params.publish_raw) ? null : f }
 
     input:
     val  comparison_id

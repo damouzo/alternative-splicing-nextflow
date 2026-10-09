@@ -13,7 +13,7 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.description="MAJIQ V3 for Local Splicing Variation analysis"
-LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
+LABEL org.opencontainers.image.source="https://github.com/damouzo/alternative-splicing-nextflow"
 
 # Build dependencies for MAJIQ's C++/pybind11 extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libhts-dev \
     zlib1g-dev \
     git \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Limit parallel compilation to avoid OOM during pybind11/CMake build
@@ -34,6 +35,9 @@ RUN pip install --no-cache-dir git+https://bitbucket.org/biociphers/majiq_academ
 
 # Verify the binary is available (will print version; licence checked at runtime)
 RUN majiq-v3 --version || echo "MAJIQ installed — licence key required at runtime"
+
+# Nextflow requires ps inside the container to collect task metrics
+RUN command -v ps >/dev/null 2>&1
 
 WORKDIR /data
 

@@ -23,8 +23,9 @@ Accepts outputs from nf-core/rnaseq (BAMs + Salmon quantifications). Produces on
 
 - Interactive volcano plots (plotly)
 - Cross-tool gene overlap (UpSetR)
+- Per-tool effect-size distributions (|ΔPSI| for MAJIQ/LeafCutter, |ΔIF| for ISAR)
 - PSI PCA and splice junction QC
-- GO/KEGG enrichment (clusterProfiler)
+- GO/KEGG enrichment (clusterProfiler) with an ORA status table (ran / no enriched terms / error)
 - DE + AS dual-hit volcano (`--de_results`)
 
 ## Input
@@ -107,16 +108,24 @@ nextflow run main.nf -profile apptainer -params-file demo/params.yaml
 
 ## Output Layout
 
+Published under `results/`:
+
 ```
 results/
-  rmats/<comparison_id>/
-  majiq/<comparison_id>/
-  isoformswitchr/<comparison_id>/
-  leafcutter/<comparison_id>/           # when --run_leafcutter true
-  sashimi_plots/<comparison_id>/        # when --run_sashimi true
-  pegasas/<comparison_id>/              # when --run_pegasas true
-  report/<comparison_id>_splicing_report.html
+├── deliverables/                    # shippable (internal paths relative to here)
+│   ├── run_info/                    # run_manifest, sample_index, software_versions, qa_report
+│   ├── contrasts/<comparison_id>/   # <id>_splicing_report.html, tables/, plots/
+│   └── cross_contrast/pegasas/
+└── raw/<tool>/<comparison_id>/      # native outputs, audit-only (see --publish_level)
 ```
+
+`tables/` holds the standardised `<id>.<tool>.{master,significant,summary}.tsv`
+plus the cross-tool tables. `plots/` holds one PDF per figure, grouped per tool
+(`rmats/{Volcano,PCA,Coverage,ORA,sashimi}`, `majiq/`, `isar/`, `leafcutter/`,
+`pegasas/`, `cross_tool_overlap/`, `de_as/`) and the UpSet membership TSV. Every
+non-sashimi deliverable PDF is single-page; `VALIDATE_RESULTS` fails on more.
+
+Sending the results is `mv deliverables <name> && zip -r <name>.zip <name>`.
 
 ## Internal Assets
 
@@ -126,8 +135,11 @@ results/
 - `assets/empty/NO_MAJIQ`
 - `assets/empty/NO_ISAR`
 - `assets/empty/NO_SASHIMI`
+- `assets/empty/NO_SASHIMI_INDEX`
 - `assets/empty/NO_PEGASAS`
 - `assets/empty/NO_LEAFCUTTER`
+- `assets/empty/NO_PFAM`
+- `assets/empty/NO_IUPRED`
 
 ## Documentation
 

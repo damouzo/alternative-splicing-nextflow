@@ -10,6 +10,7 @@ output:
     theme: flatly
 params:
   comparison_id: "comparison"
+  plots_dir: NULL
   rmats_dir: NULL
   majiq_dir: NULL
   isar_dir: NULL
@@ -22,8 +23,19 @@ params:
   majiq_dpsi_cutoff: 0.2
   sashimi_png_dpi: 150
   organism: "human"
+  dge_dirs:
+    value: !r character()
   de_results: NULL
+  de_results_map:
+    value: !r list()
   run_de_as: false
+  publish_deliverables: false
+  publish_level: "core_raw"
+  results_contract_version: "2.4.0"
+  report_min_reads: 20
+  group1_name: "Group1"
+  group2_name: "Group2"
+  effective_test_method: "NA"
   group1_sample_ids:
     value: !r character()
   group2_sample_ids:
@@ -51,21 +63,19 @@ isar_switches     <- data.frame()
 isar_consequences <- data.frame()
 leafcutter_clusters <- data.frame()
 
-# Replication sizes per group (empty arrays when a tool is disabled).
-n1_samples <- length(as.character(unlist(params$group1_sample_ids)))
-n2_samples <- length(as.character(unlist(params$group2_sample_ids)))
-low_rep    <- (n1_samples > 0 && n1_samples < 4) ||
-              (n2_samples > 0 && n2_samples < 4)
+# ISAR reliability thresholds. Mirror build_results_manifest.py
+# (ISAR_IQR_THRESHOLD / ISAR_DIF_THRESHOLD); keep the two in sync.
+ISAR_IQR_PIN_THRESHOLD <- 0.05
+ISAR_DIF_PIN_THRESHOLD <- 0.1
 
-# Orthogonal validation disclaimer (shown in Summary and at the end of each
-# tool section so section-level readers do not miss it).
-validation_note <- paste0(
-  "<em>All splicing calls in this report are computational predictions from ",
-  "short-read RNA-seq. Top candidates intended for downstream biological ",
-  "interpretation or publication should be orthogonally validated ",
-  "(e.g., RT-PCR/qPCR across the relevant junctions, or long-read sequencing) ",
-  "before being reported as confirmed splicing events.</em>"
-)
+# Condition labels from comparisons.csv (group1/group2 columns). Fall back to
+# Group1/Group2 when the pipeline does not pass names (e.g. manual renders).
+cond_label <- function(name, fallback) {
+  name <- as.character(name)
+  if (length(name) == 0 || is.na(name) || !nzchar(name)) fallback else name
+}
+g1_label <- cond_label(params$group1_name, "Group1")
+g2_label <- cond_label(params$group2_name, "Group2")
 
 wrap_axis_labels <- function(x, width = 55) {
   vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
@@ -80,6 +90,334 @@ style_ora_dotplot <- function(p, title) {
       axis.text.y = element_text(size = 8, lineheight = 0.9),
       plot.margin = margin(5.5, 5.5, 5.5, 25)
     )
+}
+
+# ---- deliverable plot export ----
+# Plots are written under params$plots_dir during rendering and published with
+# the report (RENDER_REPORT declares `plots` as an output). Saves are
+# best-effort: a plotting failure must never abort the report itself, and every
+# panel that legitimately produces no plot simply yields no file.
+plots_root <- params$plots_dir
+if (!is.null(plots_root) && nzchar(plots_root) &&
+    !grepl("^(/|[A-Za-z]:[/\\\\])", plots_root)) {
+  plots_root <- file.path(getwd(), plots_root)
+}
+
+plots_path <- function(...) {
+  if (is.null(plots_root) || !nzchar(plots_root)) return(NULL)
+  file.path(plots_root, ...)
+}
+
+save_plot_pdf <- function(plot, rel_path, width = 10, height = 7) {
+  if (is.null(plot) || is.null(rel_path)) return(invisible(NULL))
+  path <- plots_path(rel_path)
+  if (is.null(path) || length(path) != 1 || !nzchar(path)) return(invisible(NULL))
+  tryCatch({
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+    ggsave(path, plot = plot, device = "pdf", width = width, height = height, bg = "white")
+  }, error = function(e) {
+    message(sprintf("[render_report] plot export failed (%s): %s", rel_path, conditionMessage(e)))
+  })
+  invisible(NULL)
+}
+
+# Size of a blank page written by the PDF device actually in use (pdf() vs
+# cairo_pdf differ), so blank-plot detection tracks the device instead of a
+# hardcoded byte count.
+blank_pdf_size <- function(width = 10, height = 6) {
+  tmp <- tempfile(fileext = ".pdf")
+  ok <- tryCatch({
+    grDevices::pdf(tmp, width = width, height = height)
+    graphics::plot.new()
+    grDevices::dev.off()
+    TRUE
+  }, error = function(e) FALSE)
+  if (!ok) {
+    unlink(tmp)
+    return(0)
+  }
+  size <- file.info(tmp)$size
+  unlink(tmp)
+  if (is.na(size)) 0 else size
+}
+
+# For grid/base plots (UpSetR) that ggsave cannot handle. UpSetR::upset returns a
+# grid object that only draws when printed, so the draw function must print it:
+# a bare tryCatch(draw_fun(), ...) discards the object and yields a blank page.
+save_device_pdf <- function(draw_fun, rel_path, width = 10, height = 6,
+                            min_extra = 1000) {
+  path <- plots_path(rel_path)
+  if (is.null(path) || length(path) != 1 || !nzchar(path)) return(invisible(NULL))
+  opened <- tryCatch({
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+    grDevices::pdf(path, width = width, height = height)
+    TRUE
+  }, error = function(e) {
+    message(sprintf("[render_report] plot export failed (%s): %s", rel_path, conditionMessage(e)))
+    FALSE
+  })
+  if (!opened) return(invisible(NULL))
+  dev <- grDevices::dev.cur()
+  # Safety net: close only the device opened here. A global dev.off() elsewhere
+  # must not make this shut down the wrong device.
+  on.exit({
+    if (grDevices::dev.cur() == dev) {
+      tryCatch(grDevices::dev.off(), error = function(e) NULL)
+    }
+  }, add = TRUE)
+  ok <- tryCatch({
+    res <- draw_fun()
+    if (!is.null(res)) print(res)
+    TRUE
+  }, error = function(e) {
+    message(sprintf("[render_report] plot draw failed (%s): %s", rel_path, conditionMessage(e)))
+    FALSE
+  })
+  # Flush before measuring: the pdf() device writes on close.
+  if (grDevices::dev.cur() == dev) {
+    tryCatch(grDevices::dev.off(), error = function(e) NULL)
+  }
+  if (!ok) {
+    if (file.exists(path)) unlink(path)
+    return(invisible(NULL))
+  }
+  size <- file.info(path)$size
+  if (!is.na(size) && size < blank_pdf_size(width, height) + min_extra) {
+    warning(sprintf(
+      "[render_report] exported plot looks blank (%s, %d bytes); removing it",
+      rel_path, size))
+    unlink(path)
+  }
+  invisible(NULL)
+}
+
+# ---- Effect-size distribution helper ----
+# One panel for every tool so MAJIQ, LeafCutter and ISAR share colours, axis
+# naming and the cutoff line. Bars are stacked (not overlaid) so a significant
+# bar can never hide a non-significant one below it.
+SIG_FILL <- c(`TRUE` = "firebrick", `FALSE` = "steelblue")
+
+significance_dist_plot <- function(df, value_col, significant_col, cutoff,
+                                   metric_label, title) {
+  keep <- !is.na(df[[value_col]]) & !is.na(df[[significant_col]])
+  df <- df[keep, , drop = FALSE]
+  df$.value <- abs(as.numeric(df[[value_col]]))
+  df$.significant <- as.logical(df[[significant_col]])
+  # Audit trail: the sum of the significant bars must equal the master count for
+  # this tool. Logged so a reader can cross-check against <id>.<tool>.master.tsv.
+  message(sprintf("[render_report] distribution %s: n=%d n_sig=%d",
+                  title, nrow(df), sum(df$.significant, na.rm = TRUE)))
+  ggplot(df, aes(x = .value, fill = .significant)) +
+    geom_histogram(bins = 50, position = "stack", alpha = 0.85) +
+    scale_fill_manual(values = SIG_FILL, name = "Significant", drop = FALSE) +
+    geom_vline(xintercept = cutoff, linetype = "dashed", colour = "gray30",
+               linewidth = 0.4) +
+    theme_bw() +
+    labs(title = title, x = metric_label, y = "Count")
+}
+
+# ---- ORA helpers ----
+get_orgdb_name <- function(organism) {
+  if (identical(organism, "mouse")) "org.Mm.eg.db" else "org.Hs.eg.db"
+}
+
+truncate_geneid_datatable <- function(df, caption) {
+  geneid_col <- which(colnames(df) == "geneID")
+
+  dt_options <- list(pageLength = 15, scrollX = TRUE)
+  if (length(geneid_col) == 1) {
+    dt_options$columnDefs <- list(list(
+      targets = geneid_col - 1,
+      render = JS(
+        "function(data, type, row) {",
+        "  if (type !== 'display' || data === null || data === undefined) return data;",
+        "  if (data.length <= 80) return data;",
+        "  return '<span title=\"' + data + '\">' + data.substr(0, 80) + '... <em>(see more)</em></span>';",
+        "}"
+      )
+    ))
+  }
+
+  datatable(
+    df,
+    caption = caption,
+    options = dt_options,
+    rownames = FALSE,
+    escape = FALSE
+  )
+}
+
+# Append-only record of every ORA set rendered (or skipped), so the report and
+# the reader can tell "no enriched terms" from "enrichment failed".
+ora_status_log <- data.frame(
+  set_name = character(), n_genes = integer(), n_go = integer(),
+  n_kegg = integer(), status = character(), stringsAsFactors = FALSE
+)
+
+run_ora_for_set <- function(genes, set_name, min_genes = 10) {
+  genes <- unique(as.character(genes))
+  genes <- genes[!is.na(genes) & genes != ""]
+
+  res <- list(
+    set_name = set_name,
+    n_genes = length(genes),
+    message = NULL,
+    notes = character(0),
+    go = NULL,
+    go_df = data.frame(),
+    kegg = NULL,
+    kegg_df = data.frame()
+  )
+
+  if (length(genes) < min_genes) {
+    res$message <- sprintf("Need at least %d genes for ORA; found %d.", min_genes, length(genes))
+    return(res)
+  }
+
+  orgdb_name <- get_orgdb_name(params$organism)
+  if (!requireNamespace("clusterProfiler", quietly = TRUE)) {
+    res$message <- "clusterProfiler is not available in the report environment."
+    return(res)
+  }
+  if (!requireNamespace(orgdb_name, quietly = TRUE)) {
+    res$message <- sprintf("%s is not available in the report environment.", orgdb_name)
+    return(res)
+  }
+
+  orgdb_obj <- get(orgdb_name, envir = asNamespace(orgdb_name))
+
+  res$go <- tryCatch(
+    clusterProfiler::enrichGO(
+      gene = genes,
+      OrgDb = orgdb_obj,
+      keyType = "SYMBOL",
+      ont = "BP",
+      pAdjustMethod = "BH",
+      pvalueCutoff = 0.05,
+      qvalueCutoff = 0.2,
+      readable = TRUE
+    ),
+    error = function(e) {
+      res$notes <- c(res$notes, sprintf("GO BP enrichment failed: %s", conditionMessage(e)))
+      NULL
+    }
+  )
+
+  if (!is.null(res$go) && nrow(as.data.frame(res$go)) > 0) {
+    res$go_df <- as.data.frame(res$go) %>%
+      dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
+      mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
+  } else if (is.null(res$go)) {
+    res$notes <- c(res$notes, "No GO BP plot produced (enrichment error, see above).")
+  } else {
+    res$notes <- c(res$notes, "No GO BP terms passed enrichment thresholds.")
+  }
+
+  gene_ids <- tryCatch(
+    clusterProfiler::bitr(
+      genes,
+      fromType = "SYMBOL",
+      toType = "ENTREZID",
+      OrgDb = orgdb_obj
+    ),
+    error = function(e) data.frame()
+  )
+  gene_ids <- unique(gene_ids$ENTREZID)
+  gene_ids <- gene_ids[!is.na(gene_ids) & gene_ids != ""]
+
+  if (length(gene_ids) >= 5) {
+    kegg_org <- if (identical(params$organism, "mouse")) "mmu" else "hsa"
+    res$kegg <- tryCatch(
+      clusterProfiler::enrichKEGG(
+        gene = gene_ids,
+        organism = kegg_org,
+        pAdjustMethod = "BH",
+        pvalueCutoff = 0.05
+      ),
+      error = function(e) {
+        res$notes <- c(res$notes, sprintf("KEGG enrichment failed: %s", conditionMessage(e)))
+        NULL
+      }
+    )
+
+    if (!is.null(res$kegg) && nrow(as.data.frame(res$kegg)) > 0) {
+      res$kegg_df <- as.data.frame(res$kegg) %>%
+        dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
+        mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
+    } else if (is.null(res$kegg)) {
+      res$notes <- c(res$notes, "No KEGG plot produced (enrichment error, see above).")
+    } else {
+      res$notes <- c(res$notes, "No KEGG pathways passed enrichment thresholds.")
+    }
+  } else {
+    res$notes <- c(res$notes, "Insufficient SYMBOL-to-ENTREZ mapping for KEGG (need at least 5 genes).")
+  }
+
+  res
+}
+
+# Render an ORA result to the HTML report and, when plots_subdir/plots_stem are
+# given, save the GO/KEGG dotplots as deliverables under plots/<subdir>/.
+render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
+                              plots_stem = NULL, subject = "this gene set",
+                              show_heading = TRUE) {
+  heading_prefix <- paste(rep("#", heading_level), collapse = "")
+  if (show_heading) cat(sprintf("%s %s\n\n", heading_prefix, ora_res$set_name))
+  cat(sprintf("Input significant genes: %d\n\n", ora_res$n_genes))
+
+  ora_plot_path <- function(kind) {
+    if (is.null(plots_subdir) || is.null(plots_stem)) return(NULL)
+    file.path(plots_subdir, paste0(plots_stem, "_", kind, ".pdf"))
+  }
+
+  if (!is.null(ora_res$message)) {
+    ora_status_log <<- rbind(ora_status_log, data.frame(
+      set_name = ora_res$set_name, n_genes = as.integer(ora_res$n_genes),
+      n_go = 0L, n_kegg = 0L, status = ora_res$message, stringsAsFactors = FALSE))
+    cat(ora_res$message, "\n\n")
+    return(invisible(NULL))
+  }
+
+  ora_status_log <<- rbind(ora_status_log, data.frame(
+    set_name = ora_res$set_name, n_genes = as.integer(ora_res$n_genes),
+    n_go = nrow(ora_res$go_df), n_kegg = nrow(ora_res$kegg_df),
+    status = "ran", stringsAsFactors = FALSE))
+
+  cat("**GO Biological Process**\n\n")
+  if (!is.null(ora_res$go) && nrow(ora_res$go_df) > 0) {
+    go_plot <- style_ora_dotplot(
+      clusterProfiler::dotplot(ora_res$go, showCategory = 15),
+      paste0("GO BP enrichment (", ora_res$set_name, ")")
+    )
+    print(go_plot)
+    save_plot_pdf(go_plot, ora_plot_path("GO_BP"), width = 10, height = 7)
+    print(truncate_geneid_datatable(
+      ora_res$go_df,
+      caption = paste0("GO BP enrichment table \u2014 ", ora_res$set_name)
+    ))
+  } else {
+    cat(sprintf("No GO BP terms available for %s.\n\n", subject))
+  }
+
+  cat("**KEGG pathways**\n\n")
+  if (!is.null(ora_res$kegg) && nrow(ora_res$kegg_df) > 0) {
+    kegg_plot <- style_ora_dotplot(
+      clusterProfiler::dotplot(ora_res$kegg, showCategory = 15),
+      paste0("KEGG enrichment (", ora_res$set_name, ")")
+    )
+    print(kegg_plot)
+    save_plot_pdf(kegg_plot, ora_plot_path("KEGG"), width = 10, height = 7)
+    print(truncate_geneid_datatable(
+      ora_res$kegg_df,
+      caption = paste0("KEGG enrichment table \u2014 ", ora_res$set_name)
+    ))
+  } else {
+    cat(sprintf("No KEGG pathways available for %s.\n\n", subject))
+  }
+
+  if (length(ora_res$notes) > 0) {
+    cat(paste0("Notes: ", paste(ora_res$notes, collapse = " ")), "\n\n")
+  }
 }
 ```
 
@@ -98,21 +436,8 @@ This report presents differential alternative splicing analysis results for comp
 - rMATS / ISAR FDR cutoff: `r params$fdr_cutoff`
 - rMATS / ISAR |ΔΨ| / |dIF| cutoff: `r params$dpsi_cutoff`
 - MAJIQ P(|ΔΨ| > threshold) cutoff: `r params$majiq_prob_threshold`
-- MAJIQ |ΔΨ| cutoff: `r params$majiq_dpsi_cutoff`
-
-```{r summary_warnings, results='asis'}
-if (low_rep) {
-  cat(sprintf(
-    "**Low replication warning:** this comparison has n=%d vs n=%d (groups 1/2). ",
-    n1_samples, n2_samples
-  ))
-  cat(
-    "Statistical power for detecting moderate ΔΨ is limited; ",
-    "interpret borderline calls with caution.\n\n"
-  )
-}
-cat(sprintf("%s\n\n", validation_note))
-```
+- MAJIQ |ΔΨ| cutoff: `r params$majiq_dpsi_cutoff` (native default, more conservative than the 0.1 rule)
+- LeafCutter: an intron is significant when its cluster passes FDR and `|ΔPSI| >= r params$dpsi_cutoff`
 
 ---
 
@@ -138,6 +463,12 @@ for (event_type in event_types) {
 
     df <- read.delim(jc_file, stringsAsFactors = FALSE)
     if (nrow(df) > 0) {
+      # Unified sign: effect_size = group2 - group1. rMATS IncLevelDifference is
+      # group1 - group2, so keep the native value and flip for every display.
+      if ("IncLevelDifference" %in% colnames(df)) {
+        df$IncLevelDifference_native <- df$IncLevelDifference
+        df$IncLevelDifference <- -df$IncLevelDifference
+      }
       df$EventType <- event_type
       df$NovelSite <- df$ID %in% novel_ids
       rmats_results_list[[event_type]] <- df
@@ -146,150 +477,49 @@ for (event_type in event_types) {
 }
 
 if (length(rmats_results_list) > 0) {
+  # Sum of a comma-separated per-sample count vector (0 when not parseable).
+  parse_count_sum <- function(x) {
+    if (is.na(x) || x == "" || x == "NA") return(0)
+    vals <- suppressWarnings(as.numeric(strsplit(as.character(x), ",")[[1]]))
+    vals <- vals[!is.na(vals)]
+    if (length(vals) == 0) return(0)
+    sum(vals)
+  }
+
+  # 0 disables the ranking-table coverage filter (e.g. manual renders without
+  # the param in their JSON).
+  min_reads <- params$report_min_reads
+  if (is.null(min_reads)) min_reads <- 0
+
   all_rmats <- bind_rows(rmats_results_list) %>%
     mutate(
       FDR_plot       = pmax(FDR, .Machine$double.xmin),
-      neglog10FDR    = -log10(FDR_plot),
+      # Cap -log10(FDR) at 300 so an underflowed --cstat p-value cannot dominate
+      # the score. This matches filter_rmats_for_sashimi.py (FDR clamped at
+      # 1e-300), so the report ranking and the sashimi top-N use the same
+      # priority; only past the cap does |dPsi| drive the order.
+      neglog10FDR    = pmin(-log10(FDR_plot), 300),
       Significant    = FDR <= params$fdr_cutoff & abs(IncLevelDifference) >= params$dpsi_cutoff,
-      # Priority score: combines -log10(FDR) with effect size.
       # Higher = more significant and larger PSI change.
-      priority_score = round(neglog10FDR * abs(IncLevelDifference), 3)
+      priority_score = round(neglog10FDR * abs(IncLevelDifference), 3),
+      # Splice-site class: reflects splice-site novelty only.
+      #   annotated = every splice site present in the GTF annotation (events
+      #               with known sites but a novel junction stay here);
+      #   de_novo   = at least one site absent from it (fromGTF.novelSpliceSite).
+      site_class     = ifelse(NovelSite, "de_novo", "annotated"),
+      # Junction-read support per group (IJC + SJC). Drives the report_min_reads
+      # filter of the ranking tables only; significance calling is untouched.
+      reads_group1   = mapply(parse_count_sum, IJC_SAMPLE_1) +
+                       mapply(parse_count_sum, SJC_SAMPLE_1),
+      reads_group2   = mapply(parse_count_sum, IJC_SAMPLE_2) +
+                       mapply(parse_count_sum, SJC_SAMPLE_2),
+      reads_ok       = reads_group1 >= min_reads & reads_group2 >= min_reads
     )
 }
 ```
 
-```{r rmats_summary, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-summary_table <- all_rmats %>%
-  group_by(EventType) %>%
-  summarise(
-    Total       = n(),
-    Significant = sum(Significant, na.rm = TRUE),
-    FDR_leq_0.05 = sum(FDR <= 0.05, na.rm = TRUE),
-    Mean_deltaPSI = round(mean(abs(IncLevelDifference), na.rm = TRUE), 3)
-  )
-
-kable(summary_table, caption = "rMATS Event Summary by Event Type")
-```
-
-```{r rmats_volcano, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=8}
-# Label top 5 events per event type (highest priority score)
-top_labels <- all_rmats %>%
-  filter(
-    Significant,
-    !is.na(geneSymbol), geneSymbol != "",
-    !is.na(IncLevelDifference),
-    !is.na(neglog10FDR)
-  ) %>%
-  group_by(EventType) %>%
-  slice_max(priority_score, n = 5) %>%
-  ungroup()
-
-all_rmats %>%
-  filter(!is.na(IncLevelDifference), !is.na(neglog10FDR)) %>%
-  ggplot(aes(x = IncLevelDifference, y = neglog10FDR, color = Significant)) +
-  geom_point(alpha = 0.4, size = 1) +
-  geom_text_repel(
-    data = top_labels,
-    aes(y = neglog10FDR, label = geneSymbol),
-    size = 2.5, max.overlaps = 10, color = "black"
-  ) +
-  facet_wrap(~EventType, scales = "free_y") +
-  scale_color_manual(values = c("gray70", "firebrick")) +
-  geom_hline(yintercept = -log10(params$fdr_cutoff),    linetype = "dashed", color = "navy", linewidth = 0.4) +
-  geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "navy", linewidth = 0.4) +
-  scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
-  coord_cartesian(clip = "off") +
-  theme_bw() +
-  labs(
-    title = "rMATS Volcano Plots",
-    x     = "ΔΨ (IncLevelDifference)",
-    y     = "-log10(FDR)"
-  ) +
-  theme(
-    legend.position = "bottom",
-    plot.margin = margin(t = 5.5, r = 35, b = 5.5, l = 5.5)
-  )
-```
-
-```{r rmats_top_table, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-top_events <- all_rmats %>%
-  filter(Significant) %>%
-  arrange(desc(priority_score)) %>%
-  select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference, priority_score, NovelSite) %>%
-  head(100) %>%
-  mutate(
-    SiteType     = ifelse(NovelSite, "de novo", "annotated"),
-    # Keep underflowed --cstat p-values readable instead of rounding them to 0.
-    FDR_display  = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
-  )
-
-if (nrow(top_events) > 0) {
-  datatable(
-    top_events %>% select(-NovelSite, -FDR),
-    caption  = "Top 100 significant rMATS events ranked by priority score",
-    options  = list(pageLength = 10, scrollX = TRUE),
-    rownames = FALSE, escape = FALSE
-  ) %>%
-    formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4)
-} else {
-  cat("No significant events detected.\n")
-}
-```
-
-## De novo splice-site events
-
-```{r rmats_novel_table, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-# Unannotated (de novo) splice sites are not drawn by sashimi and are often of
-# special interest in spliceosome-mutant cohorts, so expose them separately.
-novel_events <- all_rmats %>%
-  filter(NovelSite) %>%
-  mutate(
-    # Keep underflowed --cstat p-values readable instead of rounding them to 0.
-    FDR_display = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
-  )
-
-n_novel <- nrow(novel_events)
-n_novel_sig <- sum(novel_events$Significant, na.rm = TRUE)
-
-if (n_novel > 0) {
-  cat(sprintf(
-    "%d events involve unannotated (de novo) splice sites; %d are significant (FDR < %s & |ΔΨ| >= %.2f).\n\n",
-    n_novel, n_novel_sig, params$fdr_cutoff, params$dpsi_cutoff
-  ))
-
-  novel_display <- novel_events %>%
-    filter(Significant) %>%
-    arrange(desc(priority_score)) %>%
-    select(EventType, GeneID, geneSymbol, chr, strand, FDR_display,
-           IncLevelDifference, priority_score) %>%
-    head(200)
-
-  if (nrow(novel_display) > 0) {
-    datatable(
-      novel_display,
-      caption  = sprintf(
-        "Significant de novo rMATS events ranked by priority score (showing top %d of %d)",
-        nrow(novel_display), n_novel_sig
-      ),
-      options  = list(pageLength = 10, scrollX = TRUE),
-      rownames = FALSE, escape = FALSE
-    ) %>%
-      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4)
-  } else {
-    cat("No significant de novo events detected.\n")
-  }
-} else {
-  cat("No de novo splice-site events detected.\n")
-}
-```
-
-## PSI profile (derived from rMATS)
-
-### PCA of PSI profiles
-
-```{r psi_pca, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=6}
-# Build per-sample PSI matrix from rMATS IncLevel columns (SE events preferred; fallback to all).
-# IncLevel1/IncLevel2 are comma-separated PSI values per replicate in each group.
+```{r rmats_panel_prep, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0}
+# ---- shared helpers for the three rMATS panels (Combined / Annotated / De novo) ----
 
 parse_psi_vec <- function(x) {
   if (is.na(x) || x == "NA" || x == "") return(NA_real_)
@@ -312,101 +542,6 @@ resolve_sample_labels <- function(expected_n, ids, prefix) {
   paste0(prefix, "_rep", seq_len(expected_n))
 }
 
-# Prefer SE events; fall back to the type with most quantifiable events.
-# Use the full event set (not only significant) so the PCA reflects the global
-# structure of PSI variability rather than only the contrast of interest.
-pca_event_type <- if ("SE" %in% all_rmats$EventType) "SE" else {
-  all_rmats %>% count(EventType) %>% slice_max(n, n = 1) %>% pull(EventType)
-}
-pca_events_raw <- if (length(pca_event_type) > 0) {
-  all_rmats %>%
-    filter(EventType == pca_event_type[1],
-           !is.na(IncLevel1), !is.na(IncLevel2),
-           IncLevel1 != "NA", IncLevel2 != "NA")
-} else data.frame()
-
-if (nrow(pca_events_raw) >= 10) {
-  # Parse the full per-event PSI vector once so we can rank by variance.
-  psi_all <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
-    c(parse_psi_vec(pca_events_raw$IncLevel1[i]),
-      parse_psi_vec(pca_events_raw$IncLevel2[i]))
-  })
-
-  n_samples <- length(psi_all[[1]])
-
-  # Keep events with valid PSI in >= 3 samples, then rank by per-event variance
-  # across samples and take the 2000 most variable events (not head(2000)).
-  valid_events <- sapply(psi_all, function(v) {
-    length(v) == n_samples && sum(!is.na(v)) >= 3
-  })
-  psi_all <- psi_all[valid_events]
-
-  if (length(psi_all) >= 10) {
-    event_variance <- sapply(psi_all, function(v) var(v, na.rm = TRUE))
-    keep_idx <- order(event_variance, decreasing = TRUE)[seq_len(min(2000, length(psi_all)))]
-    psi_list <- psi_all[keep_idx]
-
-    psi_mat <- do.call(rbind, psi_list)   # events x samples
-
-    # Impute remaining NAs with the per-event median; preserves each event's
-    # central tendency without forcing a global mean across heterogeneous events.
-    psi_mat <- apply(psi_mat, 1, function(row) {
-      med <- median(row, na.rm = TRUE)
-      row[is.na(row)] <- med
-      row
-    }) %>% t()
-
-    keep_row <- which(valid_events)[keep_idx[1]]
-    n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[keep_row]))
-    n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[keep_row]))
-
-    sample_labels <- c(
-      resolve_sample_labels(n1, params$group1_sample_ids, "Group1"),
-      resolve_sample_labels(n2, params$group2_sample_ids, "Group2")
-    )
-    group_labels  <- c(rep("Group1", n1), rep("Group2", n2))
-
-    # PCA on transposed matrix (samples as rows). scale. = TRUE standardises
-    # each event so high-range events (PSI near 0/1) do not dominate the PCs.
-    pca_res <- tryCatch(
-      prcomp(t(psi_mat), center = TRUE, scale. = TRUE),
-      error = function(e) NULL
-    )
-
-    if (!is.null(pca_res)) {
-      var_exp <- round(summary(pca_res)$importance[2, 1:min(2, ncol(pca_res$x))] * 100, 1)
-      pca_df  <- as.data.frame(pca_res$x[, 1:min(2, ncol(pca_res$x))])
-      pca_df$Group  <- group_labels
-      pca_df$Sample <- sample_labels
-
-      ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
-        geom_point(size = 3) +
-        geom_text_repel(size = 3, max.overlaps = 20) +
-        theme_bw() +
-        scale_color_brewer(palette = "Set1") +
-        labs(
-          title = paste0(
-            "PCA of PSI profiles (", pca_event_type[1], " events, n=",
-            length(psi_list), ", per-event median imputation, scaled)"
-          ),
-          x = paste0("PC1 (", var_exp[1], "% variance)"),
-          y = paste0("PC2 (", var_exp[2], "% variance)")
-        )
-    }
-  } else {
-    cat("Insufficient events with valid PSI data for PCA (need >= 10).\n")
-  }
-} else {
-  cat("No rMATS events available for PCA.\n")
-}
-```
-
-### Splice junction coverage QC
-
-```{r junction_qc, eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0, fig.height=5}
-# Per-sample mean inclusion junction count (IJC) as a proxy for splice junction coverage.
-# Low values flag samples with insufficient coverage for reliable AS detection.
-
 parse_sample_counts <- function(count_str, group_label) {
   if (is.na(count_str) || count_str == "") return(NULL)
   vals <- suppressWarnings(as.integer(strsplit(as.character(count_str), ",")[[1]]))
@@ -419,68 +554,328 @@ parse_sample_counts <- function(count_str, group_label) {
   )
 }
 
-jq_events <- all_rmats %>%
-  filter(EventType == "SE", !is.na(IJC_SAMPLE_1), !is.na(IJC_SAMPLE_2)) %>%
-  head(500)
+# Non-significant points per volcano: all significant events are always drawn,
+# the background is subsampled to keep the HTML at a sane size.
+RMATS_NONSIG_PLOT_MAX <- 20000
 
-if (nrow(jq_events) > 0) {
+panel_summary_table <- function(df) {
+  df %>%
+    group_by(EventType) %>%
+    summarise(
+      Total       = n(),
+      Significant = sum(Significant, na.rm = TRUE),
+      FDR_leq_0.05 = sum(FDR <= 0.05, na.rm = TRUE),
+      # Mean |dPsi| over ALL events of the type, not only the significant ones.
+      Mean_abs_deltaPSI_all_events = round(mean(abs(IncLevelDifference), na.rm = TRUE), 3),
+      # Significant events clearing the ranking-table coverage minimum.
+      Significant_min_reads = sum(Significant & reads_ok, na.rm = TRUE)
+    ) %>%
+    kable(caption = "rMATS Event Summary by Event Type.")
+}
+
+panel_volcano <- function(df, label) {
+  # Top-5 labels per type, tie-broken by junction-read coverage: past the
+  # -log10(FDR) cap of 50 the priority score saturates and |dPsi| alone would
+  # decide the order.
+  top_labels <- df %>%
+    filter(Significant, reads_ok,
+           !is.na(geneSymbol), nzchar(trimws(geneSymbol)),
+           toupper(trimws(geneSymbol)) != "NA",
+           !is.na(IncLevelDifference), !is.na(neglog10FDR)) %>%
+    mutate(cov_min = pmin(reads_group1, reads_group2)) %>%
+    arrange(desc(priority_score), desc(cov_min)) %>%
+    group_by(EventType) %>%
+    slice_head(n = 5) %>%
+    ungroup()
+
+  plot_df <- df %>% filter(!is.na(IncLevelDifference), !is.na(neglog10FDR))
+  sig     <- plot_df %>% filter(Significant)
+  nonsig  <- plot_df %>% filter(!Significant)
+  n_nonsig_orig <- nrow(nonsig)
+  if (n_nonsig_orig > RMATS_NONSIG_PLOT_MAX) {
+    set.seed(1)
+    nonsig <- dplyr::sample_n(nonsig, RMATS_NONSIG_PLOT_MAX)
+  }
+  sub_note <- if (n_nonsig_orig > RMATS_NONSIG_PLOT_MAX) {
+    sprintf(" (%d of %d non-significant events shown)", RMATS_NONSIG_PLOT_MAX, n_nonsig_orig)
+  } else NULL
+
+  bind_rows(sig, nonsig) %>%
+    ggplot(aes(x = IncLevelDifference, y = neglog10FDR, color = Significant)) +
+    geom_point(alpha = 0.4, size = 1) +
+    geom_text_repel(
+      data = top_labels,
+      aes(y = neglog10FDR, label = geneSymbol),
+      size = 2.5, max.overlaps = 10, color = "black"
+    ) +
+    facet_wrap(~EventType, scales = "free_y") +
+    scale_color_manual(values = c("gray70", "firebrick")) +
+    geom_hline(yintercept = -log10(params$fdr_cutoff),    linetype = "dashed", color = "navy", linewidth = 0.4) +
+    geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff), linetype = "dashed", color = "navy", linewidth = 0.4) +
+    scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+    coord_cartesian(clip = "off") +
+    theme_bw() +
+    labs(
+      title    = paste0("rMATS Volcano Plots (", label, ")"),
+      subtitle = sub_note,
+      x        = paste0("\u0394\u03a8 (group2 - group1: ", g2_label, " - ", g1_label, ")"),
+      y        = "-log10(FDR), capped at 50"
+    ) +
+    theme(
+      legend.position = "bottom",
+      plot.margin = margin(t = 5.5, r = 35, b = 5.5, l = 5.5)
+    )
+}
+
+panel_top_table <- function(df, label, top_n, element_id) {
+  top_events <- df %>%
+    filter(Significant, reads_ok) %>%
+    # Tie-break saturated priority scores (past the -log10(FDR) cap) by the
+    # weakest group's junction-read coverage.
+    arrange(desc(priority_score), desc(pmin(reads_group1, reads_group2))) %>%
+    select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference,
+           priority_score, site_class, reads_group1, reads_group2) %>%
+    head(top_n) %>%
+    mutate(
+      # Keep underflowed --cstat p-values readable instead of rounding them to 0.
+      FDR_display = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
+    ) %>%
+    select(-FDR)
+  if (nrow(top_events) == 0) {
+    cat("No significant events detected in this panel.\n\n")
+    return(invisible(NULL))
+  }
+  cat(sprintf(
+    "Ranking filtered to events with >= %s junction reads (IJC+SJC) per group (`report_min_reads`; significance calling is unaffected).\n\n",
+    min_reads
+  ))
+  print(
+    datatable(
+      top_events,
+      elementId = element_id,
+      caption   = sprintf("Top %d significant rMATS events (%s) ranked by priority score",
+                          top_n, label),
+      options   = list(pageLength = 10, scrollX = TRUE),
+      rownames  = FALSE, escape = FALSE
+    ) %>%
+      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4) %>%
+      formatRound(columns = c("reads_group1", "reads_group2"), digits = 0)
+  )
+}
+
+panel_pca <- function(df, label) {
+  pca_event_type <- if ("SE" %in% df$EventType) "SE" else {
+    df %>% count(EventType) %>% slice_max(n, n = 1) %>% pull(EventType)
+  }
+  # Coverage filter on the PCA event pool too: variance ranking on uncovered
+  # de novo events would otherwise visualise noise (report_min_reads).
+  pca_events_raw <- if (length(pca_event_type) > 0) {
+    df %>%
+      filter(reads_ok,
+             EventType == pca_event_type[1],
+             !is.na(IncLevel1), !is.na(IncLevel2),
+             IncLevel1 != "NA", IncLevel2 != "NA")
+  } else data.frame()
+
+  if (nrow(pca_events_raw) < 10) {
+    cat(sprintf("Insufficient events with valid PSI data for the %s PCA (need >= 10).\n\n", label))
+    return(invisible(NULL))
+  }
+
+  psi_all <- lapply(seq_len(nrow(pca_events_raw)), function(i) {
+    c(parse_psi_vec(pca_events_raw$IncLevel1[i]),
+      parse_psi_vec(pca_events_raw$IncLevel2[i]))
+  })
+  n_samples <- length(psi_all[[1]])
+  valid_events <- sapply(psi_all, function(v) {
+    length(v) == n_samples && sum(!is.na(v)) >= 3
+  })
+  psi_all <- psi_all[valid_events]
+  if (length(psi_all) < 10) {
+    cat(sprintf("Insufficient events with valid PSI data for the %s PCA (need >= 10).\n\n", label))
+    return(invisible(NULL))
+  }
+
+  event_variance <- sapply(psi_all, function(v) var(v, na.rm = TRUE))
+  keep_idx <- order(event_variance, decreasing = TRUE)[seq_len(min(2000, length(psi_all)))]
+  psi_list <- psi_all[keep_idx]
+
+  psi_mat <- do.call(rbind, psi_list)
+  psi_mat <- apply(psi_mat, 1, function(row) {
+    med <- median(row, na.rm = TRUE)
+    row[is.na(row)] <- med
+    row
+  }) %>% t()
+
+  keep_row <- which(valid_events)[keep_idx[1]]
+  n1 <- length(parse_psi_vec(pca_events_raw$IncLevel1[keep_row]))
+  n2 <- length(parse_psi_vec(pca_events_raw$IncLevel2[keep_row]))
+
+  sample_labels <- c(
+    resolve_sample_labels(n1, params$group1_sample_ids, g1_label),
+    resolve_sample_labels(n2, params$group2_sample_ids, g2_label)
+  )
+  group_labels  <- c(rep(g1_label, n1), rep(g2_label, n2))
+
+  pca_res <- tryCatch(
+    prcomp(t(psi_mat), center = TRUE, scale. = TRUE),
+    error = function(e) NULL
+  )
+  if (is.null(pca_res)) return(invisible(NULL))
+
+  var_exp <- round(summary(pca_res)$importance[2, 1:min(2, ncol(pca_res$x))] * 100, 1)
+  pca_df  <- as.data.frame(pca_res$x[, 1:min(2, ncol(pca_res$x))])
+  pca_df$Group  <- group_labels
+  pca_df$Sample <- sample_labels
+
+  ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
+      geom_point(size = 3) +
+      geom_text_repel(size = 3, max.overlaps = 20) +
+      theme_bw() +
+      scale_color_brewer(palette = "Set1") +
+      labs(
+        title = paste0("PCA of PSI profiles (", label, ": ", pca_event_type[1],
+                       " events, n=", length(psi_list), ", per-event median imputation, scaled)"),
+        x = paste0("PC1 (", var_exp[1], "% variance)"),
+        y = paste0("PC2 (", var_exp[2], "% variance)")
+      )
+}
+
+panel_coverage <- function(df, label) {
+  jq_pool <- df %>%
+    filter(EventType == "SE", !is.na(IJC_SAMPLE_1), !is.na(IJC_SAMPLE_2))
+  if (nrow(jq_pool) == 0) {
+    cat(sprintf("No SE events with junction count data available for the %s panel.\n\n", label))
+    return(invisible(NULL))
+  }
+  # Fixed-seed random sample (not head()): the first rows in file order are an
+  # arbitrary, non-representative slice of the event list.
+  set.seed(1)
+  jq_events <- if (nrow(jq_pool) > 500) dplyr::sample_n(jq_pool, 500) else jq_pool
   jq_raw <- bind_rows(lapply(seq_len(nrow(jq_events)), function(i) {
     bind_rows(
-      parse_sample_counts(jq_events$IJC_SAMPLE_1[i], "Group1"),
-      parse_sample_counts(jq_events$IJC_SAMPLE_2[i], "Group2")
+      parse_sample_counts(jq_events$IJC_SAMPLE_1[i], g1_label),
+      parse_sample_counts(jq_events$IJC_SAMPLE_2[i], g2_label)
     )
   }))
+  if (nrow(jq_raw) == 0) return(invisible(NULL))
 
-  if (nrow(jq_raw) > 0) {
-    jq_summary <- jq_raw %>%
-      group_by(group, sample_idx) %>%
-      summarise(mean_IJC = mean(count, na.rm = TRUE), .groups = "drop")
+  jq_summary <- jq_raw %>%
+    group_by(group, sample_idx) %>%
+    summarise(mean_IJC = mean(count, na.rm = TRUE), .groups = "drop")
 
-    g1_ids <- resolve_sample_labels(
-      sum(jq_summary$group == "Group1"),
-      params$group1_sample_ids,
-      "Group1"
-    )
-    g2_ids <- resolve_sample_labels(
-      sum(jq_summary$group == "Group2"),
-      params$group2_sample_ids,
-      "Group2"
-    )
+  g1_ids <- resolve_sample_labels(
+    sum(jq_summary$group == g1_label), params$group1_sample_ids, g1_label
+  )
+  g2_ids <- resolve_sample_labels(
+    sum(jq_summary$group == g2_label), params$group2_sample_ids, g2_label
+  )
+  jq_summary <- jq_summary %>%
+    group_by(group) %>%
+    arrange(sample_idx, .by_group = TRUE) %>%
+    mutate(Sample = if_else(group == g1_label, g1_ids[sample_idx], g2_ids[sample_idx])) %>%
+    ungroup()
 
-    jq_summary <- jq_summary %>%
-      group_by(group) %>%
-      arrange(sample_idx, .by_group = TRUE) %>%
-      mutate(Sample = if_else(group == "Group1", g1_ids[sample_idx], g2_ids[sample_idx])) %>%
-      ungroup()
-
-    ggplot(jq_summary, aes(x = reorder(Sample, mean_IJC), y = mean_IJC, fill = group)) +
+  ggplot(jq_summary, aes(x = reorder(Sample, mean_IJC), y = mean_IJC, fill = group)) +
       geom_col(alpha = 0.8) +
       coord_flip() +
       theme_bw() +
       scale_fill_brewer(palette = "Set1") +
       labs(
-        title = "Mean inclusion junction count per sample (SE events, top 500)",
-        subtitle = "Low values may indicate insufficient coverage for reliable AS detection",
+        title    = paste0("Mean inclusion junction count per sample (", label, ")"),
+        subtitle = sprintf(
+          "Random sample of %d SE events with junction counts (seed 1); low values may indicate insufficient coverage",
+          nrow(jq_events)
+        ),
         x = NULL,
         y = "Mean IJC"
       )
-  }
-} else {
-  cat("No SE events with junction count data available.\n")
 }
+
+sashimi_widget_html <- function(widget_id) {
+  paste0(
+    '<div id="', widget_id, '" style="border:1px solid #d9d9d9; border-radius:8px; padding:12px; margin:12px 0 20px 0;">',
+    '<div style="font-weight:600; margin-bottom:8px;">Sashimi browser</div>',
+    '<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:10px;">',
+    '<label style="font-size:0.9em;">Event type<br><select id="', widget_id, '_event"></select></label>',
+    '<label style="font-size:0.9em;">Gene<br><select id="', widget_id, '_gene"></select></label>',
+    '</div>',
+    '<div id="', widget_id, '_holder" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px; overflow:auto; background:#fafafa;">',
+    '<p style="padding:10px;">Select an event type and gene above to preview the sashimi plot.</p>',
+    '</div>',
+    '</div>'
+  )
+}
+
+panel_sashimi <- function(class_filter, widget_suffix) {
+  if (!exists("sashimi_table") || nrow(sashimi_table) == 0) {
+    cat("Sashimi plots not available for this run.\n\n")
+    return(invisible(NULL))
+  }
+  widget_id <- paste0("sashimi_browser_", widget_suffix)
+  cat(sashimi_widget_html(widget_id))
+  cat('\n<script>window.__sashimiBrowser("', widget_id, '", ',
+      if (is.null(class_filter)) "null" else paste0('"', class_filter, '"'),
+      ');</script>\n\n', sep = "")
+}
+
+render_rmats_panel <- function(panel_df, label, class_note, widget_suffix,
+                               class_filter, top_n) {
+  n_total <- nrow(panel_df)
+  n_sig   <- sum(panel_df$Significant, na.rm = TRUE)
+  cat(sprintf(
+    "**%s panel**: %d events; %d significant (FDR <= %s & |ΔΨ| >= %s).\n\n",
+    label, n_total, n_sig, params$fdr_cutoff, params$dpsi_cutoff
+  ))
+  if (n_total == 0) {
+    cat("No events in this panel.\n")
+    return(invisible(NULL))
+  }
+  if (nzchar(class_note)) cat(sprintf("*%s*\n\n", class_note))
+  cat("#### Event summary\n\n")
+  print(panel_summary_table(panel_df))
+  cat("\n\n#### Volcano\n\n")
+  volcano_plot <- panel_volcano(panel_df, label)
+  print(volcano_plot)
+  save_plot_pdf(volcano_plot,
+                file.path("rmats", "Volcano", paste0("volcano_", widget_suffix, ".pdf")),
+                width = 10, height = 7)
+  cat("\n\n#### Top significant events\n\n")
+  panel_top_table(panel_df, label, top_n, paste0("rmats_top_", widget_suffix))
+  cat("\n\n#### PSI profile (PCA)\n\n")
+  pca_plot <- panel_pca(panel_df, label)
+  if (!is.null(pca_plot)) {
+    print(pca_plot)
+    save_plot_pdf(pca_plot,
+                  file.path("rmats", "PCA", paste0("pca_", widget_suffix, ".pdf")),
+                  width = 10, height = 6)
+  }
+  cat("\n\n#### Splice junction coverage\n\n")
+  coverage_plot <- panel_coverage(panel_df, label)
+  if (!is.null(coverage_plot)) {
+    print(coverage_plot)
+    save_plot_pdf(coverage_plot,
+                  file.path("rmats", "Coverage", paste0("coverage_", widget_suffix, ".pdf")),
+                  width = 10, height = 6)
+  }
+  cat("\n\n#### Sashimi plots\n\n")
+  panel_sashimi(class_filter, widget_suffix)
+  invisible(NULL)
+}
+
+rmats_annotated <- all_rmats %>% filter(site_class == "annotated")
+rmats_denovo    <- all_rmats %>% filter(site_class == "de_novo")
 ```
 
-## Sashimi plots (rMATS)
-
-```{r sashimi_section, eval=!is.null(params$sashimi_dir)}
-# List available sashimi plot PDFs
+```{r sashimi_shared_data, eval=!is.null(params$sashimi_dir), results='asis'}
+# Embed every sashimi PDF once as a data URI; the three panel browsers reuse
+# this shared payload client-side (no per-panel duplication of the base64 blob).
 sashimi_pdfs <- list.files(params$sashimi_dir, pattern = "\\.pdf$",
                            recursive = TRUE, full.names = TRUE)
 
-if (length(sashimi_pdfs) > 0) {
-  cat(sprintf("Sashimi plots generated for %d events; use the selectors to browse by event type and gene.\n\n",
-              length(sashimi_pdfs)))
+sashimi_table <- data.frame()
 
+if (length(sashimi_pdfs) > 0) {
   event_from_path <- function(paths) {
     rel <- basename(dirname(dirname(paths)))
     ifelse(rel %in% c("SE", "A5SS", "A3SS", "MXE", "RI"), rel, NA_character_)
@@ -523,121 +918,142 @@ if (length(sashimi_pdfs) > 0) {
 
   sashimi_data_uris <- vapply(sashimi_pdfs, embed_sashimi, character(1))
 
+  # Per-PDF splice-site class from the SASHIMI_PLOTS manifest. The manifest rank
+  # is the same 1-based <rank> prefix rmats2sashimiplot writes into the filename,
+  # so de novo events are labelled correctly instead of assumed annotated.
+  site_class_lookup <- list()
+  classes_path <- file.path(params$sashimi_dir, "site_classes.tsv")
+  if (file.exists(classes_path)) {
+    cls <- tryCatch(read.delim(classes_path, stringsAsFactors = FALSE),
+                    error = function(e) NULL)
+    if (!is.null(cls) && nrow(cls) > 0) {
+      for (i in seq_len(nrow(cls))) {
+        site_class_lookup[[paste0(cls$event_type[i], "|", cls$rank[i])]] <- cls$site_class[i]
+      }
+    }
+  }
+  pdf_event_type <- event_from_path(sashimi_pdfs)
+  pdf_rank <- suppressWarnings(as.integer(sub("^([0-9]+)_.*$", "\\1", basename(sashimi_pdfs))))
+  pdf_site_class <- vapply(seq_along(sashimi_pdfs), function(i) {
+    value <- site_class_lookup[[paste0(pdf_event_type[i], "|", pdf_rank[i])]]
+    if (is.null(value) || is.na(value) || !nzchar(value)) "annotated" else value
+  }, character(1))
+
   sashimi_table <- data.frame(
     file = basename(sashimi_pdfs),
-    event_type = event_from_path(sashimi_pdfs),
+    event_type = pdf_event_type,
     gene = extract_gene_symbol(basename(sashimi_pdfs)),
+    site_class = pdf_site_class,
     data_uri = sashimi_data_uris,
     mime = ifelse(grepl("^data:image/png", sashimi_data_uris), "image/png", "application/pdf"),
     stringsAsFactors = FALSE
   ) %>%
-    dplyr::arrange(event_type, gene, file)
-
-  sashimi_table <- sashimi_table %>%
+    dplyr::arrange(event_type, gene, file) %>%
     dplyr::filter(!is.na(data_uri) & nzchar(data_uri))
-
-  if (nrow(sashimi_table) == 0) {
-    cat("No embeddable sashimi PDFs found in the output directory.\n")
-  }
-} else {
-  cat("No sashimi plot PDFs found in the output directory.\n")
 }
-```
 
-```{r sashimi_browser, eval=!is.null(params$sashimi_dir) && exists("sashimi_table") && nrow(sashimi_table) > 0, results='asis'}
-browser_data <- sashimi_table %>%
-  dplyr::group_by(event_type, gene) %>%
-  dplyr::slice(1) %>%
-  dplyr::ungroup() %>%
-  dplyr::arrange(event_type, gene) %>%
-  dplyr::transmute(
-    event_type = ifelse(is.na(event_type), "UNKNOWN", event_type),
-    gene = ifelse(is.na(gene), "UNKNOWN", gene),
-    file = file,
-    data_uri = data_uri,
-    mime = ifelse(is.na(mime), "application/pdf", mime)
+if (nrow(sashimi_table) > 0) {
+  browser_json <- jsonlite::toJSON(
+    sashimi_table[, c("file", "event_type", "gene", "site_class", "data_uri", "mime")],
+    dataframe = "rows", auto_unbox = TRUE
   )
-
-widget_id <- paste0(
-  "sashimi_browser_",
-  gsub("[^A-Za-z0-9]+", "_", params$comparison_id)
-)
-
-browser_json <- jsonlite::toJSON(browser_data, dataframe = "rows", auto_unbox = TRUE)
-
-cat(
-  paste0(
-    '<div id="', widget_id, '" style="border:1px solid #d9d9d9; border-radius:8px; padding:12px; margin:12px 0 20px 0;">',
-    '<div style="font-weight:600; margin-bottom:8px;">Sashimi browser</div>',
-    '<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:10px;">',
-    '<label style="font-size:0.9em;">Event type<br><select id="', widget_id, '_event"></select></label>',
-    '<label style="font-size:0.9em;">Gene<br><select id="', widget_id, '_gene"></select></label>',
-    '</div>',
-    '<div class="', widget_id, '_holder" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px; overflow:auto; background:#fafafa;">',
-    '<p style="padding:10px;">Select an event type and gene above to preview the sashimi plot.</p>',
-    '</div>',
-    '</div>'
-  )
-)
-
-cat(
-  paste0(
+  cat('<script>window.__SASHIMI_PLOTS__ = ', browser_json, ';</script>\n')
+  cat(paste0(
     '<script>(function(){',
-    'const data = ', browser_json, ';',
-    'const root = document.getElementById("', widget_id, '");',
-    'if(!root || !Array.isArray(data) || data.length===0){return;}',
-    'const eventSel = document.getElementById("', widget_id, '_event");',
-    'const geneSel = document.getElementById("', widget_id, '_gene");',
-    'const holder = root.getElementsByClassName("', widget_id, '_holder")[0];',
+    'window.__sashimiBrowser = function (widgetId, classFilter) {',
+    'const root = document.getElementById(widgetId);',
+    'if (!root) { return; }',
+    'const eventSel = document.getElementById(widgetId + "_event");',
+    'const geneSel = document.getElementById(widgetId + "_gene");',
+    'const holder = document.getElementById(widgetId + "_holder");',
+    'const all = Array.isArray(window.__SASHIMI_PLOTS__) ? window.__SASHIMI_PLOTS__ : [];',
+    'const data = classFilter ? all.filter(d => d.site_class === classFilter) : all;',
     'const uniq = (arr) => Array.from(new Set(arr));',
     'const sortText = (arr) => arr.sort((a,b) => String(a).localeCompare(String(b)));',
     'const setOptions = (sel, values) => {',
-    '  sel.innerHTML = "";',
-    '  values.forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });',
+    'sel.innerHTML = "";',
+    'values.forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });',
     '};',
     'const renderPreview = (row) => {',
-    '  holder.innerHTML = "";',
-    '  if(!row){ holder.innerHTML = "<p style=\\"padding:10px;\\">No plot available.</p>"; return; }',
-    '  if(row.mime === "image/png"){',
-    '    const img = document.createElement("img");',
-    '    img.src = row.data_uri;',
-    '    img.style.maxWidth = "100%";',
-    '    img.style.display = "block";',
-    '    img.style.margin = "0 auto";',
-    '    holder.appendChild(img);',
-    '  } else {',
-    '    const obj = document.createElement("object");',
-    '    obj.type = "application/pdf";',
-    '    obj.data = row.data_uri;',
-    '    obj.style.width = "100%";',
-    '    obj.style.height = "760px";',
-    '    holder.appendChild(obj);',
-    '  }',
+    'holder.innerHTML = "";',
+    'if(!row){ holder.innerHTML = "<p style=\\"padding:10px;\\">No plot available.</p>"; return; }',
+    'if(row.mime === "image/png"){',
+    'const img = document.createElement("img");',
+    'img.src = row.data_uri;',
+    'img.style.maxWidth = "100%";',
+    'img.style.display = "block";',
+    'img.style.margin = "0 auto";',
+    'holder.appendChild(img);',
+    '} else {',
+    'const obj = document.createElement("object");',
+    'obj.type = "application/pdf";',
+    'obj.data = row.data_uri;',
+    'obj.style.width = "100%";',
+    'obj.style.height = "760px";',
+    'holder.appendChild(obj);',
+    '}',
     '};',
+    'if (data.length === 0) {',
+    'holder.innerHTML = "<p style=\\"padding:10px;\\">No sashimi plots available for this class: rmats2sashimiplot cannot draw unannotated (de novo) splice sites, so sashimi output covers annotated events only.</p>";',
+    'return;',
+    '}',
     'const eventValues = sortText(uniq(data.map(d => d.event_type)));',
     'setOptions(eventSel, eventValues);',
     'const currentRows = () => data.filter(d => d.event_type === eventSel.value);',
     'const refreshGenes = () => {',
-    '  const genes = sortText(uniq(currentRows().map(d => d.gene)));',
-    '  setOptions(geneSel, genes);',
+    'const genes = sortText(uniq(currentRows().map(d => d.gene)));',
+    'setOptions(geneSel, genes);',
     '};',
     'const refreshPreview = () => {',
-    '  const row = currentRows().find(d => d.gene === geneSel.value);',
-    '  renderPreview(row);',
+    'const row = currentRows().find(d => d.gene === geneSel.value);',
+    'renderPreview(row);',
     '};',
     'eventSel.addEventListener("change", () => { refreshGenes(); refreshPreview(); });',
     'geneSel.addEventListener("change", refreshPreview);',
     'refreshGenes(); refreshPreview();',
+    '};',
     '})();</script>'
-  )
+  ))
+}
+```
+
+## rMATS event panels {.tabset .tabset-pills}
+
+### Combined {.active}
+
+```{r rmats_panel_combined, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
+render_rmats_panel(
+  all_rmats, "Combined",
+  "All events: annotated and de novo splice-site classes together.",
+  "combined", NULL, 100
 )
 ```
 
-Vector PDFs for publication are published under `outdir/sashimi/<comparison_id>/`.
+### Annotated splice sites
 
-```{r validation_note_rmats, results='asis', eval=!is.null(params$rmats_dir) && nrow(all_rmats) > 0}
-cat(sprintf("%s\n\n", validation_note))
+```{r rmats_panel_annotated, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
+render_rmats_panel(
+  rmats_annotated, "Annotated splice sites",
+  "Every splice site present in the GTF annotation. Note: the class reflects splice-site novelty only — events with known splice sites but a novel junction (fromGTF.novelJunction) also fall here.",
+  "annotated", "annotated", 100
+)
 ```
+
+### De novo splice sites
+
+```{r rmats_panel_denovo, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
+render_rmats_panel(
+  rmats_denovo, "De novo splice sites",
+  "",
+  "de_novo", "de_novo", 200
+)
+```
+
+
+Vector PDFs for publication are published inside the deliverables folder, under
+`contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/`, and indexed by
+`contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv`.
+
 
 ---
 
@@ -716,17 +1132,17 @@ if ("Significant" %in% colnames(majiq_results)) {
 knitr::kable(majiq_summary_rows, caption = "MAJIQ summary")
 ```
 
-```{r majiq_distribution, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0 && "dpsi_mean" %in% colnames(majiq_results)}
-majiq_results %>%
-  filter(!is.na(dpsi_mean)) %>%
-  ggplot(aes(x = abs(dpsi_mean))) +
-  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
-  theme_bw() +
-  labs(
-    title = "Distribution of |ΔΨ| in MAJIQ junctions",
-    x     = "|dpsi_mean|",
-    y     = "Count"
-  )
+```{r majiq_distribution, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0 && "dpsi_mean" %in% colnames(majiq_results) && "Significant" %in% colnames(majiq_results)}
+majiq_dpsi_dist_plot <- significance_dist_plot(
+  majiq_results, "dpsi_mean", "Significant", params$majiq_dpsi_cutoff,
+  "|delta PSI|", "Distribution of |delta PSI| in MAJIQ junctions"
+)
+print(majiq_dpsi_dist_plot)
+save_plot_pdf(majiq_dpsi_dist_plot, "majiq/majiq_dpsi_distribution.pdf",
+              width = 10, height = 6)
+cat("MAJIQ significance also requires `probability_changing`; blue bars to the ",
+    "right of the cutoff are large-effect junctions that did not pass that ",
+    "posterior threshold.\n\n")
 ```
 
 ```{r majiq_top_table, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
@@ -766,10 +1182,6 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
-```{r validation_note_majiq, results='asis', eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
-cat(sprintf("%s\n\n", validation_note))
-```
-
 ---
 
 # IsoformSwitchAnalyzeR Results
@@ -788,7 +1200,7 @@ isar_consequences <- read_csv_safe(file.path(params$isar_dir, "consequence_summa
 if ("isoform_switch_q_value" %in% colnames(isar_switches) &&
     "dIF" %in% colnames(isar_switches)) {
   isar_switches$significant <- (
-    isar_switches$isoform_switch_q_value < params$fdr_cutoff &
+    isar_switches$isoform_switch_q_value <= params$fdr_cutoff &
     abs(isar_switches$dIF) >= params$dpsi_cutoff
   )
 } else {
@@ -799,7 +1211,7 @@ n_total <- nrow(isar_switches)
 n_sig   <- sum(isar_switches$significant, na.rm = TRUE)
 
 cat("Total isoforms tested:", n_total, "\n\n")
-cat(sprintf("Significant (FDR < %.2f & |dIF| >= %.2f): %d\n\n",
+cat(sprintf("Significant (FDR <= %.2f & |dIF| >= %.2f): %d\n\n",
             params$fdr_cutoff, params$dpsi_cutoff, n_sig))
 
 if ("gene_name" %in% colnames(isar_switches)) {
@@ -815,18 +1227,21 @@ if ("gene_name" %in% colnames(isar_switches)) {
 # genuinely empty contrast (see plans/report_bugs_fix_plan.md, P1-1).
 q_vals <- isar_switches$isoform_switch_q_value[!is.na(isar_switches$isoform_switch_q_value)]
 d_vals <- isar_switches$dIF[!is.na(isar_switches$dIF)]
-if (length(q_vals) > 10 && IQR(q_vals) < 0.05 && max(abs(d_vals)) >= 0.1) {
+if (length(q_vals) > 10 && IQR(q_vals) < ISAR_IQR_PIN_THRESHOLD &&
+    max(abs(d_vals)) >= ISAR_DIF_PIN_THRESHOLD) {
   cat(paste0(
-    "<p style='color:#b30000'>WARNING: satuRn q-values are pinned in a narrow range ",
-    "(IQR &lt; 0.05) while isoforms with |dIF| >= 0.1 exist. This usually indicates a ",
-    "convergence/ordering failure of the test (see P1-1), not a genuinely empty contrast.</p>\n\n"
+    "<p style='color:#7a5c00'>NOTE: ISAR q-values are pinned in a narrow range ",
+    "(IQR &lt; ", ISAR_IQR_PIN_THRESHOLD, ") while isoforms with |dIF| >= ",
+    ISAR_DIF_PIN_THRESHOLD, " exist. The contrast is marked ",
+    "<em>under_investigation</em> in the run manifest; interpret the significant ",
+    "isoforms cautiously.</p>\n\n"
   ))
 }
 ```
 
 ```{r isar_consequences_plot, eval=!is.null(params$isar_dir) && nrow(isar_consequences) > 0, fig.height=6}
 if ("feature" %in% colnames(isar_consequences) && "count" %in% colnames(isar_consequences)) {
-  isar_consequences %>%
+  isar_consequences_plot <- isar_consequences %>%
     ggplot(aes(x = reorder(feature, count), y = count)) +
     geom_col(fill = "steelblue") +
     coord_flip() +
@@ -836,7 +1251,25 @@ if ("feature" %in% colnames(isar_consequences) && "count" %in% colnames(isar_con
       x     = "Consequence Type",
       y     = "Count"
     )
+  print(isar_consequences_plot)
+  save_plot_pdf(isar_consequences_plot, "isar/isar_consequence_barplot.pdf",
+                width = 10, height = 6)
 }
+```
+
+```{r isar_dif_dist, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0 && "dIF" %in% colnames(isar_switches) && "significant" %in% colnames(isar_switches), fig.height=5}
+# top_isoform_switches.csv is already reduced by dIFcutoff in the switch test,
+# so this is the |dIF| of reported switches, not of every transcript tested.
+isar_dif_dist_plot <- significance_dist_plot(
+  isar_switches, "dIF", "significant", params$dpsi_cutoff,
+  "|delta IF|", "Distribution of |delta IF| of reported ISAR switches"
+)
+print(isar_dif_dist_plot)
+save_plot_pdf(isar_dif_dist_plot, "isar/isar_dif_distribution.pdf",
+              width = 10, height = 5)
+cat("Note: ISAR measures the isoform fraction (IF) difference, not PSI; ",
+    "|delta IF| is not comparable to the |delta PSI| panels of MAJIQ/LeafCutter ",
+    "on the x-axis scale.\n\n")
 ```
 
 ```{r isar_top_table, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
@@ -855,7 +1288,7 @@ if (length(cols_to_show) > 0) {
     display_df,
     caption  = paste0(
       "All tested isoforms, ordered by q-value. ",
-      if (has_sig) paste0(n_sig_table, " pass FDR < ", params$fdr_cutoff,
+      if (has_sig) paste0(n_sig_table, " pass FDR <= ", params$fdr_cutoff,
                           " & |dIF| >= ", params$dpsi_cutoff, ".") else ""
     ),
     options  = list(pageLength = 10, scrollX = TRUE),
@@ -875,9 +1308,6 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
-```{r validation_note_isar, results='asis', eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
-cat(sprintf("%s\n\n", validation_note))
-```
 
 ---
 
@@ -902,7 +1332,7 @@ if (!is.na(sig_file) && file.exists(sig_file)) {
   )
   if (nrow(leafcutter_clusters) > 0 && "p.adjust" %in% colnames(leafcutter_clusters)) {
     leafcutter_clusters <- leafcutter_clusters %>%
-      mutate(Significant = p.adjust < params$fdr_cutoff & status == "Success")
+      mutate(Significant = p.adjust <= params$fdr_cutoff & status == "Success")
   }
 }
 
@@ -931,7 +1361,7 @@ lc_summary_rows <- data.frame(
   Metric = c(
     "Total clusters tested",
     "Clusters passing noise filter (status = Success)",
-    sprintf("Significant clusters (FDR < %.2f)", params$fdr_cutoff)
+    sprintf("Significant clusters (FDR <= %.2f)", params$fdr_cutoff)
   ),
   Value = c(n_clusters, n_ok, n_sig),
   stringsAsFactors = FALSE
@@ -954,16 +1384,28 @@ knitr::kable(lc_summary_rows, caption = "LeafCutter summary")
 ```
 
 ```{r leafcutter_dpsi_dist, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_effects) > 0 && "deltapsi" %in% colnames(leafcutter_effects), fig.height=5}
-leafcutter_effects %>%
-  filter(!is.na(deltapsi)) %>%
-  ggplot(aes(x = abs(deltapsi))) +
-  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
-  theme_bw() +
-  labs(
-    title = "Distribution of |ΔΨ| across LeafCutter introns",
-    x     = "|ΔΨ|",
-    y     = "Count"
-  )
+# Introns carry the leafcutter_ds.R effect size; significance follows the master
+# rule (cluster passes FDR and the intron clears |deltapsi| >= cutoff). The
+# cluster id in the intron is chr:start:end:clu_N_strand; leafcutter_ds.R names
+# the cluster chr:clu_N_strand, so keep the chromosome prefix.
+lc_eff <- leafcutter_effects[!is.na(leafcutter_effects$deltapsi), , drop = FALSE]
+lc_eff$.cluster <- sub("^([^:]+):[0-9]+:[0-9]+:", "\\1:", lc_eff$intron)
+if (nrow(leafcutter_clusters) > 0 && "cluster" %in% colnames(leafcutter_clusters) &&
+    "Significant" %in% colnames(leafcutter_clusters)) {
+  cluster_sig <- stats::setNames(leafcutter_clusters$Significant, leafcutter_clusters$cluster)
+  lc_eff$.significant <- cluster_sig[lc_eff$.cluster]
+  lc_eff$.significant <- !is.na(lc_eff$.significant) & lc_eff$.significant &
+    abs(lc_eff$deltapsi) >= params$dpsi_cutoff
+} else {
+  lc_eff$.significant <- FALSE
+}
+leafcutter_dpsi_dist_plot <- significance_dist_plot(
+  lc_eff, "deltapsi", ".significant", params$dpsi_cutoff,
+  "|delta PSI|", "Distribution of |delta PSI| across LeafCutter introns"
+)
+print(leafcutter_dpsi_dist_plot)
+save_plot_pdf(leafcutter_dpsi_dist_plot, "leafcutter/leafcutter_dpsi_distribution.pdf",
+              width = 10, height = 5)
 ```
 
 ```{r leafcutter_top_table, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
@@ -994,9 +1436,6 @@ if (length(cols_to_show) > 0) {
 }
 ```
 
-```{r validation_note_leafcutter, results='asis', eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
-cat(sprintf("%s\n\n", validation_note))
-```
 
 ---
 
@@ -1035,7 +1474,8 @@ pairs <- if (length(pair_list) > 0) {
 }
 pairs$sym <- toupper(trimws(pairs$sym))
 pairs$gid <- trimws(as.character(pairs$gid))
-pairs <- pairs[!is.na(pairs$sym) & pairs$sym != "" & !is.na(pairs$gid) &
+pairs <- pairs[!is.na(pairs$sym) & pairs$sym != "" & pairs$sym != "NA" &
+               !is.na(pairs$gid) &
                pairs$gid != "" & grepl("^ENS", pairs$gid), , drop = FALSE]
 
 sym_to_ensg <- list()
@@ -1065,7 +1505,9 @@ rmats_sig_genes <- character(0)
 rmats_sig_keys <- character(0)
 if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
   rmats_sig_genes <- unique(all_rmats$geneSymbol[
-    all_rmats$Significant & !is.na(all_rmats$geneSymbol) & all_rmats$geneSymbol != ""
+    all_rmats$Significant & !is.na(all_rmats$geneSymbol) &
+      nzchar(trimws(all_rmats$geneSymbol)) &
+      toupper(trimws(all_rmats$geneSymbol)) != "NA"
   ])
   if (length(rmats_sig_genes) > 0) {
     rmats_sig_keys <- canonical_key(rmats_sig_genes)
@@ -1079,7 +1521,9 @@ if (!is.null(params$rmats_dir)) active_tool_sig_sets[["rMATS"]] <- rmats_sig_key
 majiq_sig_genes <- character(0)
 majiq_sig_keys <- character(0)
 if (nrow(majiq_results) > 0 && "gene_name" %in% colnames(majiq_results)) {
-  majiq_mask <- majiq_results$Significant & !is.na(majiq_results$gene_name) & trimws(majiq_results$gene_name) != ""
+  majiq_mask <- majiq_results$Significant & !is.na(majiq_results$gene_name) &
+    nzchar(trimws(majiq_results$gene_name)) &
+    toupper(trimws(majiq_results$gene_name)) != "NA"
   if ("InformativeGene" %in% colnames(majiq_results)) {
     majiq_mask <- majiq_mask & majiq_results$InformativeGene
   }
@@ -1098,7 +1542,9 @@ isar_sig_keys <- character(0)
 if (nrow(isar_switches) > 0 && "gene_name" %in% colnames(isar_switches) &&
     "significant" %in% colnames(isar_switches)) {
   isar_sig_genes <- unique(isar_switches$gene_name[
-    isar_switches$significant & !is.na(isar_switches$gene_name)
+    isar_switches$significant & !is.na(isar_switches$gene_name) &
+      nzchar(trimws(isar_switches$gene_name)) &
+      toupper(trimws(isar_switches$gene_name)) != "NA"
   ])
   if (length(isar_sig_genes) > 0) {
     isar_sig_keys <- canonical_key(isar_sig_genes)
@@ -1175,13 +1621,61 @@ datatable(
 )
 ```
 
-```{r overlap_upset, eval=length(gene_sets) >= 2, fig.height=5}
-upset(
-  fromList(gene_sets),
-  order.by    = "freq",
-  sets.bar.color = "steelblue",
-  main.bar.color = "steelblue"
+```{r overlap_membership, eval=length(gene_sets) >= 1}
+# Membership table built from the same gene_sets the UpSet draws, so the rows
+# and the plot agree by construction. Includes every gene of the union, not only
+# the intersections UpSetR chooses to display.
+upset_tools <- names(gene_sets)
+gene_keys <- sort(unique(unlist(gene_sets)))
+membership <- data.frame(
+  gene_id     = ifelse(grepl("^ENS", gene_keys), gene_keys, ""),
+  gene_symbol = key_to_display(gene_keys),
+  stringsAsFactors = FALSE
 )
+for (tl in upset_tools) {
+  membership[[tl]] <- as.integer(gene_keys %in% gene_sets[[tl]])
+}
+membership$n_tools <- rowSums(membership[, upset_tools, drop = FALSE])
+membership$intersection <- apply(
+  membership[, upset_tools, drop = FALSE], 1,
+  function(r) paste(upset_tools[r == 1], collapse = "&")
+)
+membership <- membership[order(-membership$n_tools, membership$gene_symbol),
+                         c("gene_id", "gene_symbol", upset_tools, "n_tools", "intersection")]
+
+membership_path <- plots_path("cross_tool_overlap/cross_tool_upset_membership.tsv")
+if (!is.null(membership_path) && length(membership_path) == 1 && nzchar(membership_path)) {
+  dir.create(dirname(membership_path), recursive = TRUE, showWarnings = FALSE)
+  write.table(membership, membership_path, sep = "\t", quote = FALSE, row.names = FALSE)
+}
+
+datatable(
+  head(membership, 50),
+  caption  = "UpSet membership (first 50 rows; full table in cross_tool_upset_membership.tsv)",
+  options  = list(pageLength = 10, scrollX = TRUE),
+  rownames = FALSE
+)
+```
+
+```{r overlap_upset, eval=length(gene_sets) >= 2, fig.height=5}
+# UpSetR::upset() opens a blank page at construction time whenever a device is
+# active, which would land as page 1 of the deliverable PDF. Build the object on
+# a throwaway device and print the finished object instead.
+upset_obj <- local({
+  tmp <- tempfile(fileext = ".pdf")
+  grDevices::pdf(tmp)
+  on.exit({ grDevices::dev.off(); unlink(tmp) }, add = TRUE)
+  upset(
+    fromList(gene_sets),
+    order.by        = "freq",
+    sets.bar.color  = "steelblue",
+    main.bar.color  = "steelblue"
+  )
+})
+print(upset_obj)
+# UpSetR draws a grid object; ggsave cannot take it, so use the pdf() device.
+save_device_pdf(function() upset_obj, "cross_tool_overlap/cross_tool_upset.pdf",
+                width = 10, height = 6)
 ```
 
 ```{r overlap_summary, eval=length(active_tool_sig_sets) >= 2}
@@ -1230,120 +1724,12 @@ if (length(active_tool_sig_sets) < 2) {
 } else if (length(shared_sig_genes) == 0) {
   cat("No genes available for shared-genes ORA.\n")
 } else {
-  local_truncate_dt <- function(df, caption) {
-    geneid_col <- which(colnames(df) == "geneID")
-    dt_options <- list(pageLength = 15, scrollX = TRUE)
-    if (length(geneid_col) == 1) {
-      dt_options$columnDefs <- list(list(
-        targets = geneid_col - 1,
-        render = JS(
-          "function(data, type, row) {",
-          "  if (type !== 'display' || data === null || data === undefined) return data;",
-          "  if (data.length <= 80) return data;",
-          "  return '<span title=\"' + data + '\">' + data.substr(0, 80) + '... <em>(see more)</em></span>';",
-          "}"
-        )
-      ))
-    }
-    datatable(df, caption = caption, options = dt_options, rownames = FALSE, escape = FALSE)
-  }
-
-  shared_sig_genes <- unique(shared_sig_genes)
-  shared_sig_genes <- shared_sig_genes[!is.na(shared_sig_genes) & shared_sig_genes != ""]
-
-  cat(sprintf("Input significant genes: %d\n\n", length(shared_sig_genes)))
-
-  if (length(shared_sig_genes) < 10) {
-    cat(sprintf("Need at least 10 genes for shared-genes ORA; found %d.\n", length(shared_sig_genes)))
-  } else if (!requireNamespace("clusterProfiler", quietly = TRUE)) {
-    cat("clusterProfiler is not available in the report environment.\n")
-  } else {
-    orgdb_name <- if (identical(params$organism, "mouse")) "org.Mm.eg.db" else "org.Hs.eg.db"
-    if (!requireNamespace(orgdb_name, quietly = TRUE)) {
-      cat(sprintf("%s is not available in the report environment.\n", orgdb_name))
-    } else {
-      orgdb_obj <- get(orgdb_name, envir = asNamespace(orgdb_name))
-
-      ego_shared <- tryCatch(
-        clusterProfiler::enrichGO(
-          gene = shared_sig_genes,
-          OrgDb = orgdb_obj,
-          keyType = "SYMBOL",
-          ont = "BP",
-          pAdjustMethod = "BH",
-          pvalueCutoff = 0.05,
-          qvalueCutoff = 0.2,
-          readable = TRUE
-        ),
-        error = function(e) NULL
-      )
-
-      cat("**GO Biological Process**\n\n")
-      if (!is.null(ego_shared) && nrow(as.data.frame(ego_shared)) > 0) {
-          print(style_ora_dotplot(
-            clusterProfiler::dotplot(ego_shared, showCategory = 15),
-            "GO BP enrichment (shared genes)"
-          ))
-
-        ego_shared_df <- as.data.frame(ego_shared) %>%
-          dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
-          mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
-
-        print(local_truncate_dt(
-          ego_shared_df,
-          caption = "GO BP enrichment table - shared genes"
-        ))
-      } else {
-        cat("No GO BP terms available for shared genes.\n\n")
-      }
-
-      shared_ids <- tryCatch(
-        clusterProfiler::bitr(
-          shared_sig_genes,
-          fromType = "SYMBOL",
-          toType = "ENTREZID",
-          OrgDb = orgdb_obj
-        ),
-        error = function(e) data.frame()
-      )
-      shared_ids <- unique(shared_ids$ENTREZID)
-      shared_ids <- shared_ids[!is.na(shared_ids) & shared_ids != ""]
-
-      cat("**KEGG pathways**\n\n")
-      if (length(shared_ids) >= 5) {
-        kegg_org <- if (identical(params$organism, "mouse")) "mmu" else "hsa"
-        ekegg_shared <- tryCatch(
-          clusterProfiler::enrichKEGG(
-            gene = shared_ids,
-            organism = kegg_org,
-            pAdjustMethod = "BH",
-            pvalueCutoff = 0.05
-          ),
-          error = function(e) NULL
-        )
-
-        if (!is.null(ekegg_shared) && nrow(as.data.frame(ekegg_shared)) > 0) {
-          print(style_ora_dotplot(
-            clusterProfiler::dotplot(ekegg_shared, showCategory = 15),
-            "KEGG enrichment (shared genes)"
-          ))
-
-          ekegg_shared_df <- as.data.frame(ekegg_shared) %>%
-            dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
-            mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
-
-          print(local_truncate_dt(
-            ekegg_shared_df,
-            caption = "KEGG enrichment table - shared genes"
-          ))
-        } else {
-          cat("No KEGG pathways available for shared genes.\n\n")
-        }
-      } else {
-        cat("Insufficient SYMBOL-to-ENTREZ mapping for KEGG (need at least 5 genes).\n\n")
-      }
-    }
-  }
+  shared_res <- run_ora_for_set(shared_sig_genes, "shared genes")
+  render_ora_result(shared_res, heading_level = 3,
+                    plots_subdir = "cross_tool_overlap",
+                    plots_stem = "shared_genes",
+                    subject = "shared genes",
+                    show_heading = FALSE)
 }
 ```
 
@@ -1351,179 +1737,18 @@ if (length(active_tool_sig_sets) < 2) {
 
 # Pathway Enrichment
 
-```{r enrichment_helpers}
-get_orgdb_name <- function(organism) {
-  if (identical(organism, "mouse")) "org.Mm.eg.db" else "org.Hs.eg.db"
-}
-
-truncate_geneid_datatable <- function(df, caption) {
-  geneid_col <- which(colnames(df) == "geneID")
-
-  dt_options <- list(pageLength = 15, scrollX = TRUE)
-  if (length(geneid_col) == 1) {
-    dt_options$columnDefs <- list(list(
-      targets = geneid_col - 1,
-      render = JS(
-        "function(data, type, row) {",
-        "  if (type !== 'display' || data === null || data === undefined) return data;",
-        "  if (data.length <= 80) return data;",
-        "  return '<span title=\"' + data + '\">' + data.substr(0, 80) + '... <em>(see more)</em></span>';",
-        "}"
-      )
-    ))
-  }
-
-  datatable(
-    df,
-    caption = caption,
-    options = dt_options,
-    rownames = FALSE,
-    escape = FALSE
-  )
-}
-
-run_ora_for_set <- function(genes, set_name, min_genes = 10) {
-  genes <- unique(as.character(genes))
-  genes <- genes[!is.na(genes) & genes != ""]
-
-  res <- list(
-    set_name = set_name,
-    n_genes = length(genes),
-    message = NULL,
-    notes = character(0),
-    go = NULL,
-    go_df = data.frame(),
-    kegg = NULL,
-    kegg_df = data.frame()
-  )
-
-  if (length(genes) < min_genes) {
-    res$message <- sprintf("Need at least %d genes for ORA; found %d.", min_genes, length(genes))
-    return(res)
-  }
-
-  orgdb_name <- get_orgdb_name(params$organism)
-  if (!requireNamespace("clusterProfiler", quietly = TRUE)) {
-    res$message <- "clusterProfiler is not available in the report environment."
-    return(res)
-  }
-  if (!requireNamespace(orgdb_name, quietly = TRUE)) {
-    res$message <- sprintf("%s is not available in the report environment.", orgdb_name)
-    return(res)
-  }
-
-  orgdb_obj <- get(orgdb_name, envir = asNamespace(orgdb_name))
-
-  res$go <- tryCatch(
-    clusterProfiler::enrichGO(
-      gene = genes,
-      OrgDb = orgdb_obj,
-      keyType = "SYMBOL",
-      ont = "BP",
-      pAdjustMethod = "BH",
-      pvalueCutoff = 0.05,
-      qvalueCutoff = 0.2,
-      readable = TRUE
-    ),
-    error = function(e) NULL
-  )
-
-  if (!is.null(res$go) && nrow(as.data.frame(res$go)) > 0) {
-    res$go_df <- as.data.frame(res$go) %>%
-      dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
-      mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
-  } else {
-    res$notes <- c(res$notes, "No GO BP terms passed enrichment thresholds.")
-  }
-
-  gene_ids <- tryCatch(
-    clusterProfiler::bitr(
-      genes,
-      fromType = "SYMBOL",
-      toType = "ENTREZID",
-      OrgDb = orgdb_obj
-    ),
-    error = function(e) data.frame()
-  )
-  gene_ids <- unique(gene_ids$ENTREZID)
-  gene_ids <- gene_ids[!is.na(gene_ids) & gene_ids != ""]
-
-  if (length(gene_ids) >= 5) {
-    kegg_org <- if (identical(params$organism, "mouse")) "mmu" else "hsa"
-    res$kegg <- tryCatch(
-      clusterProfiler::enrichKEGG(
-        gene = gene_ids,
-        organism = kegg_org,
-        pAdjustMethod = "BH",
-        pvalueCutoff = 0.05
-      ),
-      error = function(e) NULL
-    )
-
-    if (!is.null(res$kegg) && nrow(as.data.frame(res$kegg)) > 0) {
-      res$kegg_df <- as.data.frame(res$kegg) %>%
-        dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, Count, geneID) %>%
-        mutate(across(c(pvalue, p.adjust), ~ signif(.x, 3)))
-    } else {
-      res$notes <- c(res$notes, "No KEGG pathways passed enrichment thresholds.")
-    }
-  } else {
-    res$notes <- c(res$notes, "Insufficient SYMBOL-to-ENTREZ mapping for KEGG (need at least 5 genes).")
-  }
-
-  res
-}
-
-render_ora_result <- function(ora_res, heading_level = 3) {
-  heading_prefix <- paste(rep("#", heading_level), collapse = "")
-  cat(sprintf("%s %s\n\n", heading_prefix, ora_res$set_name))
-  cat(sprintf("Input significant genes: %d\n\n", ora_res$n_genes))
-
-  if (!is.null(ora_res$message)) {
-    cat(ora_res$message, "\n\n")
-    return(invisible(NULL))
-  }
-
-  cat("**GO Biological Process**\n\n")
-  if (!is.null(ora_res$go) && nrow(ora_res$go_df) > 0) {
-    print(style_ora_dotplot(
-      clusterProfiler::dotplot(ora_res$go, showCategory = 15),
-      paste0("GO BP enrichment (", ora_res$set_name, ")")
-    ))
-    print(truncate_geneid_datatable(
-      ora_res$go_df,
-      caption = paste0("GO BP enrichment table — ", ora_res$set_name)
-    ))
-  } else {
-    cat("No GO BP terms available for this gene set.\n\n")
-  }
-
-  cat("**KEGG pathways**\n\n")
-  if (!is.null(ora_res$kegg) && nrow(ora_res$kegg_df) > 0) {
-    print(style_ora_dotplot(
-      clusterProfiler::dotplot(ora_res$kegg, showCategory = 15),
-      paste0("KEGG enrichment (", ora_res$set_name, ")")
-    ))
-    print(truncate_geneid_datatable(
-      ora_res$kegg_df,
-      caption = paste0("KEGG enrichment table — ", ora_res$set_name)
-    ))
-  } else {
-    cat("No KEGG pathways available for this gene set.\n\n")
-  }
-
-  if (length(ora_res$notes) > 0) {
-    cat(paste0("Notes: ", paste(ora_res$notes, collapse = " ")), "\n\n")
-  }
-}
-```
-
 ## ORA by tool
 
 ```{r enrichment_by_tool, results='asis'}
 if (length(active_tool_sig_sets) == 0) {
   cat("No active tools available for tool-specific ORA.\n")
 } else {
+  # Deliverable plot folders per tool: rMATS keeps its charts together under
+  # rmats/, the other tools save beside their own section plots.
+  ora_tool_dirs  <- c(rMATS = "rmats/ORA", MAJIQ = "majiq", ISAR = "isar",
+                      LeafCutter = "leafcutter")
+  ora_tool_stems <- c(rMATS = "rmats", MAJIQ = "majiq", ISAR = "isar",
+                      LeafCutter = "leafcutter")
   for (tool_name in names(active_tool_sig_sets)) {
     tool_genes <- if (!is.null(active_tool_sig_symbols[[tool_name]])) {
       active_tool_sig_symbols[[tool_name]]
@@ -1534,7 +1759,9 @@ if (length(active_tool_sig_sets) == 0) {
       tool_genes,
       paste0(tool_name, " significant genes")
     )
-    render_ora_result(tool_res, heading_level = 3)
+    render_ora_result(tool_res, heading_level = 3,
+                      plots_subdir = ora_tool_dirs[[tool_name]],
+                      plots_stem = ora_tool_stems[[tool_name]])
   }
 }
 ```
@@ -1544,7 +1771,26 @@ if (length(active_tool_sig_sets) == 0) {
 ```{r enrichment_global, results='asis'}
 global_sig_genes <- unique(unlist(active_tool_sig_symbols, use.names = FALSE))
 global_res <- run_ora_for_set(global_sig_genes, "Global AS genes (union across active tools)")
-render_ora_result(global_res, heading_level = 3)
+render_ora_result(global_res, heading_level = 3,
+                  plots_subdir = "cross_tool_overlap", plots_stem = "global")
+```
+
+```{r enrichment_status, results='asis'}
+# Explicit record so a missing plots/<tool>/{GO_BP,KEGG}.pdf is never mistaken
+# for a silent failure: 0 terms and an error are labelled differently.
+if (nrow(ora_status_log) > 0) {
+  status_tbl <- ora_status_log
+  status_tbl$status <- ifelse(
+    status_tbl$status == "ran",
+    ifelse(status_tbl$n_go == 0 & status_tbl$n_kegg == 0,
+           "ran, no enriched terms", "ran"),
+    status_tbl$status
+  )
+  knitr::kable(
+    status_tbl,
+    caption = "ORA status per set (0 terms means no enrichment passed thresholds, not a failure)"
+  )
+}
 ```
 
 ---
@@ -1564,6 +1810,13 @@ cat("PEGASAS asks a different question than a standard DE pathway enrichment: ",
     "track with pathway activity. The two plots below show the raw per-sample scores; ",
     "they are **not** a patient-vs-healthy differential ranking. The actual ",
     "splicing–pathway association is the correlation table further down.\n\n")
+cat("**This section is exploratory.** The KS enrichment score is descriptive and is ",
+    "not called significant. Pathway ranking comes from the event x pathway ",
+    "correlations, BH-adjusted across the whole contrast matrix using the analytic ",
+    "Pearson p-value (the permutation p is floored at 1/N_PERMS and is shown only as ",
+    "a cross-check). In a two-group design, a PSI–activity correlation can reflect ",
+    "only the separation between the groups rather than a within-group ",
+    "dose–response, so treat these results as hypothesis-generating.\n\n")
 ```
 
 ```{r pegasas_load, eval=run_pegasas_section}
@@ -1608,17 +1861,45 @@ for (cdir in corr_dirs) {
   cor_list[[sig_name]] <- d
 }
 
-# BH over the permutation p-values of each pathway. p is NA where the
-# permutation was not run (|r| <= 0.3); p.adjust() would propagate those NAs,
-# so adjust only over the tested rows and keep NA for the untested ones.
+# BH over the analytic Pearson p-values across the WHOLE event x pathway matrix
+# (all pathways pooled), matching the PEGASAS master. The permutation p-value is
+# floored at 1/N_PERMS, so over ~1M tests it has no resolution; the analytic p
+# (t distribution, df = n-2) does. The permutation p is retained as a
+# cross-check column. NAs (r not computed) are excluded and kept NA.
+corr_n_samples <- if (nrow(score_df) > 0) {
+  length(unique(score_df$sample))
+} else {
+  length(c(as.character(unlist(params$group1_sample_ids)),
+           as.character(unlist(params$group2_sample_ids))))
+}
+corr_df <- corr_n_samples - 2
+
 cor_list <- lapply(cor_list, function(d) {
   d$p_adj <- NA_real_
-  tested  <- !is.na(d$p_value)
-  if (any(tested)) {
-    d$p_adj[tested] <- p.adjust(d$p_value[tested], method = "BH")
+  d$p_analytic <- NA_real_
+  if (corr_df > 0 && "pearson_r" %in% colnames(d)) {
+    r <- pmin(pmax(as.numeric(d$pearson_r), -0.999999999), 0.999999999)
+    t_stat <- r * sqrt(corr_df / (1 - r * r))
+    d$p_analytic <- 2 * pt(-abs(t_stat), df = corr_df)
   }
   d
 })
+
+# Pool every pathway's analytic p, BH once, then split back by pathway.
+pooled_p <- unlist(lapply(cor_list, function(d) d$p_analytic), use.names = FALSE)
+pooled_adj <- rep(NA_real_, length(pooled_p))
+if (length(pooled_p) > 0) {
+  ok <- !is.na(pooled_p)
+  if (any(ok)) pooled_adj[ok] <- p.adjust(pooled_p[ok], method = "BH")
+}
+offset <- 0L
+for (nm in names(cor_list)) {
+  m <- nrow(cor_list[[nm]])
+  if (m > 0L) {
+    cor_list[[nm]]$p_adj <- pooled_adj[(offset + 1L):(offset + m)]
+    offset <- offset + m
+  }
+}
 
 # Keep the most informative rows per pathway (top by |r|) for an HTML that stays
 # responsive. The complete, unfiltered table is on disk in correlation_out/.
@@ -1647,7 +1928,10 @@ pathway_summary <- if (length(cor_list) > 0) {
     data.frame(
       pathway      = p,
       n_events     = nrow(d),
-      n_significant = sum(d$significant, na.rm = TRUE),
+      # BH-significant events using the analytic Pearson p (falls back to the
+      # permutation significant flag when the analytic p is unavailable).
+      n_significant = if (any(!is.na(pa))) sum(pa < 0.05, na.rm = TRUE) else
+                        sum(d$significant, na.rm = TRUE),
       max_abs_r    = if (any(is.finite(ar))) max(ar, na.rm = TRUE) else NA_real_,
       min_p        = if (any(is.finite(pv))) min(pv, na.rm = TRUE) else NA_real_,
       # BH-adjusted p: only the tested events are counted, so NAs in p_value
@@ -1678,7 +1962,7 @@ plot_df$sample <- factor(plot_df$sample, levels = sample_order)
 path_levels <- names(sort(tapply(plot_df$KS_score, plot_df$pathway, mean)))
 plot_df$pathway <- factor(plot_df$pathway, levels = path_levels)
 
-ggplot(plot_df, aes(x = sample, y = pathway,
+pegasas_pathway_activity_plot <- ggplot(plot_df, aes(x = sample, y = pathway,
                     size = KS_score, color = neglogp)) +
   geom_point() +
   scale_size_continuous(range = c(1, 6), name = "KS score") +
@@ -1690,6 +1974,9 @@ ggplot(plot_df, aes(x = sample, y = pathway,
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
         panel.grid = element_blank(),
         strip.background = element_rect(fill = "grey90", color = NA))
+print(pegasas_pathway_activity_plot)
+save_plot_pdf(pegasas_pathway_activity_plot, "pegasas/pegasas_pathway_activity.pdf",
+              width = 10, height = 7)
 ```
 
 ```{r pegasas_score_plotB_caption, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
@@ -1707,7 +1994,7 @@ rank_df <- aggregate(cbind(KS_score, neglogp) ~ pathway,
 rank_df <- rank_df[order(rank_df$KS_score), , drop = FALSE]
 rank_df$pathway <- factor(rank_df$pathway, levels = rank_df$pathway)
 
-ggplot(rank_df, aes(x = KS_score, y = pathway, color = KS_score, size = neglogp)) +
+pegasas_pathway_ranking_plot <- ggplot(rank_df, aes(x = KS_score, y = pathway, color = KS_score, size = neglogp)) +
   geom_point() +
   scale_color_gradient(low = "#deebf7", high = "#08306b", name = "mean KS") +
   scale_size_continuous(range = c(2, 7), name = "mean -log10(p)") +
@@ -1715,6 +2002,9 @@ ggplot(rank_df, aes(x = KS_score, y = pathway, color = KS_score, size = neglogp)
        x = "Mean KS enrichment score", y = NULL) +
   theme_bw(base_size = 9) +
   theme(panel.grid.major.y = element_line(color = "grey90"))
+print(pegasas_pathway_ranking_plot)
+save_plot_pdf(pegasas_pathway_ranking_plot, "pegasas/pegasas_pathway_ranking.pdf",
+              width = 10, height = 7)
 ```
 
 ```{r pegasas_no_scores, eval=run_pegasas_section && nrow(score_df) == 0}
@@ -1780,12 +2070,17 @@ cat("No PEGASAS correlation results available for this contrast.\n")
 # by reversing group order and stripping the shared cell-type prefix.
 # Expected CSV columns: gene_name (HUGO), log2FoldChange, padj.
 # gene_name is used as gene_id to cross-reference with AS gene symbols.
-run_de_section <- isTRUE(params$run_de_as) &&
-                  !is.null(params$de_results) && nzchar(params$de_results) &&
-                  dir.exists(params$de_results)
-de_file     <- NULL
-de_results  <- data.frame()
+de_file      <- NULL
+de_results   <- data.frame()
 de_sig_genes <- character(0)
+
+# DGE directories: new dge_dirs list plus deprecated single de_results alias.
+# as.character(unlist(...)) tolerates JSON [] (parsed as list()), NULL and scalars.
+search_dirs <- as.character(unlist(c(params$dge_dirs, params$de_results), use.names = FALSE))
+search_dirs <- unique(search_dirs[!is.na(search_dirs) & nzchar(search_dirs)])
+search_dirs <- search_dirs[dir.exists(search_dirs)]
+
+run_de_section <- isTRUE(params$run_de_as) && length(search_dirs) > 0
 
 if (run_de_section) {
   # Build reverse DGE name from pipeline comparison_id.
@@ -1796,19 +2091,82 @@ if (run_de_section) {
   g2_clean <- sub(paste0("^", prefix, "_"), "", parts[2L])
   dge_name <- paste0(prefix, "_", g2_clean, "_vs_", g1_clean)
 
-  dge_subdirs <- list.dirs(params$de_results, recursive = FALSE, full.names = TRUE)
-  # Try: (1) exact DGE name, (2) reversed DGE name, (3) any dir containing both
-  # group names
-  for (d in dge_subdirs) {
-    dn <- basename(d)
-    if (dn == dge_name || dn == params$comparison_id ||
-        (grepl(g1_clean, dn, fixed = TRUE) && grepl(g2_clean, dn, fixed = TRUE))) {
-      csvs <- list.files(d, pattern = "\\.csv$", full.names = TRUE, ignore.case = TRUE)
+  # Explicit override wins: some DGE contrasts do not follow the reverse-name
+  # pattern. Map them via de_results_map in params.yaml.
+  explicit_name <- NULL
+  if (!is.null(params$de_results_map) && length(params$de_results_map) > 0L) {
+    explicit_name <- params$de_results_map[[params$comparison_id]]
+  }
+  if (!is.null(explicit_name) && nzchar(explicit_name)) {
+    dge_name <- explicit_name
+  }
+
+  # Collect every candidate DGE subdir across all roots, tagged with its root.
+  candidates <- do.call(rbind, lapply(search_dirs, function(root) {
+    subs <- list.dirs(root, recursive = FALSE, full.names = TRUE)
+    if (length(subs) == 0L) return(NULL)
+    data.frame(root = root, path = subs, name = basename(subs),
+               stringsAsFactors = FALSE)
+  }))
+  if (is.null(candidates)) {
+    candidates <- data.frame(root = character(), path = character(),
+                             name = character(), stringsAsFactors = FALSE)
+  }
+
+  # Same subdir name in more than one root is ambiguous — warn, first root wins.
+  dup_names <- unique(candidates$name[duplicated(candidates$name)])
+  if (length(dup_names) > 0L) {
+    warning("DGE subdirectory name(s) found in more than one dge_dirs root: ",
+            paste(dup_names, collapse = ", "), ". First match wins.")
+  }
+
+  # Layer 1: exact match on the derived / mapped / raw comparison name.
+  exact_names <- unique(c(dge_name, params$comparison_id, explicit_name))
+  exact_names <- exact_names[!is.na(exact_names) & nzchar(exact_names)]
+  hit <- candidates[candidates$name %in% exact_names, , drop = FALSE]
+  if (nrow(hit) > 1L) {
+    warning("Multiple DGE directories matched '", params$comparison_id, "': ",
+            paste(hit$name, collapse = ", "), " — using first (", hit$root[1L], ").")
+  }
+
+  # Layer 2: fuzzy fallback only with a single root. With several roots a loose
+  # match could pair the wrong DGE (e.g. MNC_DDX41_Patient vs ..._SF3B1mut), so
+  # those cases must be resolved via de_results_map instead.
+  if (nrow(hit) == 0L && length(search_dirs) == 1L) {
+    # Token-boundary match with fixed = TRUE: group labels come from user-authored
+    # comparisons.csv and may contain regex metacharacters, so avoid regex here.
+    has_group <- function(name, grp) {
+      name == grp ||
+        startsWith(name, paste0(grp, "_")) ||
+        endsWith(name, paste0("_", grp)) ||
+        grepl(paste0("_", grp, "_"), name, fixed = TRUE)
+    }
+    hit <- candidates[has_group(candidates$name, g1_clean) &
+                      has_group(candidates$name, g2_clean), , drop = FALSE]
+    if (nrow(hit) > 0L) {
+      warning("DE+AS: fuzzy match used for '", params$comparison_id,
+              "' -> ", hit$name[1L], ". Add a de_results_map entry to make it explicit.")
+    }
+  }
+
+  # Take the first ranked match that actually holds a CSV; a matched directory
+  # without one must not shadow a later valid match.
+  if (nrow(hit) > 0L) {
+    for (i in seq_len(nrow(hit))) {
+      csvs <- list.files(hit$path[i], pattern = "\\.csv$", full.names = TRUE, ignore.case = TRUE)
       if (length(csvs) > 0L) {
         de_file <- csvs[1L]
+        message(sprintf("DE+AS: %s -> %s (root: %s)", params$comparison_id, hit$name[i], hit$root[i]))
         break
       }
     }
+  }
+
+  if (is.null(de_file)) {
+    warning(sprintf(
+      paste0("DE+AS skipped for %s: no DGE directory matching '%s' under [%s]. ",
+             "Add an explicit de_results_map entry if the DGE name differs."),
+      params$comparison_id, dge_name, paste(search_dirs, collapse = ", ")))
   }
 
   if (!is.null(de_file)) {
@@ -1855,6 +2213,13 @@ if (run_de_section && nrow(de_results) > 0) {
     )
   de_sig_genes <- unique(de_results$gene_id[de_results$DE_significant])
 }
+```
+
+```{r de_no_results, eval=run_de_section && nrow(de_results) == 0, results='asis'}
+cat("No matching DE (DESeq2) results were found in `dge_dirs` for comparison `",
+    params$comparison_id, "` — DE + AS integration is skipped for this contrast. ",
+    "Generate a DGE subdirectory matching this comparison's groups (or add a ",
+    "de_results_map entry) if you need this section.\n\n", sep = "")
 ```
 
 ```{r de_as_overlap, eval=run_de_section && nrow(de_results) > 0}
@@ -1979,7 +2344,7 @@ colour_map <- c(
 size_map   <- c("DE + AS" = 2.5, "DE only" = 1.5, "AS only" = 2, "Neither" = 0.6)
 alpha_map  <- c("DE + AS" = 0.9, "DE only" = 0.6, "AS only" = 0.7, "Neither" = 0.3)
 
-ggplot(de_plot, aes(x = log2FC, y = neg_log10_padj,
+de_as_volcano_plot <- ggplot(de_plot, aes(x = log2FC, y = neg_log10_padj,
                     colour = hit_class, size = hit_class, alpha = hit_class)) +
   geom_point() +
   geom_text_repel(
@@ -2005,6 +2370,7 @@ ggplot(de_plot, aes(x = log2FC, y = neg_log10_padj,
     y        = "-log10(adj. p-value)"
   ) +
   theme(legend.position = "bottom")
+print(de_as_volcano_plot)
 ```
 
 ```{r de_volcano_by_tool_ui, eval=run_de_section && nrow(de_results) > 0 && length(active_as_tools) > 0, fig.show='hide', results='asis'}
@@ -2024,6 +2390,15 @@ for (tl in active_as_tools) {
     de_results, paste0("AS_", tl),
     paste0("Differential Expression - AS genes highlighted (", tl, ")"),
     sprintf("Red = significant in both DE and AS (%s), n = %d", tl, n_dual_t)
+  )
+}
+
+for (tm in names(vol_by_tool)) {
+  save_plot_pdf(
+    vol_by_tool[[tm]],
+    file.path("de_as", paste0("de_as_volcano_",
+                              gsub("[^A-Za-z0-9]+", "_", tolower(tm)), ".pdf")),
+    width = 10, height = 7
   )
 }
 ```
@@ -2083,7 +2458,7 @@ script <- paste0(
 cat(script)
 ```
 
-```{r de_as_table, eval=run_de_section && nrow(dual_hits) > 0}
+```{r de_as_table, eval=run_de_section && nrow(de_results) > 0 && nrow(dual_hits) > 0}
 # One row per DE+AS gene per AS tool that calls it, so the source tool can be
 # filtered/sorted. Per-tool AS metrics summarise the best event in that gene.
 tool_rows <- lapply(active_as_tools, function(tl) {
@@ -2153,9 +2528,9 @@ if (nrow(dual_hits_ann) > 0) {
 }
 ```
 
-```{r de_as_barplot, eval=run_de_section && nrow(dual_hits_ann) > 0, fig.height=5}
+```{r de_as_barplot, eval=run_de_section && nrow(de_results) > 0 && nrow(dual_hits_ann) > 0, fig.height=5}
 # Distribution of DE+AS genes across the AS tools.
-dual_hits_ann %>%
+de_as_tool_barplot <- dual_hits_ann %>%
   filter(!is.na(Tool)) %>%
   count(Tool) %>%
   ggplot(aes(x = reorder(Tool, n), y = n, fill = Tool)) +
@@ -2168,6 +2543,9 @@ dual_hits_ann %>%
     x     = NULL,
     y     = "Number of genes"
   )
+print(de_as_tool_barplot)
+save_plot_pdf(de_as_tool_barplot, "de_as/de_as_genes_by_tool.pdf",
+              width = 10, height = 6)
 ```
 
 ```{r de_as_skip_msg, eval=!run_de_section}
@@ -2175,6 +2553,116 @@ cat("DE+AS integration is disabled.\n")
 cat("Enable with two lines in params.yaml:\n")
 cat("- `run_de_as: true`\n")
 cat("- `de_results: /path/to/dge/`  (directory with subdirs per DGE comparison, each containing `*DESeq2_results.csv`)\n")
+```
+
+---
+
+# Data Exports
+
+Paths below are relative to the root of the shipped `deliverables/` folder (the
+folder that contains `run_info/` and `contrasts/`), not to this HTML file. This
+report and every table it lists ship together; `raw/` is not part of the shipment.
+
+```{r data_exports, eval=!is.null(params$publish_deliverables) && params$publish_deliverables, results='asis'}
+# Inventory of the shippable deliverable tables for this comparison. Paths are
+# relative to the deliverables/ root (this folder), exactly as recorded in
+# contrast_manifest.yaml.
+comp <- params$comparison_id
+base <- sprintf("contrasts/%s", comp)
+
+export_rows <- data.frame(
+  deliverable = character(), description = character(), rel_path = character(),
+  stringsAsFactors = FALSE
+)
+
+add_export <- function(deliverable, description, rel_path) {
+  export_rows <<- rbind(
+    export_rows,
+    data.frame(deliverable, description, rel_path, stringsAsFactors = FALSE)
+  )
+}
+
+active_tool_dirs <- list(
+  rMATS = params$rmats_dir, MAJIQ = params$majiq_dir, ISAR = params$isar_dir,
+  LeafCutter = params$leafcutter_dir, PEGASAS = params$pegasas_dir
+)
+tool_key <- list(rMATS = 'rmats', MAJIQ = 'majiq', ISAR = 'isar',
+                 LeafCutter = 'leafcutter', PEGASAS = 'pegasas')
+
+for (tool_name in names(active_tool_dirs)) {
+  if (is.null(active_tool_dirs[[tool_name]])) next
+  key <- tool_key[[tool_name]]
+  add_export(
+    sprintf("%s master", tool_name),
+    "All analysed features with standard columns + native metrics",
+    sprintf("%s/tables/%s.%s.master.tsv", base, comp, key)
+  )
+  add_export(
+    sprintf("%s significant", tool_name),
+    "Features passing the significance rule used by this report",
+    sprintf("%s/tables/%s.%s.significant.tsv", base, comp, key)
+  )
+  add_export(
+    sprintf("%s summary", tool_name),
+    "Per-feature-type counts and effect-size distributions",
+    sprintf("%s/tables/%s.%s.summary.tsv", base, comp, key)
+  )
+}
+
+if (!is.null(params$rmats_dir) || any(!is.null(active_tool_dirs[2:4]))) {
+  add_export(
+    "Cross-tool gene master",
+    "Gene x tool union of significant features across AS tools",
+    sprintf("%s/tables/%s.cross_tool.master.tsv", base, comp)
+  )
+  add_export(
+    "Cross-tool gene summary",
+    "One row per gene with n_tools_significant and the calling tools",
+    sprintf("%s/tables/%s.cross_tool.gene_summary.tsv", base, comp)
+  )
+}
+if (!is.null(params$sashimi_dir)) {
+  add_export(
+    "Sashimi index",
+    "Navigable PDF index (plot browsing + publication figures)",
+    sprintf("%s/plots/rmats/sashimi/sashimi_index.tsv", base)
+  )
+}
+add_export(
+  "Report plots",
+  "PDF figures of every report plot, grouped per tool under plots/",
+  sprintf("%s/plots/", base)
+)
+add_export(
+  "Report",
+  "This HTML report (self-contained)",
+  sprintf("%s/%s_splicing_report.html", base, comp)
+)
+add_export(
+  "Sample index",
+  "Sample x comparison x group table (no cluster paths)",
+  "run_info/sample_index.tsv"
+)
+add_export(
+  "Software versions",
+  "Consolidated tool versions for the whole run",
+  "run_info/software_versions.yml"
+)
+add_export(
+  "QA report",
+  "Results-contract validation output (errors + warnings)",
+  "run_info/qa_report.txt"
+)
+
+show_cols <- c("deliverable", "description", "rel_path")
+kable(export_rows[, show_cols], caption = sprintf(
+  "Shippable deliverables for %s (contract v%s, publish level %s)",
+  comp, params$results_contract_version, params$publish_level
+))
+```
+
+```{r data_exports_disabled, eval=is.null(params$publish_deliverables) || !params$publish_deliverables, results='asis'}
+cat("Deliverables export is disabled (`publish_deliverables: false` in the run params).\n")
 ```
 
 ---

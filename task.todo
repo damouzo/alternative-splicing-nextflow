@@ -1,36 +1,36 @@
 # alternative-splicing-nextflow — task tracking
 
-## Status vs Eleni's pipeline (last reviewed May 2026)
+## Report deliverables & QA hardening — batch_2026_04 (2026-10-08) — DONE
 
-Eleni's pipeline is a script-based (non-Nextflow) workflow that runs rMATS + MAJIQ
-and generates downstream plots and analyses with ad-hoc R/Python scripts.
+Bugs detectados y corregidos sobre el run CRUK batch_2026_04
+(`results/deliverables/contrasts/`).
 
-### Where we now match or exceed Eleni
+- [x] UpSet `cross_tool_upset.pdf`: eliminada la página en blanco inicial.
+      Causa raíz: `UpSetR::upset()` abre una página vacía al construirse con un
+      dispositivo activo. El objeto se construye ahora en un device temporal y se
+      imprime en el PDF. Los 12 contrastes pasan de 2 a 1 página.
+- [x] Distribución LeafCutter: join intron→cluster corregido
+      (`chr:start:end:clu_N_strand` → `chr:clu_N_strand`). Antes marcaba 0
+      significativos; ahora `n_sig` = `<id>.leafcutter.master.tsv` (MNC: 15025/95939).
+- [x] `significance_dist_plot()`: audit log `distribution <title>: n=… n_sig=…`
+      para cruzar las barras con el master en cada contraste.
+- [x] Validador: `check_plot_pdf_pages()` — cada PDF no-sashimi bajo `plots/` debe
+      tener 1 página (sashimi excluido por multi-panel); exclusión por relpath.
+- [x] Regla FDR LeafCutter alineada a `<=` en report, exporter y validador.
+- [x] `build_sashimi_index.py`: enumera ambos layouts (`<ETYPE>/Sashimi_plot/` y
+      `<ETYPE>/`), igual que la copia en `RENDER_REPORT`/`SASHIMI_PLOTS`.
+- [x] `tool_reliability`: retirado el plumbing muerto del report (sigue vivo en
+      workflow/manifests).
+- [x] Contrato 2.4.0 documentado en CHANGELOG (columnas legacy rMATS eliminadas,
+      orden de significant.tsv); config/schema ya declaraban 2.4.0.
+- Nota: GO/KEGG vacío en contrastes con pocos significativos (p. ej. ISAR/MAJIQ en
+  MSC) es esperado, no un fallo; la tabla "ORA status per set" lo distingue.
 
-| Feature                                  | Eleni | Us         |
-|------------------------------------------|-------|------------|
-| rMATS-turbo (5 event types)              | ✅    | ✅          |
-| MAJIQ deltaPSI                           | ✅    | ✅ (V3 API) |
-| IsoformSwitchAnalyzeR                    | ❌    | ✅          |
-| Sashimi plots (rmats2sashimiplot)        | ✅    | ✅          |
-| GO/KEGG enrichment (clusterProfiler)     | ✅    | ✅          |
-| PEGASAS pathway-splicing correlation     | ✅    | ✅ (Py3 port)|
-| Cross-tool overlap (UpSetR)              | ✅    | ✅          |
-| PSI PCA (per-sample IncLevel matrix)     | ✅    | ✅          |
-| Splice junction QC section               | ❌    | ✅          |
-| Event prioritization score               | ❌    | ✅          |
-| DE + AS integration (dual-hit volcano)   | ✅    | ✅          |
-| HTML report (one file, all results)      | ❌    | ✅          |
-| Reproducible (Nextflow + containers)     | ❌    | ✅          |
-| CI/CD auto-container builds (GHCR)       | ❌    | ✅          |
-| Multi-comparison support (samplesheet)   | ❌    | ✅          |
+## Status vs the legacy script-based pipeline (last reviewed May 2026)
 
-### Remaining genuine gaps vs Eleni
-
-| Feature                                        | Eleni | Us  | Notes                                     |
-|------------------------------------------------|-------|-----|-------------------------------------------|
-| ISAR full functional annotation (PFAM, IUPred, SignalP) | ❌ | ✅ | PFAM + IUPred3 (Tier A); SignalP/DeepTMHMM deferred |
-| LeafCutter (intron excision events)            | ✅    | ✅  | Modules + subworkflow + report section complete |
+The legacy pipeline is a script-based (non-Nextflow) workflow that runs rMATS + MAJIQ
+and generates downstream plots and analyses with ad-hoc R/Python scripts. It is fully
+superseded; the comparison tables live in the untracked `internal_notes.md`.
 
 ---
 
@@ -152,7 +152,230 @@ Effort: low.
 
 ---
 
+## Reestructura de outputs v2.0.0 — layout compacto (supersede v1.2.0)
+
+Rehecho el modelo de publicación: lo enviable vive anidado en
+`results/deliverables/`, hermano de `results/raw/` (solo auditoría). Enviar =
+`mv deliverables <nombre> && zip -r <nombre>.zip <nombre>`.
+
+```
+results/
+├── deliverables/              # SHIPPABLE (rutas internas relativas a deliverables/)
+│   ├── README.md
+│   ├── run_info/              # run_manifest, sample_index (sin rutas), software_versions,
+│   │                          # qa_report, pipeline_info/
+│   ├── contrasts/<id>/        # <id>_splicing_report.html, contrast_manifest.yaml,
+│   │                          # tables/, plots/ (Figuras PDF por tool; rmats/sashimi/ index + PDFs)
+│   └── cross_contrast/pegasas/
+└── raw/<tool>/<comparison_id>/ # audit-only (solo publish_level >= core_raw)
+```
+
+Cambios P0/P1 aplicados:
+- Capa enviable anidada en `deliverables/`; `raw/` queda fuera (auditoría).
+- Todas las rutas internas de la capa enviable son relativas a `deliverables/`:
+  `sashimi_index.tsv.pdf_path` y `contrast_manifest.yaml`.
+- PDFs finales de sashimi movidos a
+  `deliverables/contrasts/<id>/plots/rmats/sashimi/<EVENT_TYPE>/`; el índice ya no
+  apunta a `raw/`. `contrast_manifest.yaml` lista los nativos como
+  `raw_outputs_audit_only` (no enviables).
+- Doble anidación `<comp>/<comp>/` eliminada en rmats/majiq/isar/leafcutter;
+  sashimi y PEGASAS unificados al mismo patrón `raw/<tool>/<comp>/`.
+- `versions.yml` ya no se publica por proceso; `VALIDATE_RESULTS` consolida todo
+  en `deliverables/run_info/software_versions.yml` (bin/merge_versions.py).
+- `publish_dir_mode = 'copy'` (default documentado).
+- `params.tool_ids` define el identificador único; `isoformswitchr` → `isar`.
+- Contrato de columnas: `padj` + `padj_method` (BH, rmats_cstat,
+  satuRn_empirical, none) + `effect_size_type`; MAJIQ expone
+  `probability_changing`; PEGASAS con corrección BH (bin/export_tool_masters.py).
+- `cross_tool.gene_summary.tsv` (una fila por gen).
+- `assets/results_schema.yaml` como única fuente de verdad; el validador lo lee.
+- `tools_matrix.tsv` eliminado; QA en `deliverables/run_info/qa_report.txt`.
+- `checksums.md5` eliminado (no se considera útil; era más una fuente de fallos
+  que una feature).
+- `sig_path` de PEGASAS derivado de `params.tool_ids.pegasas` (no hardcodeado).
+
+Estado: scripts verificados con un smoke test sintético (harness en /tmp, no
+versionado) — masters, cross_tool, sashimi index, manifests, merge de versions y
+validador (0 errores, 1 warning esperado). **Pendiente: E2E real con Nextflow**
+(no disponible en este entorno) para confirmar el wiring DSL2 y los publishDir.
+
+Checklist E2E v2.0.0:
+- [ ] `nextflow run main.nf -profile test` produce `run_info/` + `contrasts/` y
+      `qa_report.txt` con 0 errores.
+- [ ] `raw/<tool>/<comp>/` sin doble anidación para rmats/majiq/isar/leafcutter.
+- [ ] `publish_level=core`: no se publica `raw/` salvo PDFs de sashimi y el índice
+      resuelve (`raw/sashimi/<comp>/sashimi_out/...`).
+- [ ] `software_versions.yml` único, sin `versions.yml` sueltos en la capa enviable.
+- [ ] El zip de `deliverables/` es autocontenido (sin rutas absolutas ni `raw/`).
+
+---
+
+## Reestructura de outputs (reestructure_plan.md) — v1.2.0 (superseded por v2.0.0)
+
+### Qué se reorganizó (v1.2.0)
+
+**Modelo de salida en dos capas** (antes: solo directorios nativos por tool):
+
+```
+results/
+├── deliverables/                          # CORE — consumo habitual (wet lab / IP)
+│   ├── metadata/
+│   │   ├── run_manifest.yaml              # pipeline, params críticos, tools, known_issues
+│   │   ├── sample_index.tsv               # muestra × comparación × paths de entrada
+│   │   ├── tools_matrix.tsv               # enablement + contenedor por tool
+│   │   └── results_contract_report.txt    # salida del QA gate
+│   └── contrasts/<comparison_id>/
+│       ├── metadata/contrast_manifest.yaml
+│       ├── data_tables/
+│       │   ├── <id>.rmats.{master,significant,summary}.tsv
+│       │   ├── <id>.majiq/.isar/.leafcutter/.pegasas.{...}.tsv
+│       │   └── <id>.cross_tool.master.tsv
+│       └── plots/sashimi/sashimi_index.tsv
+├── rmats|majiq|isoformswitchr|leafcutter|sashimi|pegasas/   # RAW — layout nativo
+│   └── <comparison_id>/                   # fijado por --publish_level
+└── report/<id>_splicing_report.html       # CORE
+```
+
+**Naming canónico**: `<comparison_id>.<tool>.{master,significant,summary}.tsv`.
+
+**Contrato de columnas estándar en todos los masters**: `comparison_id, tool,
+feature_type, feature_id, gene_id, gene_symbol, effect_size, pvalue, fdr,
+is_significant, significance_rule, source_file` + columnas nativas de cada tool
+(Regla 8: preservar lo nativo, no tirarlo). rMATS añade `event_type/event_id`,
+`fdr_floor_flag` (FDR==0 = suelo numérico de `--cstat`, anotado sin redondear)
+e `is_novel_splice_site`.
+
+**Reglas de significancia idénticas a las del report HTML** (para que
+significant.tsv y el report nunca discrepen): rMATS `FDR<=fdr & |dPSI|>=dpsi`;
+MAJIQ `probability_changing>=0.95 & |dpsi_mean|>=0.2`; ISAR
+`isoform_switch_q_value<=fdr & |dIF|>=dpsi`; LeafCutter
+`status=="Success" & p.adjust<=fdr` (vocabulario real de leafcutter_ds.R, no "OK").
+
+### Cómo se ha implementado (arquitectura)
+
+**Nuevos módulos Nextflow** (todos con runtime = contenedor report, python3):
+
+| Módulo | Salidas | Fase plan |
+|---|---|---|
+| `modules/local/export_metadata/` | run_manifest.yaml, sample_index.tsv, tools_matrix.tsv | A |
+| `modules/local/rmats_master/` | rmats master/sig/summary + flags | C |
+| `modules/local/export_tool_masters/` (EXPORT_TOOL_MASTERS + CROSS_TOOL_MASTER) | masters por tool + cross_tool | B |
+| `modules/local/sashimi_index/` | sashimi_index.tsv (paths outdir-relativos) | D |
+| `modules/local/contrast_manifest/` | contrast_manifest.yaml desde disco | A/B/D |
+| `modules/local/validate_results/` | results_contract_report.txt (gate final) | E |
+
+**Nuevos scripts** (Python stdlib puro, sin pandas): `bin/build_results_manifest.py`
+(run + contrast_disk), `bin/build_rmats_master.py` (streaming por tipo de evento:
+~700K filas / 173 MB sin OOM), `bin/export_tool_masters.py` (majiq/isar/
+leafcutter/pegasas + cross_tool), `bin/build_sashimi_index.py`, y
+`bin/validate_results_contract.py`.
+
+**Wiring (workflows/alternative_splicing.nf)**: los manifests se ensamblan
+**desde el disco publicado** (layout determinístico), no con agregación de
+canales — el CONTRAST_MANIFEST se dispara por una cadena de `join` de canales
+de estado por comparación (siempre emiten `'1'`/`'0'` por tool), el patrón
+probado del RENDER_REPORT. Se evita `collect()` sobre mixes por su semántica
+de aplanado y `groupTuple` emitiendo grupos parciales (lecciones del E2E).
+
+**Gating de publicación** (`--publish_level` core | core_raw | full):
+- `core`: solo deliverables + report; los dirs nativos no se publican (rMATS
+  conserva b1/b2_samples + versions; sashimi conserva los PDFs finales;
+  pegasas conserva `*_sig_pathways.tsv` porque alimenta su master).
+- `core_raw` (default): como antes + deliverables; JCEC/individualCounts solo
+  con `--publish_rmats_jcec` / `--publish_rmats_individual_counts`.
+- `full`: todo sin excepciones.
+- `--publish_raw=false` se comporta como core para la capa nativa.
+Implementado con `saveAs` en los 6 módulos nativos (rmats_post, majiq,
+isar_switch_consequences, leafcutter_ds, pegasas_collate, sashimi_plots).
+
+**Report (bin/render_report.Rmd + modules/local/report/main.nf)**:
+- `RENDER_REPORT` ahora emite `(comparison_id, html)` en tuple.
+- Sección nueva "Data exports" al final: inventario de deliverables con paths
+  outdir-relativos, status y nota de `known_issues` por tabla.
+- Aviso temprano "Known tool reliability issues" tras el summary (rojo para
+  `under_investigation`).
+- Helpers `tool_issue*` que toleran data.frame o lista (jsonlite convierte
+  arrays de objetos a data.frame).
+
+**Feedback del catedrático incorporado**:
+1. `tool_reliability` (known_issues) en nextflow.config → manifests + report.
+   ISAR en `under_investigation` (q-values pinneados 0.986-0.997); LeafCutter
+   en `fixed` (filtro "OK"→"Success"); rMATS `annotated` (FDR floor); PEGASAS
+   `known_issue` (sin corrección por múltiples tests).
+2. Validador con *content checks* del audit, no solo estructura: regresión del
+   filtro de status de LeafCutter (hard fail), % FDR==0 > 25% (warn),
+   q-values ISAR pinneados IQR<0.05 con |dIF|>=0.1 (warn), tools con 0 genes en
+   cross_tool (warn), consistencia master↔significant↔suma de MATS.JC.
+3. rMATS `fdr_floor_flag` anotado en el mismo master (no iteración aparte).
+4. Sashimi index como pieza de navegación (la queja que motivó el plan).
+5. Criterio 8 del DoD: los bugs conocidos están corregidos o señalizados en los
+   manifests antes de compartir tablas CORE.
+
+### Verificación realizada
+
+- Scripts Python validados contra datos reales CRUK (batch_2026_04): rMATS
+  702.511 eventos → master/sig/summary correcto; MAJIQ 391.165 LSVs; ISAR;
+  LeafCutter 355.606 intrones; PEGASAS 50 pathways; sashimi 150 PDFs del índice
+  resolviéndose contra outdir.
+- E2E completo `-profile apptainer,test` en SLURM: **verde (exit 0)** con
+  manifests, masters, QA report y HTML con "Data exports". 1 warning esperado
+  (FDR==0 al 100% en datos sintéticos).
+- Review local `/review uncommitted` (6 tracks): los 9 WARNING corregidos y
+  re-verificados con E2E final (validación de comparison_id, quoting en bash,
+  gating compuesto pegasas/sashimi, counts de grupo en manifest, código muerto
+  eliminado, yaml_scalar para comas, sashimi vacío no fatal, regla MAJIQ).
+
+### Checklist post-implementación (verificar y cerrar)
+
+**1. Run E2E de integración (test profile)**
+- [x] Run completo `-profile apptainer,test` verde (exit 0): deliverables generados + `VALIDATE_RESULTS` pasó con 0 errors.
+- [x] `deliverables/metadata/{run_manifest.yaml, sample_index.tsv, tools_matrix.tsv}` presentes y con valores correctos (outdir, fdr/dpsi, comparisons, known_issues).
+- [x] `deliverables/contrasts/<id>/{data_tables, plots, metadata/contrast_manifest.yaml}` completos para cada herramienta activa.
+- [x] `results_contract_report.txt` con 0 errors (1 warning esperado: FDR floor del dataset sintético).
+- [x] Repetir E2E en los datos reales CRUK (batch_2026_04) con el próximo run programado, confirmando masters ISAR/MAJIQ/LeafCutter/PEGASAS + sashimi index. Verificado 2026-10-08: 12 contrastes con masters + plots; conteos report↔master coinciden (ISAR/MAJIQ/LeafCutter).
+
+**2. Bugs de fiabilidad de herramientas (auditoría del catedrático)**
+- [x] **LeafCutter**: export usa `status=="Success"` y el validador FALLA si hay clusters con p.adjust<cutoff y significant.tsv vacío (regresión del filtro). Confirmado en run CRUK real (batch_2026_04, LeafCutter activo).
+- [x] **ISAR**: `known_issues: under_investigation` en manifests y report (visible en el HTML). Cuando se cierre el diagnóstico del pinning de q-values (RDS pending), actualizar `tool_reliability` y re-render.
+- [x] **rMATS**: `fdr_floor_flag` presente; % FDR==0 > 25% se reporta como warning (verificado: warning de 100% en datos sintéticos).
+- [x] **PEGASAS**: nota "sin corrección por múltiples tests" en significance_rule + manifests (verificar con run pegasas en CRUK).
+
+**3. Cross-tool / overlap**
+- [ ] Si una herramienta activa aporta 0 genes significativos: comprobar warning del validador y del report (probar con un contraste sin hits de una tool).
+- [x] `cross_tool.master.tsv` coherente con las tablas significant (cruce en run de test OK).
+
+**4. Report**
+- [x] Sección "Data exports" en el HTML con paths + caveats de known_issues (rojo under_investigation).
+- [x] Aviso temprano "Known tool reliability issues" en el summary.
+- [ ] Report con `publish_deliverables=false` sin romperse.
+
+**5. Navegabilidad sashimi**
+- [x] `sashimi_index.tsv` con `pdf_path` absoluto válido (validado contra los 150 PDFs del ejemplo CRUK).
+- [ ] En `publish_level=core`, confirmar que los PDFs finales de sashimi se siguen publicando y el índice resuelve.
+
+**6. Params / gating**
+- [ ] `publish_level=core`: capa nativa no publicada (rmats solo b1/b2_samples + versions); `full`: JCEC + individualCounts publicados sin flags.
+- [ ] `--publish_rmats_jcec` / `--publish_rmats_individual_counts` funcionan en core_raw.
+- [x] `publish_deliverables=false`: pipeline previo intacto (solo se omite la capa; smoke test pendiente en datos reales).
+
+**7. Contenedores**
+- [x] Los procesos nuevos corren en el contenedor report (GHCR local tiene python3 — run E2E lo demostró; el SIF local `report-poppler-1.0.0.sif` ya trae python3.12).
+- [ ] Rebuild del contenedor report vía build-containers.yml (workflow_dispatch target report) para incorporar `python3` explícito en la imagen GHCR canónica.
+
+**8. Docs**
+- [x] docs/output.md refleja la capa deliverables y los niveles publish_level.
+- [x] CHANGELOG.md con la entrada v1.2.0.
+
+---
+
 ## New ideas / futuro (no implementado)
+
+### F7 — Diseño pareado en los experimentos 4, 6 y 7 (deuda estadística)
+Los contrastes de los experimentos 4, 6 y 7 proceden de diseños pareados (misma
+línea/donante con scramble y sh). Hoy se analizan como grupos independientes y
+solo queda una nota en `task.todo`; no se aprovecha el bloqueo por par. Pendiente
+añadir un modo pareado (p. ej. `--paired` en rMATS/LeafCutter e ISAR
+`design` con `block`) cuando el samplesheet declare el emparejamiento.
 
 ### F1 — Test de significancia del solapamiento cross-tool
 `phyper`/Fisher para pares + `SuperExactTest` para intersecciones múltiples.
@@ -191,5 +414,6 @@ para cruces por ENSG.
 - PEGASAS Python 3 port source: containers/pegasas/PEGASAS/
 - --pegasas_groups expects TSV: sample_id<TAB>group, same order as BAM list
 - --de_results expects TSV: gene_id, log2FC, padj (gene symbols matching rMATS geneSymbol)
-- nf-core example results: /data/BCI-KRP/projects/CRUK_DDX41_DHX34/analysis/totalRNAseq/batch_2026_04/nfcore_rnaseq/results
-- salmon.merged.gene_tpm.tsv: .../results/star_salmon/salmon.merged.gene_tpm.tsv
+- nf-core example results: points at the upstream nf-core/rnaseq run directory
+  (see the untracked `internal_notes.md` for the concrete path)
+- salmon.merged.gene_tpm.tsv: <rnaseq_results>/star_salmon/salmon.merged.gene_tpm.tsv
