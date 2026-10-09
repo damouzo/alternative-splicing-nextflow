@@ -43,10 +43,22 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # remotes::install_github resolves CRAN deps but not Bioconductor ones (TailRank),
 # so everything must be in place before the C++ compilation step.
 
-# CRAN Imports + LinkingTo from leafcutter DESCRIPTION
+# Pin the Stan toolchain. rstan delegates Stan parsing to the stanc.js bundled
+# in StanHeaders, so a newer StanHeaders (>= 2.33, current CRAN) rejects
+# leafcutter's pre-2.33 array syntax (`int ys[N]`) and rstan_config() aborts.
+# Versions fixed to the image that produced the published results.
+RUN R -e " \
+    if (!requireNamespace('remotes', quietly=TRUE)) install.packages('remotes', repos='https://cloud.r-project.org', Ncpus=4); \
+    remotes::install_version('StanHeaders', version='2.32.10', repos='https://cloud.r-project.org', upgrade='never', Ncpus=4); \
+    remotes::install_version('rstan',       version='2.32.7',  repos='https://cloud.r-project.org', upgrade='never', Ncpus=4); \
+    remotes::install_version('rstantools',  version='2.6.0',   repos='https://cloud.r-project.org', upgrade='never', Ncpus=4) \
+"
+
+# Remaining CRAN Imports + LinkingTo from leafcutter DESCRIPTION.
+# rstan/StanHeaders/rstantools are pinned above and must not appear here.
 RUN R -e " \
     install.packages(c( \
-        'rstan', 'rstantools', 'StanHeaders', 'BH', 'Rcpp', 'RcppEigen', \
+        'BH', 'Rcpp', 'RcppEigen', \
         'optparse', 'R.utils', 'ggplot2', 'reshape2', 'gridExtra', \
         'Hmisc', 'dplyr', 'foreach', 'magrittr', 'stringr', 'doMC', \
         'shiny', 'shinyjs', 'DT', 'intervals', 'shinycssloaders', 'gtable' \
@@ -59,12 +71,11 @@ RUN R -e " \
     BiocManager::install(c('DirichletMultinomial', 'TailRank'), update=FALSE, ask=FALSE) \
 "
 
-# Clone leafcutter and regenerate Stan C++ model code for current rstan/StanHeaders.
-# Leafcutter ships Stan 2.19.1 pre-compiled headers; rstan 2.21+ replaced the
-# model base class (prob_grad -> model_base_crtp), causing compilation failure.
-# rstan_config() regenerates src/stanExports_*.h, src/stanExports_*.cc, and
-# R/stanmodels.R from the .stan source files using the installed rstan version.
-RUN git clone --depth 1 https://github.com/davidaknowles/leafcutter.git /opt/leafcutter-src \
+# Clone leafcutter at the exact commit used to build the validated image and
+# regenerate Stan C++ model code with the pinned toolchain. Pinning the commit
+# keeps .stan sources and model code identical to the published results.
+RUN git clone https://github.com/davidaknowles/leafcutter.git /opt/leafcutter-src \
+    && git -C /opt/leafcutter-src checkout 2c9907ef66adf0bfb3092f0ceb6886ee5c046fbb \
     && Rscript -e "setwd('/opt/leafcutter-src/leafcutter'); rstantools::rstan_config()"
 
 RUN R CMD INSTALL /opt/leafcutter-src/leafcutter
