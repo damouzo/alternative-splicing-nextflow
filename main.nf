@@ -3,7 +3,7 @@
  * ========================================================================================
  *  alternative-splicing-nextflow: Multi-tool differential alternative splicing pipeline
  * ========================================================================================
- *  Github: https://github.com/BCI-KRP/alternative-splicing-nextflow
+ *  Github: https://github.com/damouzo/alternative-splicing-nextflow
  * ----------------------------------------------------------------------------------------
  */
 

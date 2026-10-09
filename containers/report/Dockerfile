@@ -7,7 +7,7 @@
 FROM bioconductor/bioconductor_docker:RELEASE_3_20
 
 LABEL org.opencontainers.image.description="R Markdown report renderer for alternative-splicing-nextflow"
-LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
+LABEL org.opencontainers.image.source="https://github.com/damouzo/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # pandoc is required by rmarkdown for HTML rendering;

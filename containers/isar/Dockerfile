@@ -5,7 +5,7 @@
 FROM bioconductor/bioconductor_docker:RELEASE_3_20
 
 LABEL org.opencontainers.image.description="IsoformSwitchAnalyzeR for isoform switch detection and functional annotation"
-LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
+LABEL org.opencontainers.image.source="https://github.com/damouzo/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Bioconductor packages: core ISAR stack

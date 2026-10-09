@@ -7,7 +7,7 @@ From: python:3.12-slim
 
 %labels
     org.opencontainers.image.description "MAJIQ V3 for Local Splicing Variation analysis"
-    org.opencontainers.image.source      "https://github.com/BCI-KRP/alternative-splicing-nextflow"
+    org.opencontainers.image.source      "https://github.com/damouzo/alternative-splicing-nextflow"
 
 %post
     apt-get update && apt-get install -y --no-install-recommends \

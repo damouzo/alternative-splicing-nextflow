@@ -4,14 +4,18 @@
 # Usage:
 #   Rscript diagnose_isar.R [path/to/*_tested.rds ...]
 #   Rscript diagnose_isar.R <dir>            # globs **/*_tested.rds under dir
-#   Rscript diagnose_isar.R                  # globs the default CRUK work dir
+#   Rscript diagnose_isar.R                  # globs $ISAR_DIAG_WORK_DIR
 # Note: deliberately does NOT load the IsoformSwitchAnalyzeR package — the import
 # only needs readRDS + base R, keeping the memory footprint small.
 
-default_work <- "/gpfs/scratch/qp241615/altsplicing-cruk-batch_2026_04"
+default_work <- Sys.getenv("ISAR_DIAG_WORK_DIR", unset = "")
 args <- commandArgs(trailingOnly = TRUE)
 
 if (length(args) == 0) {
+  if (!nzchar(default_work)) {
+    stop("No input given and ISAR_DIAG_WORK_DIR is not set. Pass a directory or ",
+         "*_tested.rds files, or set ISAR_DIAG_WORK_DIR to the ISAR work dir.")
+  }
   files <- list.files(default_work, pattern = "_tested\\.rds$",
                       recursive = TRUE, full.names = TRUE)
 } else if (length(args) == 1 && dir.exists(args[1])) {

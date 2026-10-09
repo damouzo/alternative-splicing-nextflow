@@ -1,5 +1,5 @@
 # Apptainer / Singularity definition for the R Markdown report renderer
-# Build: apptainer build /data/BCI-KRP/containers/report-1.0.0.sif containers/report/report.def
+# Build: apptainer build <outdir>/report-1.0.0.sif containers/report/report.def
 # Then pass --report_container /path/to/report-1.0.0.sif to the pipeline
 
 Bootstrap: docker
@@ -7,7 +7,7 @@ From: rocker/verse:4.4.2
 
 %labels
     org.opencontainers.image.description "R Markdown report renderer for alternative-splicing-nextflow"
-    org.opencontainers.image.source      "https://github.com/BCI-KRP/alternative-splicing-nextflow"
+    org.opencontainers.image.source      "https://github.com/damouzo/alternative-splicing-nextflow"
 
 %post
     # poppler-utils provides pdftoppm to embed sashimi PDFs as PNGs in the report

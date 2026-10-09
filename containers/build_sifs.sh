@@ -24,7 +24,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONTAINERS_DIR="${1:-/data/BCI-KRP/containers}"
+CONTAINERS_DIR="${1:-${HOME}/containers}"
 
 mkdir -p "${CONTAINERS_DIR}"
 

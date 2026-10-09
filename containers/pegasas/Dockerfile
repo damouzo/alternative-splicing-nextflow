@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-LABEL maintainer="BCI-KRP pipeline" \
+LABEL maintainer="damouzo pipeline" \
       description="PEGASAS (Python 3 port) + R dependencies"
 
 # System libraries required by R and Python scientific stack

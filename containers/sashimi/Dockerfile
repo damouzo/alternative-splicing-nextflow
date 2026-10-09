@@ -4,7 +4,7 @@
 FROM docker.io/xinglab/rmats2sashimiplot:latest
 
 LABEL org.opencontainers.image.description="rmats2sashimiplot runtime for alternative-splicing-nextflow"
-LABEL org.opencontainers.image.source="https://github.com/BCI-KRP/alternative-splicing-nextflow"
+LABEL org.opencontainers.image.source="https://github.com/damouzo/alternative-splicing-nextflow"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # rmats2sashimiplot calls samtools internally via subprocess.

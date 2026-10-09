@@ -4,7 +4,7 @@
 # falls back to PNG embedding.
 
 Bootstrap: localimage
-From: /data/BCI-KRP/containers/apptainer_cache/ghcr.io-damouzo-alternative-splicing-nextflow-report-latest.img
+From: /path/to/ghcr.io-damouzo-alternative-splicing-nextflow-report-latest.img
 
 %post
     # poppler-utils provides pdftoppm to embed sashimi PDFs as PNGs in the report

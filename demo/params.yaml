@@ -8,9 +8,9 @@ input: demo/samplesheet.csv
 comparisons: demo/comparisons.csv
 outdir: demo/results
 
-gtf: /data/BCI-KRP/projects/CRUK_DDX41_DHX34/analysis/totalRNAseq/batch_2026_demo/results/genome/Homo_sapiens.GRCh38.115.filtered.gtf
+gtf: /path/to/rnaseq/results/genome/Homo_sapiens.GRCh38.115.filtered.gtf
 use_gffread: true
-genome_fasta: /data/BCI-KRP/projects/CRUK_DDX41_DHX34/analysis/totalRNAseq/batch_2026_demo/results/genome/Homo_sapiens.GRCh38.dna_sm.primary_assembly.fa
+genome_fasta: /path/to/rnaseq/results/genome/Homo_sapiens.GRCh38.dna_sm.primary_assembly.fa
 transcript_fasta: null
 genome_build: hg38
 
@@ -23,9 +23,9 @@ run_isar: true
 
 # License picked up automatically from MAJIQ_LICENSE_FILE env var (set in ~/.bashrc).
 # Set explicitly here only as fallback.
-majiq_license: /data/home/qp241615/majiq_license/majiq_license_academic_official.lic
+majiq_license: /path/to/majiq_license.lic
 
 # Path to the MAJIQ Apptainer .sif image.
-# Build with: apptainer build --fakeroot /data/BCI-KRP/containers/majiq.sif containers/majiq/Dockerfile
+# Build with: apptainer build --fakeroot /path/to/majiq.sif containers/majiq/Dockerfile
 # Or set MAJIQ_SIF in ~/.bashrc to avoid specifying it here.
-majiq_sif: /data/BCI-KRP/containers/majiq.sif
+majiq_sif: /path/to/majiq.sif
