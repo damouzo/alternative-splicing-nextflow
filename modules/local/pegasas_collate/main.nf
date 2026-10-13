@@ -4,8 +4,8 @@
  * Produces the single per-contrast pegasas directory handed to the report:
  *   pegasas_out/all_pathways_scores.tsv  — long (pathway, sample, group, KS, p, median_rank), contrast subset
  *   pegasas_out/correlation_out/         — gathered correlation results
- * and, separately, the cross-contrast summary:
- *   <comp_id>_sig_pathways.tsv           — pathway, n_sig_events (for the upset/heatmap)
+ * and, separately, the per-pathway significant-event count feeding the master:
+ *   <comp_id>_sig_pathways.tsv           — pathway, n_sig_events (master n_sig_events)
  */
 process PEGASAS_COLLATE {
     tag "$comparison_id"

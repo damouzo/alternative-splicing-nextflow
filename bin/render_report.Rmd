@@ -68,6 +68,11 @@ leafcutter_clusters <- data.frame()
 ISAR_IQR_PIN_THRESHOLD <- 0.05
 ISAR_DIF_PIN_THRESHOLD <- 0.1
 
+# Defensive cap for the "show all rows" report tables (MAJIQ, LeafCutter): a
+# pathological run cannot blow up the HTML. The full set always lives in the
+# corresponding .significant.tsv deliverable.
+TABLE_ROW_CAP <- 25000
+
 # Condition labels from comparisons.csv (group1/group2 columns). Fall back to
 # Group1/Group2 when the pipeline does not pass names (e.g. manual renders).
 cond_label <- function(name, fallback) {
@@ -362,8 +367,11 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
                               plots_stem = NULL, subject = "this gene set",
                               show_heading = TRUE) {
   heading_prefix <- paste(rep("#", heading_level), collapse = "")
-  if (show_heading) cat(sprintf("%s %s\n\n", heading_prefix, ora_res$set_name))
-  cat(sprintf("Input significant genes: %d\n\n", ora_res$n_genes))
+  # Leading blank lines: inside a results='asis' chunk, text cat()ed straight
+  # after a printed plot is glued to that figure paragraph, so pandoc swallows
+  # the heading. The blank-line boundary makes the heading its own block.
+  if (show_heading) cat(sprintf("\n\n%s %s\n\n", heading_prefix, ora_res$set_name))
+  cat(sprintf("\n\nInput significant genes: %d\n\n", ora_res$n_genes))
 
   ora_plot_path <- function(kind) {
     if (is.null(plots_subdir) || is.null(plots_stem)) return(NULL)
@@ -374,7 +382,7 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
     ora_status_log <<- rbind(ora_status_log, data.frame(
       set_name = ora_res$set_name, n_genes = as.integer(ora_res$n_genes),
       n_go = 0L, n_kegg = 0L, status = ora_res$message, stringsAsFactors = FALSE))
-    cat(ora_res$message, "\n\n")
+    cat("\n\n", ora_res$message, "\n\n")
     return(invisible(NULL))
   }
 
@@ -383,7 +391,7 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
     n_go = nrow(ora_res$go_df), n_kegg = nrow(ora_res$kegg_df),
     status = "ran", stringsAsFactors = FALSE))
 
-  cat("**GO Biological Process**\n\n")
+  cat("\n\n**GO Biological Process**\n\n")
   if (!is.null(ora_res$go) && nrow(ora_res$go_df) > 0) {
     go_plot <- style_ora_dotplot(
       clusterProfiler::dotplot(ora_res$go, showCategory = 15),
@@ -391,15 +399,17 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
     )
     print(go_plot)
     save_plot_pdf(go_plot, ora_plot_path("GO_BP"), width = 10, height = 7)
-    print(truncate_geneid_datatable(
+    # A datatable printed inside a function body is discarded by knitr under
+    # results='asis'; emit its widget HTML explicitly via knit_print.
+    cat(knitr::knit_print(truncate_geneid_datatable(
       ora_res$go_df,
       caption = paste0("GO BP enrichment table \u2014 ", ora_res$set_name)
-    ))
+    )))
   } else {
-    cat(sprintf("No GO BP terms available for %s.\n\n", subject))
+    cat(sprintf("\n\nNo GO BP terms available for %s.\n\n", subject))
   }
 
-  cat("**KEGG pathways**\n\n")
+  cat("\n\n**KEGG pathways**\n\n")
   if (!is.null(ora_res$kegg) && nrow(ora_res$kegg_df) > 0) {
     kegg_plot <- style_ora_dotplot(
       clusterProfiler::dotplot(ora_res$kegg, showCategory = 15),
@@ -407,16 +417,16 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
     )
     print(kegg_plot)
     save_plot_pdf(kegg_plot, ora_plot_path("KEGG"), width = 10, height = 7)
-    print(truncate_geneid_datatable(
+    cat(knitr::knit_print(truncate_geneid_datatable(
       ora_res$kegg_df,
       caption = paste0("KEGG enrichment table \u2014 ", ora_res$set_name)
-    ))
+    )))
   } else {
-    cat(sprintf("No KEGG pathways available for %s.\n\n", subject))
+    cat(sprintf("\n\nNo KEGG pathways available for %s.\n\n", subject))
   }
 
   if (length(ora_res$notes) > 0) {
-    cat(paste0("Notes: ", paste(ora_res$notes, collapse = " ")), "\n\n")
+    cat(paste0("\n\nNotes: ", paste(ora_res$notes, collapse = " ")), "\n\n")
   }
 }
 ```
@@ -1140,9 +1150,6 @@ majiq_dpsi_dist_plot <- significance_dist_plot(
 print(majiq_dpsi_dist_plot)
 save_plot_pdf(majiq_dpsi_dist_plot, "majiq/majiq_dpsi_distribution.pdf",
               width = 10, height = 6)
-cat("MAJIQ significance also requires `probability_changing`; blue bars to the ",
-    "right of the cutoff are large-effect junctions that did not pass that ",
-    "posterior threshold.\n\n")
 ```
 
 ```{r majiq_top_table, eval=!is.null(params$majiq_dir) && nrow(majiq_results) > 0}
@@ -1163,16 +1170,25 @@ if (length(cols_to_show) > 0) {
 
   top_lsvs <- top_lsvs %>%
     arrange(desc(probability_changing), desc(abs(dpsi_mean))) %>%
-    select(all_of(cols_to_show)) %>%
-    head(100)
+    select(all_of(cols_to_show))
+
+  # Drop columns that are empty for this contrast (e.g. raw PSI means absent).
+  top_lsvs <- top_lsvs[, colSums(!is.na(top_lsvs)) > 0, drop = FALSE]
+
+  majiq_capped <- nrow(top_lsvs) > TABLE_ROW_CAP
+  if (majiq_capped) top_lsvs <- head(top_lsvs, TABLE_ROW_CAP)
 
   if (nrow(top_lsvs) > 0) {
+    cap_note <- if (majiq_capped) {
+      sprintf("; showing first %d rows \u2014 full set in the .significant.tsv deliverable",
+              TABLE_ROW_CAP)
+    } else ""
     datatable(
       top_lsvs,
-      caption  = paste0("Top 100 significant MAJIQ junctions with informative gene symbols (P >= ",
+      caption  = paste0("All significant MAJIQ junctions with informative gene symbols (P >= ",
                         params$majiq_prob_threshold, ", |ΔΨ| >= ",
-                        params$majiq_dpsi_cutoff, ")"),
-      options  = list(pageLength = 10, scrollX = TRUE),
+                        params$majiq_dpsi_cutoff, ")", cap_note),
+      options  = list(pageLength = 10, scrollX = TRUE, deferRender = TRUE),
       rownames = FALSE
     ) %>%
       formatRound(columns = names(top_lsvs)[sapply(top_lsvs, is.numeric)], digits = 4)
@@ -1267,9 +1283,6 @@ isar_dif_dist_plot <- significance_dist_plot(
 print(isar_dif_dist_plot)
 save_plot_pdf(isar_dif_dist_plot, "isar/isar_dif_distribution.pdf",
               width = 10, height = 5)
-cat("Note: ISAR measures the isoform fraction (IF) difference, not PSI; ",
-    "|delta IF| is not comparable to the |delta PSI| panels of MAJIQ/LeafCutter ",
-    "on the x-axis scale.\n\n")
 ```
 
 ```{r isar_top_table, eval=!is.null(params$isar_dir) && nrow(isar_switches) > 0}
@@ -1410,28 +1423,34 @@ save_plot_pdf(leafcutter_dpsi_dist_plot, "leafcutter/leafcutter_dpsi_distributio
 
 ```{r leafcutter_top_table, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
 cols_to_show <- intersect(
-  c("cluster", "genes", "status", "loglr", "df", "p", "p.adjust", "Significant"),
+  c("cluster", "genes", "loglr", "df", "p", "p.adjust"),
   colnames(leafcutter_clusters)
 )
 
 if (length(cols_to_show) > 0) {
   top_clusters <- leafcutter_clusters %>%
-    filter(status == "Success") %>%
+    filter(Significant) %>%
     arrange(p.adjust) %>%
-    select(all_of(cols_to_show)) %>%
-    head(100)
+    select(all_of(cols_to_show))
+
+  lc_capped <- nrow(top_clusters) > TABLE_ROW_CAP
+  if (lc_capped) top_clusters <- head(top_clusters, TABLE_ROW_CAP)
 
   if (nrow(top_clusters) > 0) {
+    cap_note <- if (lc_capped) {
+      sprintf("; showing first %d rows \u2014 full set in the .significant.tsv deliverable",
+              TABLE_ROW_CAP)
+    } else ""
     datatable(
       top_clusters,
-      caption  = paste0("Top 100 LeafCutter clusters (status = Success), sorted by FDR. ",
-                        n_sig, " pass FDR < ", params$fdr_cutoff, "."),
-      options  = list(pageLength = 15, scrollX = TRUE),
+      caption  = paste0("All significant LeafCutter clusters, sorted by FDR. ",
+                        n_sig, " pass FDR < ", params$fdr_cutoff, ".", cap_note),
+      options  = list(pageLength = 15, scrollX = TRUE, deferRender = TRUE),
       rownames = FALSE
     ) %>%
       formatRound(columns = intersect(c("loglr", "p", "p.adjust"), cols_to_show), digits = 4)
   } else {
-    cat("No clusters passed the noise filter.\n")
+    cat("No significant clusters.\n")
   }
 }
 ```
@@ -1650,9 +1669,9 @@ if (!is.null(membership_path) && length(membership_path) == 1 && nzchar(membersh
 }
 
 datatable(
-  head(membership, 50),
-  caption  = "UpSet membership (first 50 rows; full table in cross_tool_upset_membership.tsv)",
-  options  = list(pageLength = 10, scrollX = TRUE),
+  membership,
+  caption  = "UpSet membership (all genes; full table in plots/cross_tool_overlap/cross_tool_upset_membership.tsv)",
+  options  = list(pageLength = 10, scrollX = TRUE, deferRender = TRUE),
   rownames = FALSE
 )
 ```
@@ -1802,21 +1821,9 @@ run_pegasas_section <- !is.null(params$pegasas_dir)
 ```
 
 ```{r pegasas_intro, eval=run_pegasas_section, results='asis'}
-cat("PEGASAS asks a different question than a standard DE pathway enrichment: ",
-    "it does not compare patient vs healthy directly. For each sample, it computes ",
-    "a single-sample KS enrichment score per pathway (how skewed that gene set is ",
-    "in that sample's own expression ranking), then correlates this per-sample score ",
-    "against per-sample PSI values, across samples, to find splicing events that ",
-    "track with pathway activity. The two plots below show the raw per-sample scores; ",
-    "they are **not** a patient-vs-healthy differential ranking. The actual ",
-    "splicing–pathway association is the correlation table further down.\n\n")
-cat("**This section is exploratory.** The KS enrichment score is descriptive and is ",
-    "not called significant. Pathway ranking comes from the event x pathway ",
-    "correlations, BH-adjusted across the whole contrast matrix using the analytic ",
-    "Pearson p-value (the permutation p is floored at 1/N_PERMS and is shown only as ",
-    "a cross-check). In a two-group design, a PSI–activity correlation can reflect ",
-    "only the separation between the groups rather than a within-group ",
-    "dose–response, so treat these results as hypothesis-generating.\n\n")
+cat("PEGASAS correlates each sample's single-sample pathway KS score with its ",
+    "per-sample PSI values to find splicing events that track with pathway ",
+    "activity. This section is exploratory (hypothesis-generating).\n\n")
 ```
 
 ```{r pegasas_load, eval=run_pegasas_section}
@@ -1916,39 +1923,19 @@ if (nrow(cor_display) > 0) {
     paste0(cor_display$GeneName, ":",
            cor_display$chr, ":", cor_display$strand, ":",
            cor_display$exonStart, "-", cor_display$exonEnd)
-}
 
-# Compact overview: events tested / significant / strongest correlation per pathway.
-pathway_summary <- if (length(cor_list) > 0) {
-  do.call(rbind, lapply(names(cor_list), function(p) {
-    d <- cor_list[[p]]
-    ar <- abs(d$pearson_r)
-    pv <- d$p_value
-    pa <- d$p_adj
-    data.frame(
-      pathway      = p,
-      n_events     = nrow(d),
-      # BH-significant events using the analytic Pearson p (falls back to the
-      # permutation significant flag when the analytic p is unavailable).
-      n_significant = if (any(!is.na(pa))) sum(pa < 0.05, na.rm = TRUE) else
-                        sum(d$significant, na.rm = TRUE),
-      max_abs_r    = if (any(is.finite(ar))) max(ar, na.rm = TRUE) else NA_real_,
-      min_p        = if (any(is.finite(pv))) min(pv, na.rm = TRUE) else NA_real_,
-      # BH-adjusted p: only the tested events are counted, so NAs in p_value
-      # never inflate (or deflate) the per-pathway statistics.
-      min_p_adj    = if (any(is.finite(pa))) min(pa, na.rm = TRUE) else NA_real_,
-      n_sig_adj    = if (any(!is.na(pa))) sum(pa < 0.05, na.rm = TRUE) else 0L,
-      stringsAsFactors = FALSE, check.names = FALSE
-    )
-  }))
-} else data.frame()
+  # p_value/p_adj are not a value/adjusted pair: p_perm is the permutation p of
+  # Pearson r, p_adj_bh is BH on the pooled analytic Pearson p. Rename so the
+  # table cannot be misread as such a pair, and highlight on the BH value only.
+  cor_display$p_perm   <- cor_display$p_value
+  cor_display$p_adj_bh <- cor_display$p_adj
+  cor_display$bh_significant <-
+    !is.na(cor_display$p_adj_bh) & cor_display$p_adj_bh < params$fdr_cutoff
+}
 ```
 
 ```{r pegasas_score_plotA_caption, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
-cat("**Plot A — per-sample pathway activity.** Each dot is one pathway in one sample: ",
-    "size = KS enrichment score, colour = -log10(p) of that single-sample test. ",
-    "Samples are grouped by condition only for display; this plot does not test for ",
-    "a difference between groups.\n\n")
+cat("**Plot A — per-sample pathway activity.**\n\n")
 ```
 
 ```{r pegasas_score_plotA, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
@@ -1980,10 +1967,7 @@ save_plot_pdf(pegasas_pathway_activity_plot, "pegasas/pegasas_pathway_activity.p
 ```
 
 ```{r pegasas_score_plotB_caption, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
-cat("**Plot B — cohort-average pathway ranking.** Pathways ordered by their mean KS ",
-    "score across ALL samples (both groups pooled). This ranks how consistently ",
-    "active a pathway is across the cohort — it is **not** a patient-vs-healthy ",
-    "differential GSEA and does not rank pathways by group difference.\n\n")
+cat("**Plot B — cohort-average pathway ranking.**\n\n")
 ```
 
 ```{r pegasas_score_plotB, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
@@ -2017,38 +2001,24 @@ cat("All tested events are shown (including non-significant ones), ranked by |Pe
 cat(sprintf(" For responsiveness each pathway is capped at the top %d events; the complete, unfiltered table is in `correlation_out/<pathway>/<pathway>_global_cor_matrix.txt`.\n\n", TOP_N))
 cat("**Two distinct p-values are reported in this section, do not confuse them:**\n\n")
 cat("* The **heatmap p-value** is the KS enrichment of the pathway gene set per sample (can reach very small values because of the gene-set size), not a correlation test. It belongs to the pathway activity plots above.\n\n")
-cat("* The **correlation p-value** (`p_value` in the tables below) is the permutation p of each event's Pearson r against the pathway score, computed only for |r| > 0.3 (otherwise it is NA). With 1000 permutations p == 0 means 'more extreme than all permutations'; `p_adj` is its Benjamini–Hochberg correction across all events of that pathway.\n\n")
-cat("Significance: |Pearson r| > 0.3 AND permutation p == 0 within the resolution of the test (p < 1/N_perms). This means the observed correlation is more extreme than ALL permutations.\n\n")
+cat("* The **correlation p-values** in the table below come from two different tests and are **not** a value/adjusted pair:\n\n")
+cat("  * `p_perm` — permutation p of an event's Pearson r against the pathway score, computed only for |r| > 0.3 (otherwise NA). It is floored at 1/N_perms, so p_perm == 0 means 'more extreme than all permutations'.\n\n")
+cat("  * `p_adj_bh` — Benjamini–Hochberg adjustment of the analytic Pearson p (t distribution, df = n − 2), pooled across every event of the whole contrast matrix.\n\n")
+cat(sprintf("Green rows are highlighted by the BH value: `p_adj_bh` < %s (rows where it is NA are not highlighted).\n\n", format(params$fdr_cutoff)))
 ```
 
 ```{r pegasas_cor_table, eval=run_pegasas_section && nrow(cor_display) > 0}
 datatable(
   cor_display[, c("pathway", "event", "GeneName", "chr", "strand",
-                  "exonStart", "exonEnd", "pearson_r", "p_value", "p_adj", "significant")],
+                  "exonStart", "exonEnd", "pearson_r", "p_perm", "p_adj_bh",
+                  "bh_significant")],
   caption = "Splicing events correlated with pathway activity (all events, top by |r|)",
   rownames = FALSE, filter = "top",
   options = list(pageLength = 15, scrollX = TRUE)
 ) |>
-  formatRound(c("pearson_r", "p_value", "p_adj"), digits = 4) |>
-  formatStyle("significant", target = "row",
+  formatRound(c("pearson_r", "p_perm", "p_adj_bh"), digits = 4) |>
+  formatStyle("bh_significant", target = "row",
               backgroundColor = styleEqual(c(TRUE, FALSE), c("#d9f2d9", "#ffffff")))
-```
-
-```{r pegasas_summary_header, eval=run_pegasas_section && nrow(pathway_summary) > 0, results='asis'}
-cat("### Pathway summary\n\n")
-cat("Candidate splicing events are restricted to rMATS-significant events ",
-    "(FDR < 0.05, |ΔΨ| ≥ 0.1). This analysis is exploratory and ",
-    "hypothesis-generating: it highlights candidate pathway–splicing ",
-    "couplings for follow-up, not a primary statistical claim.\n\n")
-```
-
-```{r pegasas_summary_table, eval=run_pegasas_section && nrow(pathway_summary) > 0}
-datatable(
-  pathway_summary,
-  caption = "Events tested, significant, and strongest correlation per pathway (BH-adjusted)",
-  rownames = FALSE, options = list(pageLength = 15, scrollX = TRUE)
-) |>
-  formatRound(c("max_abs_r", "min_p", "min_p_adj"), digits = 4)
 ```
 
 ```{r pegasas_no_cor, eval=run_pegasas_section && nrow(cor_display) == 0, results='asis'}

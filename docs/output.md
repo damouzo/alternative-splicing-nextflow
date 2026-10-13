@@ -5,8 +5,8 @@ This document describes all output files produced by the alternative-splicing-ne
 Outputs are organised so that the folder that gets shipped is physically separate
 from the audit evidence (see `assets/results_schema.yaml`):
 
-- **Shippable** — `results/deliverables/` (`README.md`, `run_info/`, `contrasts/` and
-  `cross_contrast/`). This is what the recipient opens; it follows the results contract
+- **Shippable** — `results/deliverables/` (`README.md`, `run_info/` and
+  `contrasts/`). This is what the recipient opens; it follows the results contract
   (`results_contract_version`) and is QA-checked by `validate_results_contract.py` at the
   end of every run. All paths *inside* it are relative to `deliverables/`, so the folder
   can be renamed, moved and zipped without breaking anything.
@@ -77,8 +77,6 @@ results/
 │   │           ├── pegasas/      pegasas_pathway_{activity,ranking}.pdf
 │   │           ├── cross_tool_overlap/  cross_tool_upset.pdf, cross_tool_upset_membership.tsv, {shared_genes,global}_{GO_BP,KEGG}.pdf
 │   │           └── de_as/        de_as_genes_by_tool.pdf, de_as_volcano_<tool>.pdf, de_as_volcano_all_tools.pdf
-│   └── cross_contrast/
-│       └── pegasas/                 # cross_contrast_summary.tsv, heatmap, UpSet
 ├── run_info/                        # run metadata, NOT shipped
 │   ├── run_manifest.yaml            # pipeline, schema_version, params, tools, known issues
 │   └── contrast_manifests/

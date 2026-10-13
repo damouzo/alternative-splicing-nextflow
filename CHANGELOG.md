@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING — results layout)
+- Removed the PEGASAS cross-contrast deliverable
+  (`deliverables/cross_contrast/pegasas/`): the significance threshold was strict
+  enough that few contrasts ever contributed, so the UpSet/heatmap added little.
+  `PEGASAS_CROSS_CONTRAST` and its script are gone; `sig_pathways` is still
+  generated and still feeds the pegasas master (`n_sig_events`).
+
+### Changed (report)
+- UpSet membership table now shows all genes instead of the first 50.
+- MAJIQ and LeafCutter tables show all significant rows (significant LeafCutter
+  clusters only) with a 25,000-row defensive cap; `deferRender` keeps the large
+  tables responsive.
+- Fixed the ORA section headings (MAJIQ/ISAR/LeafCutter/etc. merged into the
+  preceding figure paragraph) and restored the GO BP / KEGG enrichment
+  datatables, which were silently dropped: a `datatable` printed inside a helper
+  under `results='asis'` is not emitted by knitr, so the widget HTML is now
+  emitted explicitly via `knitr::knit_print`.
+- PEGASA: trimmed the long explanatory text to short labels; the correlation
+  table now shows `p_perm` (permutation p of Pearson r) and `p_adj_bh` (BH of the
+  analytic Pearson p) instead of the confusingly named `p_value`/`p_adj`,
+  highlights rows on `p_adj_bh < FDR`, and the redundant `Pathway summary` table
+  was removed.
+- Removed the MAJIQ `probability_changing` note and the ISAR IF-vs-PSI note.
+
 ## [2.4.0] - 2026-10-08
 
 As of 2.4.0 the pipeline version (`manifest.version`) and the results contract

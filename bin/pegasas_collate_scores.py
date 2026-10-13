@@ -9,8 +9,8 @@ single long-format table of pathway KS scores for the report plots:
                             (only the contrast samples, from the shared scores)
 
 Also summarises, per pathway, how many splicing events were significantly
-correlated (from the correlation step's *_high_cor_matrix.txt) so that a
-cross-contrast upset/heatmap can be built:
+correlated (from the correlation step's *_high_cor_matrix.txt); this feeds the
+pegasas master table (n_sig_events):
 
   <comp_id>_sig_pathways.tsv — pathway, n_sig_events
 
@@ -264,7 +264,7 @@ def main() -> None:
     scores_out = os.path.join(args.out_dir, "all_pathways_scores.tsv")
     pathways = collect_scores(args.shared_scores_dir, contrast_samples, scores_out)
 
-    # significant-event summary for the cross-contrast upset
+    # significant-event summary for the pegasas master (n_sig_events)
     sig_dir = args.sig_out if args.sig_out else args.out_dir
     os.makedirs(sig_dir, exist_ok=True)
     sig_out = os.path.join(sig_dir, f"{args.comp_id}_sig_pathways.tsv")

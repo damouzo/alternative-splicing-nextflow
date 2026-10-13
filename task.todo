@@ -166,7 +166,6 @@ results/
 │   │                          # qa_report, pipeline_info/
 │   ├── contrasts/<id>/        # <id>_splicing_report.html, contrast_manifest.yaml,
 │   │                          # tables/, plots/ (Figuras PDF por tool; rmats/sashimi/ index + PDFs)
-│   └── cross_contrast/pegasas/
 └── raw/<tool>/<comparison_id>/ # audit-only (solo publish_level >= core_raw)
 ```
 

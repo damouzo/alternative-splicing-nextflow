@@ -10,7 +10,6 @@
  *      shared scores to the contrast samples and correlates them with PSI.
  *    - COLLATE: one all_pathways_scores.tsv per contrast + a significant-pathway
  *      summary, gathered into a single per-contrast pegasas directory.
- *    - CROSS CONTRAST: UpSet + heatmap of significant pathways across contrasts.
  *
  *  Takes:
  *   - ch_rmats_results: [comp_id, rmats_dir]
@@ -29,7 +28,6 @@ include { PEGASAS_PREPARE_CONTRAST } from '../../../modules/local/pegasas_prepar
 include { PEGASAS_PATHWAY          } from '../../../modules/local/pegasas_pathway/main'
 include { PEGASAS_CORRELATION      } from '../../../modules/local/pegasas_correlation/main'
 include { PEGASAS_COLLATE          } from '../../../modules/local/pegasas_collate/main'
-include { PEGASAS_CROSS_CONTRAST   } from '../../../modules/local/pegasas_cross_contrast/main'
 
 workflow PEGASAS_ANALYSIS {
 
@@ -91,12 +89,6 @@ workflow PEGASAS_ANALYSIS {
         }
     PEGASAS_COLLATE(ch_collate, file("${projectDir}/bin/pegasas_collate_scores.py"))
 
-    // === CROSS CONTRAST: upset/heatmap of significant pathways ===
-    ch_cross = PEGASAS_COLLATE.out.sig_pathways
-        .map { comp_id, sig_file -> sig_file }
-        .collect()
-    PEGASAS_CROSS_CONTRAST(ch_cross, file("${projectDir}/bin/pegasas_cross_contrast.R"))
-
     emit:
     results  = PEGASAS_COLLATE.out.results
     versions = PEGASAS_PREPARE.out.versions
@@ -104,5 +96,4 @@ workflow PEGASAS_ANALYSIS {
         .mix(PEGASAS_PREPARE_CONTRAST.out.versions)
         .mix(PEGASAS_CORRELATION.out.versions)
         .mix(PEGASAS_COLLATE.out.versions)
-        .mix(PEGASAS_CROSS_CONTRAST.out.versions)
 }

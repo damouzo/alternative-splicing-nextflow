@@ -36,7 +36,6 @@ shippable:
   - deliverables/contrasts/<comparison_id>/plots/cross_tool_overlap/*.pdf
   - deliverables/contrasts/<comparison_id>/plots/cross_tool_overlap/*.tsv
   - deliverables/contrasts/<comparison_id>/plots/de_as/*.pdf
-  - deliverables/cross_contrast/pegasas/
 
 # Audit evidence. Not part of the shipment.
 audit_only:

@@ -192,7 +192,6 @@ def build_readme(pipeline):
     lines.append('    <comparison_id>_splicing_report.html')
     lines.append('    tables/                     # <id>.<tool>.{master,significant,summary}.tsv')
     lines.append('    plots/rmats/sashimi/        # sashimi_index.tsv + <EVENT_TYPE>/*.pdf')
-    lines.append('  cross_contrast/pegasas/       # pathway summary, heatmap, UpSet')
     lines.append('```')
     lines.append('')
     lines.append('Run manifests (`run_manifest.yaml`, per-contrast manifests) and the')

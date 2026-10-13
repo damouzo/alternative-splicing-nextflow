@@ -147,7 +147,6 @@ results/
 │   │       ├── contrast_manifest.yaml
 │   │       ├── tables/             # <id>.<tool>.{master,significant,summary}.tsv + cross_tool.*
 │   │       └── plots/              # PDF figures per tool (rmats/, majiq/, isar/, ...)
-│   └── cross_contrast/pegasas/     # summary, heatmap, UpSet
 └── raw/                            # native per-tool output (audit-only, not shipped)
     ├── rmats/control_vs_treatment/...
     ├── majiq/control_vs_treatment/...

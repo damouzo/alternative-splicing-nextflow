@@ -115,7 +115,6 @@ results/
 ├── deliverables/                    # shippable (internal paths relative to here)
 │   ├── run_info/                    # run_manifest, sample_index, software_versions, qa_report
 │   ├── contrasts/<comparison_id>/   # <id>_splicing_report.html, tables/, plots/
-│   └── cross_contrast/pegasas/
 └── raw/<tool>/<comparison_id>/      # native outputs, audit-only (see --publish_level)
 ```
 
