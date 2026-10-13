@@ -31,11 +31,10 @@ params:
   run_de_as: false
   publish_deliverables: false
   publish_level: "core_raw"
-  results_contract_version: "2.4.0"
+  results_contract_version: "2.5.0"
   report_min_reads: 20
   group1_name: "Group1"
   group2_name: "Group2"
-  effective_test_method: "NA"
   group1_sample_ids:
     value: !r character()
   group2_sample_ids:
@@ -1578,9 +1577,22 @@ leafcutter_sig_genes <- character(0)
 leafcutter_sig_keys <- character(0)
 if (nrow(leafcutter_clusters) > 0 &&
     "genes" %in% colnames(leafcutter_clusters) &&
-    "Significant" %in% colnames(leafcutter_clusters)) {
+    "cluster" %in% colnames(leafcutter_clusters) &&
+    "Significant" %in% colnames(leafcutter_clusters) &&
+    nrow(leafcutter_effects) > 0 &&
+    "intron" %in% colnames(leafcutter_effects) &&
+    "deltapsi" %in% colnames(leafcutter_effects)) {
+  # Significant introns follow the master rule: the cluster passes FDR
+  # (Success & padj <= cutoff) and the intron clears |deltapsi| >= cutoff.
+  lc_introns <- leafcutter_effects[!is.na(leafcutter_effects$deltapsi), , drop = FALSE]
+  lc_introns$.cluster <- sub("^([^:]+):[0-9]+:[0-9]+:", "\\1:", lc_introns$intron)
+  cluster_sig <- stats::setNames(leafcutter_clusters$Significant, leafcutter_clusters$cluster)
+  lc_introns$.significant <- cluster_sig[lc_introns$.cluster]
+  lc_introns$.significant <- !is.na(lc_introns$.significant) & lc_introns$.significant &
+    abs(lc_introns$deltapsi) >= params$dpsi_cutoff
+  sig_clusters <- unique(lc_introns$.cluster[lc_introns$.significant])
   lc_genes_raw <- leafcutter_clusters$genes[
-    leafcutter_clusters$Significant & !is.na(leafcutter_clusters$genes)
+    leafcutter_clusters$cluster %in% sig_clusters & !is.na(leafcutter_clusters$genes)
   ]
   leafcutter_sig_genes <- unique(trimws(unlist(strsplit(lc_genes_raw, ","))))
   leafcutter_sig_genes <- leafcutter_sig_genes[leafcutter_sig_genes != ""]
@@ -2196,20 +2208,24 @@ cat("No matching DE (DESeq2) results were found in `dge_dirs` for comparison `",
 # Pool AS significant genes from all active tools.
 # Reuse the gene sets built in the Cross-Tool Overlap section.
 as_sig_genes <- unique(c(rmats_sig_genes, majiq_sig_genes, isar_sig_genes, leafcutter_sig_genes))
+# Compare on the same canonical key the UpSet uses (symbol -> ENSG when the GTF
+# maps it), so DE gene ids and AS symbols meet on one namespace.
+as_sig_keys <- unique(c(rmats_sig_keys, majiq_sig_keys, isar_sig_keys, leafcutter_sig_keys))
 
 as_tool_sets <- list(
-  rMATS       = rmats_sig_genes,
-  MAJIQ       = majiq_sig_genes,
-  ISAR        = isar_sig_genes,
-  LeafCutter  = leafcutter_sig_genes
+  rMATS       = rmats_sig_keys,
+  MAJIQ       = majiq_sig_keys,
+  ISAR        = isar_sig_keys,
+  LeafCutter  = leafcutter_sig_keys
 )
 # Keep only tools that contribute genes.
 active_as_tools <- names(as_tool_sets)[lengths(as_tool_sets) > 0]
 
 # Tag each gene in the DE table by its AS status and per-tool membership.
+de_key <- canonical_key(de_results$gene_id)
 de_results <- de_results %>%
   mutate(
-    AS_hit = gene_id %in% as_sig_genes,
+    AS_hit = de_key %in% as_sig_keys,
     hit_class = case_when(
       DE_significant & AS_hit  ~ "DE + AS",
       DE_significant & !AS_hit ~ "DE only",
@@ -2220,7 +2236,7 @@ de_results <- de_results %>%
 
 # Per-tool AS hit flag (gene detected as significant by each tool).
 for (tl in active_as_tools) {
-  de_results[[paste0("AS_", tl)]] <- de_results$gene_id %in% as_tool_sets[[tl]]
+  de_results[[paste0("AS_", tl)]] <- de_key %in% as_tool_sets[[tl]]
 }
 
 dual_hits <- de_results %>%
@@ -2287,7 +2303,8 @@ make_de_volcano <- function(de_df, as_col, title, subtitle) {
                linetype = "dashed", colour = "gray40", linewidth = 0.4) +
     theme_bw(base_size = 12) +
     labs(title = title, subtitle = subtitle,
-         x = "log2 Fold Change", y = "-log10(adj. p-value)") +
+         x = paste0("log2 Fold Change (group2 vs group1: ", g2_label, " - ", g1_label, ")"),
+         y = "-log10(adj. p-value)") +
     theme(legend.position = "bottom")
 }
 ```
@@ -2336,7 +2353,7 @@ de_as_volcano_plot <- ggplot(de_plot, aes(x = log2FC, y = neg_log10_padj,
   labs(
     title    = "Differential Expression — AS genes highlighted",
     subtitle = sprintf("Red = significant in both DE and AS (n = %d)", nrow(dual_hits)),
-    x        = "log2 Fold Change",
+    x        = paste0("log2 Fold Change (group2 vs group1: ", g2_label, " - ", g1_label, ")"),
     y        = "-log10(adj. p-value)"
   ) +
   theme(legend.position = "bottom")

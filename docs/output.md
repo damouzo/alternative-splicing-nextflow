@@ -5,14 +5,16 @@ This document describes all output files produced by the alternative-splicing-ne
 Outputs are organised so that the folder that gets shipped is physically separate
 from the audit evidence (see `assets/results_schema.yaml`):
 
-- **Shippable** — `results/deliverables/` (`README.md`, `run_info/` and
-  `contrasts/`). This is what the recipient opens; it follows the results contract
+- **Shippable** — `results/deliverables/` (`run_info/` — which holds `README.md` —
+  and `contrasts/`). This is what the recipient opens; it follows the results contract
   (`results_contract_version`) and is QA-checked by `validate_results_contract.py` at the
   end of every run. All paths *inside* it are relative to `deliverables/`, so the folder
   can be renamed, moved and zipped without breaking anything.
 - **Audit-only** — `results/raw/` and `deliverables/run_info/pipeline_info/`. Native
   per-tool output and the Nextflow execution artefacts. Not needed to interpret the
-  results; not part of the shipment.
+  results; not part of the shipment. `results/run_info/` (outside `deliverables/`) also
+  keeps the run/contrast manifests and `contrast_params/<id>.json` (the per-contrast
+  report params, read by the validator to cross-check group membership).
 
 Shipping is therefore: `mv deliverables <name> && zip -r <name>.zip <name>`.
 
@@ -45,8 +47,8 @@ symlinks into `work/`.
 ```
 results/
 ├── deliverables/                    # SHIPPABLE: rename + zip to send
-│   ├── README.md                    # what each folder is, how to read the TSVs
 │   ├── run_info/                    # what was run and how to read the tables
+│   │   ├── README.md                # what each folder is, how to read the TSVs
 │   │   ├── sample_index.tsv         # sample x comparison x group (no cluster paths)
 │   │   ├── software_versions.yml    # single consolidated tool-version record
 │   │   ├── qa_report.txt            # results-contract validation output
@@ -143,13 +145,18 @@ Per-tool significance rules (identical to the report):
 | MAJIQ | `probability_changing >= 0.95 & |dpsi_mean| >= 0.2` |
 | ISAR | `isoform_switch_q_value <= fdr_cutoff & |dIF| >= dpsi_cutoff` |
 | LeafCutter | `status == "Success" & padj_cluster <= fdr_cutoff & |deltapsi| >= dpsi_cutoff` (per intron) |
-| PEGASAS | no boolean call: exploratory; `n_sig_events` is the BH-adjusted event x pathway correlation count (analytic Pearson p; `n_sig_events_perm` is the permutation cross-check), rank pathways by it |
+| PEGASAS | no boolean call: exploratory; `n_sig_events` is the BH-adjusted event x pathway correlation count (analytic Pearson p; `n_sig_events_perm` is the permutation cross-check), rank pathways by it. SE events are pre-selected by FDR < 0.05 and |ΔPSI| >= 0.1 (`pegasas_fdr_cutoff`/`pegasas_dpsi_cutoff`) before correlating with pathway scores from the same samples — a circular selection |
 
 ### cross_tool tables
 
-- `cross_tool.master.tsv` — long format, one row per gene x tool.
+- `cross_tool.master.tsv` — long format, one row per gene x tool. `best_abs_effect_size`
+  is the largest absolute `effect_size` across the tools that called the gene; the sign
+  is not carried here and magnitudes from different scale types (ΔPSI vs ΔIF) are not
+  directly comparable. Unlike the per-tool masters, this table has no
+  `effect_size_direction`.
 - `cross_tool.gene_summary.tsv` — one row per gene: `n_tools_significant`, `tools`,
-  `best_effect_size`, `best_padj`. This is the quick gene list to open first.
+  `best_abs_effect_size`, `best_padj` (no `effect_size_direction`). This is the quick
+  gene list to open first.
 
 ### QA validator
 
@@ -160,6 +167,14 @@ table for an enabled tool, or an indexed sashimi PDF that does not exist), and a
 rMATS row has an empty `event_locus` (contract 2.1.0 — events must be localizable in IGV).
 Content warnings (FDR==0 fraction, pinned ISAR q-values, tools with 0 significant genes in the cross-tool
 table, ...) are reported without blocking.
+
+The validator streams every master (nothing is loaded whole) and additionally checks:
+group membership (`group*_sample_ids`/raw rMATS `b1/b2_samples.txt` vs `sample_index.tsv`),
+the effect-size sign convention, a recomputation of `is_significant` for each tool, that
+tools with significant features have their section in the report HTML, the PEGASAS pathway
+count, and that every file under `deliverables/` matches the schema (orphans are WARN). The
+UpSet-vs-master gene-count gap is WARN only, above a 2 % threshold, reported per tool with
+the delta; ISAR test cutoffs that drift from the report cutoffs are warned.
 
 The report also renders one effect-size distribution per AS tool (MAJIQ, LeafCutter,
 ISAR) from a single helper: bars are stacked and coloured by `is_significant`, and a
@@ -537,6 +552,10 @@ Interactive HTML report integrating all three tools' results with visualizations
 6. **PEGASAS Results** (when `--run_pegasas true`)
    - KS score plots per pathway
    - High-correlation event tables
+   - Exploratory: SE events are pre-selected by FDR < 0.05 and |ΔPSI| >= 0.1
+     (`pegasas_fdr_cutoff`/`pegasas_dpsi_cutoff`) before correlating with pathway scores
+     of the same samples, so the selection is circular; the KS score makes no
+     significance call
 
 7. **Cross-Tool Overlap**
    - UpSet plot of genes significant across rMATS, MAJIQ, ISAR, and LeafCutter
@@ -721,5 +740,3 @@ When publishing results, cite all tools used:
 - **rMATS**: Shen et al. (2014) PNAS. doi:10.1073/pnas.1419161111
 - **MAJIQ**: Vaquero-Garcia et al. (2016) eLife. doi:10.7554/eLife.11752
 - **IsoformSwitchAnalyzeR**: Vitting-Seerup & Sandelin (2019) Mol Cell. doi:10.1016/j.molcel.2019.09.005
-
-Full citations available in `CITATIONS.md`.

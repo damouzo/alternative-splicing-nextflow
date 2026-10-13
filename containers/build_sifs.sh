@@ -37,6 +37,16 @@ echo "=== Building report SIF ==="
 echo "Output: ${CONTAINERS_DIR}/report-1.0.0.sif"
 apptainer build "${CONTAINERS_DIR}/report-1.0.0.sif" "${SCRIPT_DIR}/report/report.def"
 
+# Poppler variant: same report image plus the poppler userland (pdftoppm/pdfinfo)
+# used to render/inspect sashimi PDFs. This is the image the cluster runs as
+# report-poppler-1.0.0.sif. Build it separately (not built by default above):
+#
+#   apptainer build "${CONTAINERS_DIR}/report-poppler-1.0.0.sif" \
+#       "${SCRIPT_DIR}/report/report-poppler.def"
+#
+# then point the report/validation processes at it:
+#   nextflow run main.nf --report_container ${CONTAINERS_DIR}/report-poppler-1.0.0.sif ...
+
 echo ""
 echo "=== Building sashimi SIF ==="
 echo "Output: ${CONTAINERS_DIR}/sashimi-1.0.0.sif"

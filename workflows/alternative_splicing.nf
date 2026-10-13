@@ -221,6 +221,10 @@ workflow ALTERNATIVE_SPLICING {
 
     ch_sashimi_pair = ch_sashimi_for_report.join(ch_sashimi_index_for_report, by: 0)
 
+    if (params.de_results) {
+        log.warn "de_results is deprecated; use dge_dirs instead (the single-dir alias is still honoured for now)"
+    }
+
     /*
      * MODULE: Render per-comparison HTML report
      */
@@ -234,8 +238,7 @@ workflow ALTERNATIVE_SPLICING {
         // Condition names (group1/group2 columns of comparisons.csv) feed the
         // report legends so plots read Healthy vs Patient, not Group1 vs Group2.
         .join(ch_comp_names, by: 0)
-        .join(ch_isar_method, by: 0)
-        .map { comp_id, rdir, mdir, idir, sdir, sidx, pdir, ldir, g1_ids, g2_ids, g1_name, g2_name, isar_method ->
+        .map { comp_id, rdir, mdir, idir, sdir, sidx, pdir, ldir, g1_ids, g2_ids, g1_name, g2_name ->
             [comp_id,
              rdir.name, rdir,
              mdir.name, mdir,
@@ -245,8 +248,7 @@ workflow ALTERNATIVE_SPLICING {
              pdir.name, pdir,
              ldir.name, ldir,
              g1_ids, g2_ids,
-             g1_name, g2_name,
-             isar_method]
+             g1_name, g2_name]
         }
         .set { ch_report_inputs }
 
@@ -309,6 +311,7 @@ workflow ALTERNATIVE_SPLICING {
             publish_level:    params.publish_level,
 fdr_cutoff:             params.report_fdr_cutoff,
             dpsi_cutoff:            params.report_dpsi_cutoff,
+            report_min_reads:       params.report_min_reads,
             majiq_probability_threshold: params.majiq_probability_threshold,
             majiq_dpsi_cutoff:      params.majiq_delta_psi_threshold,
             strandedness:           params.strandedness,

@@ -387,11 +387,6 @@ def write_bam(
 
 # ── Salmon quant.sf ───────────────────────────────────────────────────────────
 
-def _tpm(num_reads: int, eff_len: int, total_rate: float) -> float:
-    """TPM = (reads/eff_len) / total_rate * 1e6"""
-    return (num_reads / eff_len) / total_rate * 1e6
-
-
 def write_quant_sf(path: Path, n_tx1: int, n_tx2: int) -> None:
     """
     Write a minimal Salmon quant.sf for TESTGENE isoforms + background genes.

@@ -732,10 +732,9 @@ def export_cross_tool(comparison_id, master_files, out_dir, params=None):
                         'tool': tool,
                         'group1_name': group1_name,
                         'group2_name': group2_name,
-                        'effect_size_direction': 'group2_minus_group1',
                         'n_significant_features': 0,
                         'n_ok_features': 0,
-                        'best_effect_size': '',
+                        'best_abs_effect_size': '',
                         'best_padj': '',
                     })
                     if not entry['gene_symbol'] and symbol:
@@ -750,9 +749,9 @@ def export_cross_tool(comparison_id, master_files, out_dir, params=None):
                         stats['ok'].add(gene_key)
                     try:
                         effect = abs(float(raw.get('effect_size')))
-                        if entry['best_effect_size'] == '' or \
-                           effect > float(entry['best_effect_size']):
-                            entry['best_effect_size'] = fmt(effect)
+                        if entry['best_abs_effect_size'] == '' or \
+                           effect > float(entry['best_abs_effect_size']):
+                            entry['best_abs_effect_size'] = fmt(effect)
                     except (TypeError, ValueError):
                         pass
                     try:
@@ -767,7 +766,7 @@ def export_cross_tool(comparison_id, master_files, out_dir, params=None):
                         'gene_symbol': symbol,
                         'gene_id': ensg,
                         'tools': set(),
-                        'best_effect_size': '',
+                        'best_abs_effect_size': '',
                         'best_padj': '',
                     })
                     if not summary['gene_symbol'] and symbol:
@@ -775,10 +774,10 @@ def export_cross_tool(comparison_id, master_files, out_dir, params=None):
                     if not summary['gene_id'] and ensg:
                         summary['gene_id'] = ensg
                     summary['tools'].add(tool)
-                    if entry['best_effect_size'] != '' and (
-                            summary['best_effect_size'] == '' or
-                            float(entry['best_effect_size']) > float(summary['best_effect_size'])):
-                        summary['best_effect_size'] = entry['best_effect_size']
+                    if entry['best_abs_effect_size'] != '' and (
+                            summary['best_abs_effect_size'] == '' or
+                            float(entry['best_abs_effect_size']) > float(summary['best_abs_effect_size'])):
+                        summary['best_abs_effect_size'] = entry['best_abs_effect_size']
                     if entry['best_padj'] != '' and (
                             summary['best_padj'] == '' or
                             float(entry['best_padj']) < float(summary['best_padj'])):
@@ -786,9 +785,9 @@ def export_cross_tool(comparison_id, master_files, out_dir, params=None):
 
     rows = list(genes.values())
     columns = ['comparison_id', 'gene_symbol', 'gene_id', 'tool',
-               'group1_name', 'group2_name', 'effect_size_direction',
+               'group1_name', 'group2_name',
                'n_significant_features', 'n_ok_features',
-               'best_effect_size', 'best_padj']
+               'best_abs_effect_size', 'best_padj']
     write_rows(os.path.join(out_dir, '%s.cross_tool.master.tsv' % comparison_id),
                columns, rows)
 
@@ -800,16 +799,15 @@ def export_cross_tool(comparison_id, master_files, out_dir, params=None):
             'gene_id': summary['gene_id'],
             'group1_name': group1_name,
             'group2_name': group2_name,
-            'effect_size_direction': 'group2_minus_group1',
             'n_tools_significant': len(summary['tools']),
             'tools': ','.join(sorted(summary['tools'])),
-            'best_effect_size': summary['best_effect_size'],
+            'best_abs_effect_size': summary['best_abs_effect_size'],
             'best_padj': summary['best_padj'],
         })
     gene_rows.sort(key=lambda r: (-r['n_tools_significant'], r['gene_symbol']))
     gene_columns = ['comparison_id', 'gene_symbol', 'gene_id',
-                    'group1_name', 'group2_name', 'effect_size_direction',
-                    'n_tools_significant', 'tools', 'best_effect_size', 'best_padj']
+                    'group1_name', 'group2_name',
+                    'n_tools_significant', 'tools', 'best_abs_effect_size', 'best_padj']
     write_rows(os.path.join(out_dir, '%s.cross_tool.gene_summary.tsv' % comparison_id),
                gene_columns, gene_rows)
 

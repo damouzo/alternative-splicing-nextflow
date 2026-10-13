@@ -125,11 +125,6 @@ Deliverables (shippable layer):
   publish_rmats_jcec              : ${params.publish_rmats_jcec}
   publish_rmats_individual_counts : ${params.publish_rmats_individual_counts}
   results_contract_version        : ${params.results_contract_version}
-
-Resources:
-  max_cpus          : ${params.max_cpus}
-  max_memory        : ${params.max_memory}
-  max_time          : ${params.max_time}
 ============================================================
 """
 }

@@ -5,7 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.5.0] - 2026-10-13
+
+`manifest.version`, `results_contract_version` and `assets/results_schema.yaml`
+(`schema_version`) bumped to `2.5.0` for the incompatible `cross_tool` column
+changes and the `README.md` location correction below.
+
+### Changed (BREAKING — cross_tool columns)
+- Renamed `best_effect_size` to `best_abs_effect_size` in `cross_tool.master.tsv`,
+  `cross_tool.gene_summary.tsv`, the exporter, `assets/results_schema.yaml` and
+  `docs/output.md`, so the name states it is the largest absolute effect size across
+  tools. No alias is kept.
+- Removed the `effect_size_direction` column from `cross_tool.master.tsv` and
+  `cross_tool.gene_summary.tsv` (the per-tool masters keep it).
+
+### Changed (schema/docs)
+- Corrected the shipped `README.md` path in `assets/results_schema.yaml` and the
+  layout docs to `deliverables/run_info/README.md`, matching where `EXPORT_METADATA`
+  already publishes it (it was wrongly listed at the deliverables root).
+
+### Fixed (report)
+- LeafCutter significant genes are now derived from the significant introns with the
+  same rule and gene key as `cross_tool.master` (Success & padj <= FDR &
+  |ΔPSI| >= cutoff), instead of the cluster-level flag; the HTML gene count now matches
+  the master (e.g. SF3B1mut 4753 vs 4753, was 6470).
+- The DE volcano x-axis now states the direction (`group2 vs group1`).
+- The DE+AS intersection now matches on the same canonical key as the UpSet.
+
+### Added (validator)
+- Streaming checks: group membership vs `sample_index.tsv`, effect-size sign
+  convention, `is_significant` recomputation per tool, deliverables tree vs schema
+  (orphans WARN), HTML section presence for tools with significant features, PEGASAS
+  pathway count, and ISAR test-cutoff drift WARN.
+- UpSet-vs-master gene-count gap kept as WARN, now gated at 2 % and printed per tool
+  with the delta.
+- "Notas y limitaciones" now adds the n < 3 caveat from the manifest and run-wide
+  notes (paired designs analysed as unpaired; PEGASAS exploratory).
+
+### Changed (report / workflow)
+- `report_min_reads` is recorded in the run manifest (`pipeline_json`).
+- `sashimi_analysis` orders ids/bams/bais for both groups together by `bam.name`, so
+  the sashimi `--group-info` indices match the alphabetical BAM glob (12/12 contrasts,
+  0 permutations).
+
+### Removed
+- Dead params/labels/config: `is_gencode`, `validate_params`, `error_ignore`,
+  `error_retry`, `assets/multiqc_config.yml`, the unused Rmd `effective_test_method`
+  param and its plumbing through `RENDER_REPORT` (ISAR masters/manifests keep
+  `ch_isar_method`), `_tpm()` in `generate_demo_data.py`, the `CITATIONS.md` reference,
+  the unused `max_cpus`/`max_memory`/`max_time` params, and the validator's pre-2.2.0
+  legacy branches.
+
+### Known issues
+- PEGASAS is exploratory: SE events are pre-selected by FDR < 0.05 and |ΔPSI| >= 0.1
+  (`pegasas_fdr_cutoff`/`pegasas_dpsi_cutoff`) before correlating with pathway scores
+  of the same samples, so the selection is circular; the KS score makes no significance
+  call.
+
+### Deprecated
+- `--publish_raw` is deprecated in favour of `--publish_level`; it is still honoured
+  for now and will be removed in a future release. `de_results` logs a warning and
+  will be removed in favour of `dge_dirs`.
 
 ### Changed (BREAKING — results layout)
 - Removed the PEGASAS cross-contrast deliverable

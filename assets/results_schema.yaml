@@ -10,13 +10,13 @@
 #   run_info/      run metadata (run_manifest.yaml, contrast manifests), not shipped
 # All paths *inside* deliverables/ (sashimi_index.tsv) are relative to the
 # deliverables/ root, so the folder survives renaming/moving.
-schema_version: 2.4.0
+schema_version: 2.5.0
 
 shippable_root: deliverables/
 
 # What the recipient gets when the deliverables/ folder is zipped.
 shippable:
-  - deliverables/README.md
+  - deliverables/run_info/README.md
   - deliverables/run_info/sample_index.tsv
   - deliverables/run_info/software_versions.yml
   - deliverables/run_info/qa_report.txt
@@ -109,7 +109,7 @@ cross_tool_gene_columns:
   - gene_id
   - n_tools_significant
   - tools
-  - best_effect_size
+  - best_abs_effect_size
   - best_padj
 
 # Paths that must stay relative (never absolute, never pointing at raw/) inside

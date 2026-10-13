@@ -5,7 +5,13 @@ process RENDER_REPORT {
     // Container resolved from modules.config (params.report_container or default)
 
     publishDir "${params.outdir}/deliverables/contrasts/${comparison_id}", mode: params.publish_dir_mode,
-        saveAs: { f -> f.toString() == 'versions.yml' ? null : f }
+        saveAs: { f -> (f.toString() in ['versions.yml', 'report_params.json']) ? null : f }
+
+    // report_params.json is audit-only: keep it outside deliverables/ (it carries
+    // absolute dge_dirs/de_results paths). validate_results_contract.py reads it to
+    // compare group*_sample_ids against sample_index.tsv.
+    publishDir "${params.outdir}/run_info/contrast_params", mode: params.publish_dir_mode,
+        saveAs: { f -> f.toString() == 'report_params.json' ? "${comparison_id}.json" : null }
 
     // stageAs gives each dir a unique name in the work dir — avoids basename collision
     // when rMATS, MAJIQ, ISAR, sashimi, PEGASAS, and LeafCutter all emit a directory per comparison.
@@ -22,13 +28,13 @@ process RENDER_REPORT {
           val(group1_sample_ids),
           val(group2_sample_ids),
           val(group1_name),
-          val(group2_name),
-          val(effective_test_method)
+          val(group2_name)
     path report_rmd
 
     output:
     tuple val(comparison_id), path("${comparison_id}_splicing_report.html"), emit: html
     path "plots",                                 emit: plots
+    path "report_params.json",                    emit: report_params
     path "versions.yml",                          emit: versions
 
     script:
@@ -83,7 +89,6 @@ process RENDER_REPORT {
       "group2_sample_ids":      ${group2_ids_json},
       "group1_name":            "${group1_name}",
       "group2_name":            "${group2_name}",
-      "effective_test_method":  "${effective_test_method}",
       "report_min_reads":       ${params.report_min_reads},
       "publish_deliverables":   ${params.publish_deliverables ? 'true' : 'false'},
       "publish_level":          "${params.publish_level}",

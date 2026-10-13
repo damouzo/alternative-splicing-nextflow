@@ -40,6 +40,10 @@ workflow SASHIMI_ANALYSIS {
         .map    { comp_id, sample_ids, bams, bais ->
             def rows = [sample_ids, bams, bais].transpose()
             def uniq_rows = rows.unique { row -> row[1].toString() }
+            // Sort ids/bams/bais together by BAM file name so the order matches
+            // the alphabetical shell glob (b1_bams/*.bam) in SASHIMI_PLOTS;
+            // otherwise --group-info tags replicate labels onto the wrong track.
+            uniq_rows = uniq_rows.sort { row -> row[1].name }
             [
                 comp_id,
                 uniq_rows.collect { row -> row[1] },
@@ -56,6 +60,10 @@ workflow SASHIMI_ANALYSIS {
         .map    { comp_id, sample_ids, bams, bais ->
             def rows = [sample_ids, bams, bais].transpose()
             def uniq_rows = rows.unique { row -> row[1].toString() }
+            // Sort ids/bams/bais together by BAM file name so the order matches
+            // the alphabetical shell glob (b1_bams/*.bam) in SASHIMI_PLOTS;
+            // otherwise --group-info tags replicate labels onto the wrong track.
+            uniq_rows = uniq_rows.sort { row -> row[1].name }
             [
                 comp_id,
                 uniq_rows.collect { row -> row[1] },

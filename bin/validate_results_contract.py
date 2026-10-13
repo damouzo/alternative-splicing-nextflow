@@ -31,6 +31,7 @@ Stdlib only.
 
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -45,6 +46,16 @@ RMATS_EVENT_TYPES = ('SE', 'A5SS', 'A3SS', 'MXE', 'RI')
 MAX_FDR_ZERO_FRACTION = 0.25
 ISAR_IQR_THRESHOLD = 0.05
 ISAR_DIF_THRESHOLD = 0.1
+# UpSet vs cross_tool.master gene-count gap tolerated before warning (WARN only).
+UPSET_DIFF_FRACTION = 0.02
+# effect_size is a rounded copy of a native metric; allow a small absolute slack.
+SIGN_TOLERANCE = 1e-6
+HTML_TOOL_SECTIONS = {
+    'rmats': 'rMATS Results',
+    'majiq': 'MAJIQ Results',
+    'isar': 'IsoformSwitchAnalyzeR Results',
+    'leafcutter': 'LeafCutter Results',
+}
 
 
 class Report:
@@ -53,6 +64,7 @@ class Report:
         self.warnings = []
         self.infos = []
         self.notes = []  # [(comparison_id, text)]
+        self.general_notes = []  # run-wide notes
 
     def error(self, message):
         self.errors.append(message)
@@ -65,6 +77,9 @@ class Report:
 
     def note(self, comparison_id, message):
         self.notes.append((comparison_id, message))
+
+    def general_note(self, message):
+        self.general_notes.append(message)
 
     @property
     def exit_code(self):
@@ -82,7 +97,7 @@ def load_schema(path):
         return schema
     list_keys = ('required_master_columns', 'master_columns',
                  'sample_index_columns', 'sashimi_index_columns',
-                 'cross_tool_gene_columns')
+                 'cross_tool_gene_columns', 'shippable', 'audit_only')
     key = None
     with open(path, 'r', encoding='utf-8', errors='replace') as handle:
         for line in handle:
@@ -136,7 +151,7 @@ def tables_dir(deliverables, comparison_id):
 
 
 def check_rmats_master(outdir, deliverables, comparison_id, report,
-                       required_columns, legacy_contract):
+                       required_columns):
     master = os.path.join(tables_dir(deliverables, comparison_id),
                           '%s.rmats.master.tsv' % comparison_id)
     if not os.path.isfile(master):
@@ -181,29 +196,16 @@ def check_rmats_master(outdir, deliverables, comparison_id, report,
             'counts may be missing (zero-vs-empty regression?)'
             % (comparison_id, empty_counts))
     if has_locus_col is False:
-        # Pre-2.1.0 tables legitimately lack the column: downgrade to WARN so
-        # old runs keep validating, new runs fail until rMATS masters are
-        # regenerated.
-        if legacy_contract:
-            report.warn(
-                'rMATS %s: event_locus column missing (introduced in results '
-                'contract 2.1.0; this table predates it)' % comparison_id)
-        else:
-            report.error(
-                'rMATS %s: event_locus column missing (results contract >= 2.1.0; '
-                'regenerate the rMATS master tables)' % comparison_id)
+        report.error(
+            'rMATS %s: event_locus column missing (results contract >= 2.1.0; '
+            'regenerate the rMATS master tables)' % comparison_id)
     elif empty_locus:
         detail = ', '.join(
             '%s=%d' % (event_type, count)
             for event_type, count in sorted(empty_locus.items()))
-        if legacy_contract:
-            report.warn(
-                'rMATS %s: rows with empty event_locus by event_type: %s '
-                '(events cannot be located in IGV)' % (comparison_id, detail))
-        else:
-            report.error(
-                'rMATS %s: rows with empty event_locus by event_type: %s '
-                '(events cannot be located in IGV)' % (comparison_id, detail))
+        report.error(
+            'rMATS %s: rows with empty event_locus by event_type: %s '
+            '(events cannot be located in IGV)' % (comparison_id, detail))
     if floor and total_master:
         fraction = floor / total_master
         if fraction > MAX_FDR_ZERO_FRACTION:
@@ -391,7 +393,8 @@ def check_upset_membership(deliverables, comparison_id, report):
 
     The report builds the membership from its own gene sets (same data frame as
     the plot), so small differences from the cross-tool master are expected and
-    documented; only WARN, never fail.
+    documented; only WARN, never fail. Differences above UPSET_DIFF_FRACTION are
+    surfaced per tool with the exact delta.
     """
     path = os.path.join(deliverables, 'contrasts', comparison_id, 'plots',
                         'cross_tool_overlap', 'cross_tool_upset_membership.tsv')
@@ -419,10 +422,307 @@ def check_upset_membership(deliverables, comparison_id, report):
         got = sum(1 for r in rows if r.get(col) == '1')
         key = tool_key.get(col, col.lower())
         if key in expected and got != expected[key]:
-            report.warn(
-                'UpSet membership %s: column %s has %d genes but cross_tool.master '
-                'has %d for this tool (UpSet filters may explain the difference)'
-                % (comparison_id, col, got, expected[key]))
+            want = expected[key]
+            rel = abs(got - want) / float(want) if want else 1.0
+            if rel > UPSET_DIFF_FRACTION:
+                report.warn(
+                    'UpSet membership %s: column %s has %d genes but cross_tool.master '
+                    'has %d for this tool (delta %+d, %.1f%%)'
+                    % (comparison_id, col, got, want, got - want, 100.0 * rel))
+
+
+def _schema_pattern_to_regex(pattern):
+    """Compile a schema path pattern to a regex over deliverables/-relative paths.
+
+    Returns None for patterns outside deliverables/ (e.g. raw/). Understands the
+    <placeholder>, {a,b} brace and * wildcard forms used in results_schema.yaml."""
+    prefix = 'deliverables/'
+    if pattern.startswith(prefix):
+        pattern = pattern[len(prefix):]
+    else:
+        return None
+    # A directory pattern (trailing slash) covers every file beneath it.
+    if pattern.endswith('/'):
+        return re.compile('^' + re.escape(pattern) + '.*$')
+    out = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == '<':
+            out.append('[^/]+')
+            i = pattern.index('>', i) + 1
+        elif ch == '{':
+            end = pattern.index('}', i)
+            alts = pattern[i + 1:end].split(',')
+            out.append('(?:' + '|'.join(re.escape(a) for a in alts) + ')')
+            i = end + 1
+        elif ch == '*':
+            out.append('[^/]*')
+            i += 1
+        else:
+            out.append(re.escape(ch))
+            i += 1
+    return re.compile('^' + ''.join(out) + '$')
+
+
+def check_deliverables_tree(deliverables, report, schema):
+    """WARN about every deliverables/ file that matches no schema pattern.
+
+    Catches stale or hand-dropped artefacts (e.g. the pre-fix cross_contrast/
+    tree) that publishDir never deletes but the schema does not describe.
+    """
+    patterns = []
+    for key in ('shippable', 'audit_only'):
+        for pattern in schema.get(key, []):
+            regex = _schema_pattern_to_regex(pattern)
+            if regex:
+                patterns.append(regex)
+    if not patterns:
+        return
+    orphans = []
+    for dirpath, _dirnames, filenames in os.walk(deliverables):
+        for name in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, name),
+                                  deliverables).replace(os.sep, '/')
+            if not any(regex.match(rel) for regex in patterns):
+                orphans.append(rel)
+    if orphans:
+        shown = ', '.join(sorted(orphans)[:10])
+        more = '' if len(orphans) <= 10 else ' (+%d more)' % (len(orphans) - 10)
+        report.warn('deliverables/ has %d file(s) not described by the results '
+                    'schema (orphans): %s%s' % (len(orphans), shown, more))
+
+
+def load_sample_index_groups(sample_index_path):
+    """{comparison_id: {'1': {sample_id}, '2': {sample_id}}} from sample_index.tsv."""
+    groups = {}
+    for row in iter_tsv(sample_index_path):
+        cid = row.get('comparison_id', '')
+        group = str(row.get('group', '')).strip()
+        sid = row.get('sample_id', '')
+        if cid and sid and group in ('1', '2'):
+            groups.setdefault(cid, {'1': set(), '2': set()})[group].add(sid)
+    return groups
+
+
+def _read_id_list(path):
+    ids = set()
+    if path and os.path.isfile(path):
+        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                value = line.strip()
+                if value:
+                    ids.add(value)
+    return ids
+
+
+def check_group_membership(outdir, deliverables, comparison_id, contrast_meta,
+                           index_groups, enabled_tools, report):
+    """group*_sample_ids (report_params/manifest) == sample_index.tsv.
+
+    Expected ids come from, in order: the contrast manifest, a shipped
+    report_params.json, or the raw rMATS b1/b2 sample lists. Group counts from
+    the manifest are always cross-checked against the index.
+    """
+    expected = index_groups.get(comparison_id)
+    if expected is None:
+        return
+    got1 = got2 = None
+    source = None
+    meta1 = contrast_meta.get('group1_sample_ids')
+    meta2 = contrast_meta.get('group2_sample_ids')
+    if isinstance(meta1, list) and meta1:
+        got1, got2, source = set(meta1), set(meta2 or []), 'contrast manifest'
+    else:
+        for candidate in (os.path.join(deliverables, 'contrasts', comparison_id,
+                                       'report_params.json'),
+                          os.path.join(outdir, 'run_info', 'contrast_params',
+                                       '%s.json' % comparison_id)):
+            if os.path.isfile(candidate):
+                try:
+                    with open(candidate, 'r', encoding='utf-8') as handle:
+                        payload = json.load(handle)
+                    got1 = set(payload.get('group1_sample_ids') or [])
+                    got2 = set(payload.get('group2_sample_ids') or [])
+                    source = candidate
+                    break
+                except (OSError, ValueError):
+                    pass
+    if got1 is None and 'rmats' in enabled_tools:
+        b1 = _read_id_list(os.path.join(outdir, 'raw', 'rmats', comparison_id,
+                                        'b1_samples.txt'))
+        b2 = _read_id_list(os.path.join(outdir, 'raw', 'rmats', comparison_id,
+                                        'b2_samples.txt'))
+        if b1 or b2:
+            got1, got2, source = b1, b2, 'raw rMATS b1/b2_samples.txt'
+    if got1 is not None and (got1 != expected['1'] or got2 != expected['2']):
+        report.error(
+            'group membership %s (%s) does not match sample_index.tsv: '
+            'group1 %s vs %s; group2 %s vs %s'
+            % (comparison_id, source, sorted(got1), sorted(expected['1']),
+               sorted(got2), sorted(expected['2'])))
+    for key, group in (('group1_n', '1'), ('group2_n', '2')):
+        try:
+            declared = int(contrast_meta.get(key))
+        except (TypeError, ValueError):
+            continue
+        if declared != len(expected[group]):
+            report.error('contrast manifest %s: %s=%d but sample_index.tsv lists %d'
+                         % (comparison_id, key, declared, len(expected[group])))
+
+
+def check_tool_significance(deliverables, comparison_id, tool, report,
+                            fdr_cutoff, dpsi_cutoff,
+                            majiq_prob, majiq_dpsi):
+    """Stream a master once: verify effect_size sign and recompute is_significant.
+
+    Both derive from the per-tool significance rule documented in docs/output.md
+    and repeated in each master's significance_rule column.
+    """
+    master = os.path.join(tables_dir(deliverables, comparison_id),
+                          '%s.%s.master.tsv' % (comparison_id, tool))
+    if not os.path.isfile(master):
+        return
+    sign_bad = 0
+    sig_bad = 0
+    sign_example = sig_example = ''
+    for row in iter_tsv(master):
+        try:
+            effect = float(row.get('effect_size'))
+        except (TypeError, ValueError):
+            effect = None
+        expected_effect = None
+        try:
+            if tool == 'rmats':
+                expected_effect = -float(row.get('inc_level_difference_native'))
+            elif tool == 'isar':
+                expected_effect = float(row.get('IF2')) - float(row.get('IF1'))
+            elif tool == 'leafcutter':
+                expected_effect = float(row.get('psi_group2')) - float(row.get('psi_group1'))
+            elif tool == 'majiq':
+                expected_effect = float(row.get('dpsi_mean'))
+        except (TypeError, ValueError):
+            expected_effect = None
+        if effect is not None and expected_effect is not None and \
+                abs(effect - expected_effect) > SIGN_TOLERANCE:
+            sign_bad += 1
+            if not sign_example:
+                sign_example = 'feature %s: effect_size=%s vs %s' % (
+                    row.get('feature_id', '?'), row.get('effect_size'),
+                    expected_effect)
+        stored = row.get('is_significant') == 'true'
+        calc = None
+        try:
+            if tool == 'rmats':
+                calc = (float(row.get('padj')) <= fdr_cutoff and
+                        abs(float(row.get('inc_level_difference_native'))) >= dpsi_cutoff)
+            elif tool == 'majiq':
+                calc = (float(row.get('probability_changing')) >= majiq_prob and
+                        abs(float(row.get('dpsi_mean'))) >= majiq_dpsi)
+            elif tool == 'isar':
+                calc = (float(row.get('padj')) <= fdr_cutoff and
+                        abs(float(row.get('effect_size'))) >= dpsi_cutoff)
+            elif tool == 'leafcutter':
+                calc = (row.get('status') == 'Success' and
+                        float(row.get('padj')) <= fdr_cutoff and
+                        abs(float(row.get('deltapsi'))) >= dpsi_cutoff)
+        except (TypeError, ValueError):
+            calc = None
+        if calc is not None and calc != stored:
+            sig_bad += 1
+            if not sig_example:
+                sig_example = 'feature %s: stored=%s recomputed=%s' % (
+                    row.get('feature_id', '?'), stored, calc)
+    if sign_bad:
+        report.error('%s %s: %d rows have effect_size != group2-group1 sign '
+                     'convention (%s)' % (tool.upper(), comparison_id, sign_bad,
+                                          sign_example))
+    if sig_bad:
+        report.error('%s %s: %d rows have is_significant inconsistent with the '
+                     'documented rule (%s)' % (tool.upper(), comparison_id,
+                                               sig_bad, sig_example))
+
+
+def count_pegasas_pathways(master):
+    n = 0
+    if os.path.isfile(master):
+        for row in iter_tsv(master):
+            if (row.get('feature_id') or '').strip():
+                n += 1
+    return n
+
+
+def check_pegasas_pathways(deliverables, comparison_id, report):
+    """PEGASAS: pathway rows in the master must equal the summary expectation."""
+    master = os.path.join(tables_dir(deliverables, comparison_id),
+                          '%s.pegasas.master.tsv' % comparison_id)
+    if not os.path.isfile(master):
+        return None
+    n = count_pegasas_pathways(master)
+    summary = os.path.join(tables_dir(deliverables, comparison_id),
+                           '%s.pegasas.summary.tsv' % comparison_id)
+    expected = None
+    if os.path.isfile(summary):
+        for row in iter_tsv(summary):
+            if row.get('statistic') == 'n_pathways':
+                try:
+                    expected = int(float(row.get('value')))
+                except (TypeError, ValueError):
+                    pass
+    if expected is not None and n != expected:
+        report.error('PEGASAS %s: master has %d pathways but summary n_pathways=%d'
+                     % (comparison_id, n, expected))
+    return n
+
+
+def check_html_sections(deliverables, comparison_id, report, required_tools):
+    """Tools with significant rows must have their section in the report HTML."""
+    needed = [(t, HTML_TOOL_SECTIONS[t]) for t in required_tools if t in HTML_TOOL_SECTIONS]
+    if not needed:
+        return
+    html = os.path.join(deliverables, 'contrasts', comparison_id,
+                        '%s_splicing_report.html' % comparison_id)
+    if not os.path.isfile(html):
+        return
+    found = _stream_find(html, [heading for _t, heading in needed])
+    for tool, heading in needed:
+        if not found.get(heading):
+            report.error('%s %s: master has significant features but the report '
+                         'HTML is missing the "%s" section' % (tool.upper(),
+                                                               comparison_id, heading))
+
+
+def _stream_find(path, needles, chunk_size=1 << 20):
+    """Byte-substring search over a file without loading it whole."""
+    found = {needle: False for needle in needles}
+    encoded = {needle: needle.encode('utf-8') for needle in needles}
+    remaining = set(needles)
+    overlap = max((len(v) for v in encoded.values()), default=0) - 1
+    prev = b''
+    with open(path, 'rb') as handle:
+        while remaining:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            buf = prev + chunk
+            for needle in list(remaining):
+                if encoded[needle] in buf:
+                    found[needle] = True
+                    remaining.discard(needle)
+            prev = buf[-overlap:] if overlap > 0 else b''
+    return found
+
+
+def check_isar_cutoffs(report, fdr_cutoff, dpsi_cutoff, isar_alpha, isar_dif_cutoff):
+    """WARN when the ISAR test cutoffs drift from the report master cutoffs."""
+    if isar_alpha is not None and abs(isar_alpha - fdr_cutoff) > 1e-9:
+        report.warn('isar_alpha (%s) differs from report_fdr_cutoff (%s): the ISAR '
+                    'test and the master/report significance rule can disagree'
+                    % (isar_alpha, fdr_cutoff))
+    if isar_dif_cutoff is not None and abs(isar_dif_cutoff - dpsi_cutoff) > 1e-9:
+        report.warn('isar_dif_cutoff (%s) differs from report_dpsi_cutoff (%s): the '
+                    'ISAR test and the master/report significance rule can disagree'
+                    % (isar_dif_cutoff, dpsi_cutoff))
 
 
 def check_sashimi_index(deliverables, comparison_id, report):
@@ -451,16 +751,6 @@ def check_sashimi_index(deliverables, comparison_id, report):
         report.error(
             'sashimi_index.tsv %s: %d indexed PDFs missing or not deliverables-relative: %s'
             % (comparison_id, len(missing_pdfs), missing_pdfs[0]))
-
-
-def check_legacy_sashimi_path(deliverables, comparison_id, report):
-    """Warn about the pre-2.3.0 plots/sashimi/ tree left in a reused outdir."""
-    legacy_dir = os.path.join(deliverables, 'contrasts', comparison_id, 'plots', 'sashimi')
-    if os.path.isdir(legacy_dir):
-        report.warn(
-            'legacy sashimi deliverables still present for %s at contrasts/%s/plots/sashimi/; '
-            'remove before shipping (sashimi now lives under plots/rmats/sashimi/)'
-            % (comparison_id, comparison_id))
 
 
 # /Type /Page objects in a PDF; the preceding blank page of an UpSetR plot shows
@@ -626,6 +916,10 @@ def main():
     parser.add_argument('--ignore-missing', nargs='*', default=[],
                         help='run_info file names produced by the calling task that '
                              'must not be required to pre-exist on disk')
+    parser.add_argument('--isar-alpha', type=float, default=None,
+                        help='isar_alpha used by the switch test (for cutoff-drift WARN)')
+    parser.add_argument('--isar-dif-cutoff', type=float, default=None,
+                        help='isar_dif_cutoff used by the switch test (for cutoff-drift WARN)')
     args = parser.parse_args()
 
     outdir = os.path.abspath(args.outdir)
@@ -676,20 +970,25 @@ def main():
             % ', '.join(os.path.relpath(p, deliverables) for p in stray_manifests))
 
     manifest = parse_manifest_yaml(run_manifest)
-    # 2.2.0 added group/sign columns and moved manifests out of deliverables/.
-    # Legacy trees (pre-2.2.0) keep their old masters and stale manifests, so
-    # downgrade the new requirements instead of aborting validation.
-    legacy_layout = not contract_at_least(manifest, (2, 2, 0))
-    if legacy_layout:
-        new_cols = {'group1_name', 'group2_name', 'effect_size_direction'}
-        required_columns = [c for c in required_columns if c not in new_cols]
-        report.warn('run contract < 2.2.0: group1_name/group2_name/'
-                    'effect_size_direction columns not required')
     enabled_tools = set(manifest.get('tools_enabled', []))
     if isinstance(enabled_tools, str):
         enabled_tools = {enabled_tools} if enabled_tools else set()
     fdr_cutoff = float(manifest.get('fdr_cutoff', 0.05))
     dpsi_cutoff = float(manifest.get('dpsi_cutoff', 0.1))
+    majiq_prob = float(manifest.get('majiq_probability_threshold', 0.95))
+    majiq_dpsi = float(manifest.get('majiq_dpsi_cutoff', 0.2))
+
+    index_groups = load_sample_index_groups(sample_index) if os.path.isfile(sample_index) else {}
+    check_deliverables_tree(deliverables, report, schema)
+    check_isar_cutoffs(report, fdr_cutoff, dpsi_cutoff,
+                       args.isar_alpha, args.isar_dif_cutoff)
+    report.general_note(
+        'Paired designs (replicates matched by experiment) are analysed as '
+        'independent/unpaired samples by rMATS, LeafCutter, ISAR and DESeq2.')
+    report.general_note(
+        'PEGASAS is exploratory: no pathway is called significant, and with two '
+        'groups a PSI-activity correlation can reflect group separation alone.')
+    pegasas_counts = set()
 
     comparisons = manifest.get('comparisons', [])
     if isinstance(comparisons, str):
@@ -732,8 +1031,7 @@ def main():
 
         if 'rmats' in enabled_tools:
             check_rmats_master(outdir, deliverables, comparison_id, report,
-                               required_columns,
-                               not contract_at_least(manifest, (2, 1, 0)))
+                               required_columns)
         if 'leafcutter' in enabled_tools:
             check_leafcutter_master(deliverables, comparison_id, report,
                                     required_columns, fdr_cutoff, dpsi_cutoff)
@@ -745,9 +1043,28 @@ def main():
         check_cross_tool(deliverables, comparison_id, report, enabled_tools)
         check_upset_membership(deliverables, comparison_id, report)
         check_plot_pdf_pages(deliverables, comparison_id, report)
-        check_legacy_sashimi_path(deliverables, comparison_id, report)
         if 'sashimi' in enabled_tools:
             check_sashimi_index(deliverables, comparison_id, report)
+
+        # Membership, sign and significance recomputation, HTML sections and
+        # PEGASAS pathway count. All stream their inputs.
+        check_group_membership(outdir, deliverables, comparison_id, contrast_meta,
+                               index_groups, enabled_tools, report)
+        for check_tool in ('rmats', 'majiq', 'isar', 'leafcutter'):
+            if check_tool in enabled_tools:
+                check_tool_significance(deliverables, comparison_id, check_tool, report,
+                                        fdr_cutoff, dpsi_cutoff, majiq_prob, majiq_dpsi)
+        sig_tools = [
+            check_tool for check_tool in ('rmats', 'majiq', 'isar', 'leafcutter')
+            if check_tool in enabled_tools and
+            count_tsv_rows(os.path.join(tables_dir(deliverables, comparison_id),
+                                        '%s.%s.significant.tsv' % (comparison_id, check_tool))) > 0
+        ]
+        check_html_sections(deliverables, comparison_id, report, sig_tools)
+        if 'pegasas' in enabled_tools:
+            n_pathways = check_pegasas_pathways(deliverables, comparison_id, report)
+            if n_pathways is not None:
+                pegasas_counts.add(n_pathways)
 
         # Per-contrast limitations: run-wide known_issues + this contrast's
         # sample-size caveats. qa_report.txt spans every contrast, so the notes
@@ -762,6 +1079,10 @@ def main():
         for caveat in (parse_list_block(contrast_manifest, 'sample_size_caveats') +
                        parse_list_block(contrast_manifest, 'sample_size_notes')):
             report.note(comparison_id, caveat)
+
+    if len(pegasas_counts) > 1:
+        report.warn('PEGASAS pathway count differs across contrasts: %s'
+                    % ', '.join(str(value) for value in sorted(pegasas_counts)))
 
     _finish(report, args.report_file)
     sys.exit(report.exit_code)
@@ -789,6 +1110,12 @@ def _finish(report, report_file):
                 if comparison_id != current:
                     handle.write('\n[%s]\n' % comparison_id)
                     current = comparison_id
+                handle.write('  - %s\n' % message)
+        if report.general_notes:
+            handle.write('\n')
+            handle.write('Notas generales (run)\n')
+            handle.write('=====================\n')
+            for message in report.general_notes:
                 handle.write('  - %s\n' % message)
     print('errors: %d | warnings: %d' % (len(report.errors), len(report.warnings)))
 

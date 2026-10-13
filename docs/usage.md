@@ -139,8 +139,7 @@ folder is `deliverables/`; `raw/` is audit-only and is not sent:
 ```
 results/
 ├── deliverables/                   # SHIPPABLE: rename + zip to send
-│   ├── README.md
-│   ├── run_info/                   # run_manifest, sample_index, software_versions, qa_report
+│   ├── run_info/                   # README, run_manifest, sample_index, software_versions, qa_report
 │   ├── contrasts/
 │   │   └── control_vs_treatment/
 │   │       ├── control_vs_treatment_splicing_report.html
@@ -155,6 +154,12 @@ results/
 ```
 
 See [output.md](output.md) for detailed descriptions of all output files.
+
+### Deprecated parameters
+
+- `--publish_raw` is deprecated. The audit-only `raw/` layer is now governed by
+  `--publish_level` (`core` / `core_raw`); `--publish_raw` is still honoured for now
+  but will be removed in a future release. Use `--publish_level` instead.
 
 ## Common Issues
 
@@ -240,10 +245,8 @@ The report automatically shows a **Low replication warning** when either group h
 
 **Solutions**:
 
-1. **Increase memory limits**:
-   ```bash
-   nextflow run main.nf --max_memory '256.GB' ...
-   ```
+1. **Increase memory limits**: raise the executor memory in `nextflow.config`
+   (e.g. `executor { memory = '256.GB' }`) for the tool processes.
 
 2. **Reduce parallelism** (process fewer samples simultaneously):
    Edit `nextflow.config`:
@@ -650,9 +653,6 @@ run_majiq: true
 run_isar: true
 
 majiq_license: /home/user/.majiq/license.key
-
-max_cpus: 32
-max_memory: '256.GB'
 ```
 
 Run with:
@@ -708,12 +708,12 @@ nextflow run main.nf --run_isar false -params-file params.yaml
 
 ### Custom Resource Allocation
 
-Override default resources per-process in `nextflow.config` or via CLI:
+Override default resources per-process in `nextflow.config` (or in a custom
+config included with `-c`):
 
 ```bash
 nextflow run main.nf \
-  --max_cpus 64 \
-  --max_memory '512.GB' \
+  -c custom_resources.config \
   -params-file params.yaml
 ```
 

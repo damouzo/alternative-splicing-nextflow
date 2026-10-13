@@ -45,6 +45,8 @@ process VALIDATE_RESULTS {
         --outdir            ${outdir_root} \\
         --deliverables-root ${deliverables_root} \\
         --schema            ${results_schema} \\
+        --isar-alpha        ${params.isar_alpha} \\
+        --isar-dif-cutoff   ${params.isar_dif_cutoff} \\
         --ignore-missing    software_versions.yml \\
         --report-file       qa_report.txt
     RC=\$?
