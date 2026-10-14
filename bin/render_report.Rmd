@@ -636,42 +636,6 @@ panel_volcano <- function(df, label) {
     )
 }
 
-panel_top_table <- function(df, label, top_n, element_id) {
-  top_events <- df %>%
-    filter(Significant, reads_ok) %>%
-    # Tie-break saturated priority scores (past the -log10(FDR) cap) by the
-    # weakest group's junction-read coverage.
-    arrange(desc(priority_score), desc(pmin(reads_group1, reads_group2))) %>%
-    select(EventType, GeneID, geneSymbol, chr, strand, FDR, IncLevelDifference,
-           priority_score, site_class, reads_group1, reads_group2) %>%
-    head(top_n) %>%
-    mutate(
-      # Keep underflowed --cstat p-values readable instead of rounding them to 0.
-      FDR_display = ifelse(FDR == 0, "< 1e-300", formatC(FDR, format = "e", digits = 2))
-    ) %>%
-    select(-FDR)
-  if (nrow(top_events) == 0) {
-    cat("No significant events detected in this panel.\n\n")
-    return(invisible(NULL))
-  }
-  cat(sprintf(
-    "Ranking filtered to events with >= %s junction reads (IJC+SJC) per group (`report_min_reads`; significance calling is unaffected).\n\n",
-    min_reads
-  ))
-  print(
-    datatable(
-      top_events,
-      elementId = element_id,
-      caption   = sprintf("Top %d significant rMATS events (%s) ranked by priority score",
-                          top_n, label),
-      options   = list(pageLength = 10, scrollX = TRUE),
-      rownames  = FALSE, escape = FALSE
-    ) %>%
-      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4) %>%
-      formatRound(columns = c("reads_group1", "reads_group2"), digits = 0)
-  )
-}
-
 panel_pca <- function(df, label) {
   pca_event_type <- if ("SE" %in% df$EventType) "SE" else {
     df %>% count(EventType) %>% slice_max(n, n = 1) %>% pull(EventType)
@@ -829,7 +793,7 @@ panel_sashimi <- function(class_filter, widget_suffix) {
 }
 
 render_rmats_panel <- function(panel_df, label, class_note, widget_suffix,
-                               class_filter, top_n) {
+                               class_filter) {
   n_total <- nrow(panel_df)
   n_sig   <- sum(panel_df$Significant, na.rm = TRUE)
   cat(sprintf(
@@ -849,8 +813,6 @@ render_rmats_panel <- function(panel_df, label, class_note, widget_suffix,
   save_plot_pdf(volcano_plot,
                 file.path("rmats", "Volcano", paste0("volcano_", widget_suffix, ".pdf")),
                 width = 10, height = 7)
-  cat("\n\n#### Top significant events\n\n")
-  panel_top_table(panel_df, label, top_n, paste0("rmats_top_", widget_suffix))
   cat("\n\n#### PSI profile (PCA)\n\n")
   pca_plot <- panel_pca(panel_df, label)
   if (!is.null(pca_plot)) {
@@ -1034,7 +996,7 @@ if (nrow(sashimi_table) > 0) {
 render_rmats_panel(
   all_rmats, "Combined",
   "All events: annotated and de novo splice-site classes together.",
-  "combined", NULL, 100
+  "combined", NULL
 )
 ```
 
@@ -1044,7 +1006,7 @@ render_rmats_panel(
 render_rmats_panel(
   rmats_annotated, "Annotated splice sites",
   "Every splice site present in the GTF annotation. Note: the class reflects splice-site novelty only — events with known splice sites but a novel junction (fromGTF.novelJunction) also fall here.",
-  "annotated", "annotated", 100
+  "annotated", "annotated"
 )
 ```
 
@@ -1054,7 +1016,7 @@ render_rmats_panel(
 render_rmats_panel(
   rmats_denovo, "De novo splice sites",
   "",
-  "de_novo", "de_novo", 200
+  "de_novo", "de_novo"
 )
 ```
 
@@ -1062,6 +1024,52 @@ render_rmats_panel(
 Vector PDFs for publication are published inside the deliverables folder, under
 `contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/`, and indexed by
 `contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv`.
+
+## All significant events
+
+```{r rmats_sig_all_table, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0}
+sig_all <- all_rmats %>%
+  filter(Significant) %>%
+  # Tie-break saturated priority scores (past the -log10(FDR) cap) by the
+  # weakest group's junction-read coverage.
+  arrange(desc(priority_score), desc(pmin(reads_group1, reads_group2))) %>%
+  select(EventType, GeneID, geneSymbol, chr, strand, site_class,
+         FDR, IncLevelDifference, priority_score, reads_group1, reads_group2, reads_ok)
+
+if (nrow(sig_all) == 0) {
+  cat("No significant rMATS events.\n\n")
+} else {
+  capped <- nrow(sig_all) > TABLE_ROW_CAP
+  if (capped) sig_all <- head(sig_all, TABLE_ROW_CAP)
+  cap_note <- if (capped) {
+    sprintf("; showing first %d rows \u2014 full set in the .significant.tsv deliverable",
+            TABLE_ROW_CAP)
+  } else ""
+
+  # Keep underflowed --cstat p-values readable instead of rounding them to 0.
+  sig_all <- sig_all %>%
+    mutate(FDR_display = ifelse(FDR == 0, "< 1e-300",
+                                formatC(FDR, format = "e", digits = 2))) %>%
+    select(-FDR)
+
+  print(
+    datatable(
+      sig_all,
+      elementId = "rmats_sig_all",
+      caption = sprintf(
+        paste0("All significant rMATS events (FDR <= %s & |\u0394\u03a8| >= %s), ",
+               "sorted by priority score; site_class distinguishes annotated from de novo. ",
+               "Coverage shown per group (IJC+SJC); reads_ok marks events with >= %s in both ",
+               "groups (report_min_reads); significance is not coverage-filtered%s."),
+        params$fdr_cutoff, params$dpsi_cutoff, min_reads, cap_note),
+      options = list(pageLength = 15, scrollX = TRUE, deferRender = TRUE),
+      rownames = FALSE, escape = FALSE
+    ) %>%
+      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4) %>%
+      formatRound(columns = c("reads_group1", "reads_group2"), digits = 0)
+  )
+}
+```
 
 
 ---

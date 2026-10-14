@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (report)
+- rMATS: replaced the per-panel top-N "Top significant events" ranking with a
+  single "All significant events" table below the tabs. It lists every
+  significant event (no coverage filter), adds a `site_class` (annotated /
+  de novo) column and per-group junction coverage (`reads_group1` /
+  `reads_group2`) plus a `reads_ok` flag, and states the thresholds in the
+  caption. `report_min_reads` now only gates the volcano's gene labels and the
+  PSI PCA event pool.
+
 ## [2.5.0] - 2026-10-13
 
 `manifest.version`, `results_contract_version` and `assets/results_schema.yaml`

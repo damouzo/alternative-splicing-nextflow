@@ -528,7 +528,9 @@ Interactive HTML report integrating all three tools' results with visualizations
 2. **rMATS Results**
    - Event counts per AS type (bar chart)
    - Volcano plots (deltaPSI vs -log10(FDR))
-   - Interactive data table with top events (with prioritization score: −log10(FDR) × |ΔΨ|)
+   - Interactive table of all significant events (sorted by prioritization
+     score: −log10(FDR) × |ΔΨ|), with `site_class` (annotated/de novo) and
+     per-group junction coverage
    - De novo splice-site event table
    - Distribution of deltaPSI values
    - PSI PCA across samples
@@ -600,18 +602,22 @@ container has no `pdftoppm`, sashimi PDFs fall back to being embedded directly
 
 The report splits the rMATS section into three tabs — Combined (default),
 Annotated splice sites and De novo splice sites — each with its own summary,
-volcano, top-events ranking, PSI PCA, junction-coverage plot and sashimi
-browser. Splice-site class comes from `is_novel_splice_site`
-(`fromGTF.novelSpliceSite`): it reflects **splice-site novelty only**, so
-events with known splice sites but a novel junction (`fromGTF.novelJunction`)
-remain in the annotated tab. Ranking tables filter to events with >=
-`report_min_reads` junction reads (IJC+SJC summed per group); significance
+volcano, PSI PCA, junction-coverage plot and sashimi browser. Splice-site class
+comes from `is_novel_splice_site` (`fromGTF.novelSpliceSite`): it reflects
+**splice-site novelty only**, so events with known splice sites but a novel
+junction (`fromGTF.novelJunction`) remain in the annotated tab. Below the tabs
+a single "All significant events" table lists every significant event (no
+coverage filter) with a `site_class` column (`annotated`/`de_novo`), sorted by
+priority score and capped at 25000 rows (the full set is in the
+`.significant.tsv` deliverable). It exposes the per-group junction coverage
+(`reads_group1`/`reads_group2`) and a `reads_ok` flag marking events with >=
+`report_min_reads` junction reads (IJC+SJC) in **both** groups; significance
 calling is never coverage-filtered, and the summary's `Significant_min_reads`
-column counts how many significant events clear the minimum. Saturated
+column counts how many significant events clear the minimum. `report_min_reads`
+only gates the volcano's gene labels and the PSI PCA event pool. Saturated
 priority scores (past the -log10(FDR) cap of 50) are tie-broken by the
-weakest group's coverage, and the PSI PCA applies the same coverage filter to
-its event pool. The junction-coverage barplot uses a fixed-seed random sample
-of SE events with counts (not the first rows in file order). Note that
+weakest group's coverage. The junction-coverage barplot uses a fixed-seed
+random sample of SE events with counts (not the first rows in file order). Note that
 `is_novel_splice_site` can be high in total RNA-seq with this annotation (for
 example ~41% of SE events in the reference run); it is a property of the
 annotation, not a quality flag.
