@@ -92,7 +92,8 @@ process RENDER_REPORT {
       "report_min_reads":       ${params.report_min_reads},
       "publish_deliverables":   ${params.publish_deliverables ? 'true' : 'false'},
       "publish_level":          "${params.publish_level}",
-      "results_contract_version": "${params.results_contract_version}"
+      "results_contract_version": "${params.results_contract_version}",
+      "pipeline_version":       "${workflow.manifest.version ?: ''}"
     }
     JSONEOF
 

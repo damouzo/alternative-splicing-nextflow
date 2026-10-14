@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caption, `p_perm`/`p_adj_bh` tooltips on the headers, no green highlighting and
   no `bh_significant` column; when nothing passes it prints
   "No events pass p_adj_bh < ... (<n> events tested)".
+- Data Exports: dropped the intro paragraph and the table caption so the
+  deliverables table is shown directly under the section heading.
+- Cover: replaced the hand-written Summary text with a generated header
+  (comparison id, Group 1/2 names with sample counts, `group 2 − group 1`
+  effect direction, and a tool list + significance-rules table built from the
+  `*_dir` params so it tracks the tools that actually ran). Fixed the
+  unevaluated inline `` `|ΔPSI| >= r params$dpsi_cutoff` ``; unified the effect
+  symbol to ΔΨ for rMATS/MAJIQ/LeafCutter and ΔIF for ISAR. Added an optional
+  `Pipeline` row fed from `workflow.manifest.version`.
 
 ### Removed (qa)
 - ISAR "pinned q-values" reliability machinery removed end to end: the report's

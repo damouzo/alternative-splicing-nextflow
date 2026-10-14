@@ -32,6 +32,7 @@ params:
   publish_deliverables: false
   publish_level: "core_raw"
   results_contract_version: "2.5.0"
+  pipeline_version: ""
   report_min_reads: 20
   group1_name: "Group1"
   group2_name: "Group2"
@@ -427,21 +428,59 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
 
 # Summary
 
-This report presents differential alternative splicing analysis results for comparison: **`r params$comparison_id`**.
+```{r cover, results='asis'}
+# Cover built from params so it cannot drift from what actually ran: the tool
+# list and the significance rules follow the *_dir params (NULL when disabled).
+g1 <- as.character(unlist(params$group1_sample_ids))
+g2 <- as.character(unlist(params$group2_sample_ids))
+pv <- if (is.null(params$pipeline_version)) "" else as.character(params$pipeline_version)
 
-**Analysis tools:**
+tool_meta <- list(
+  list(dir = "rmats_dir", label = "rMATS-turbo",
+       rule = sprintf("FDR \u2264 %s and |\u0394\u03a8| \u2265 %s",
+                      params$fdr_cutoff, params$dpsi_cutoff)),
+  list(dir = "majiq_dir", label = "MAJIQ V3",
+       rule = sprintf("P(changing) \u2265 %s and |\u0394\u03a8| \u2265 %s (tool default)",
+                      params$majiq_prob_threshold, params$majiq_dpsi_cutoff)),
+  list(dir = "isar_dir", label = "IsoformSwitchAnalyzeR",
+       rule = sprintf("q \u2264 %s and |\u0394IF| \u2265 %s",
+                      params$fdr_cutoff, params$dpsi_cutoff)),
+  list(dir = "leafcutter_dir", label = "LeafCutter",
+       rule = sprintf("cluster FDR \u2264 %s and |\u0394\u03a8| \u2265 %s (per intron)",
+                      params$fdr_cutoff, params$dpsi_cutoff)),
+  list(dir = "pegasas_dir", label = "PEGASAS", rule = "exploratory (no significance call)")
+)
+enabled_tools <- Filter(function(t) !is.null(params[[t$dir]]), tool_meta)
 
-- rMATS-turbo: Differential alternative splicing (SE, A5SS, A3SS, MXE, RI events)
-- MAJIQ V3: Local Splicing Variation (LSV) detection
-- IsoformSwitchAnalyzeR: Isoform switch identification with functional consequences
+tools_line <- paste(vapply(enabled_tools, function(t)
+  if (t$label == "PEGASAS") "PEGASAS (exploratory)" else t$label, character(1)),
+  collapse = ", ")
 
-**Filter criteria:**
+cover_keys <- c("Group 1 (reference)", "Group 2", "Effect direction", "Tools")
+cover_vals <- c(sprintf("%s (n = %d)", params$group1_name, length(g1)),
+                sprintf("%s (n = %d)", params$group2_name, length(g2)),
+                "group 2 \u2212 group 1",
+                tools_line)
+if (nzchar(pv)) {
+  cover_keys <- c(cover_keys, "Pipeline")
+  cover_vals <- c(cover_vals, pv)
+}
+cover_rows <- data.frame(k = cover_keys, v = cover_vals, stringsAsFactors = FALSE)
 
-- rMATS / ISAR FDR cutoff: `r params$fdr_cutoff`
-- rMATS / ISAR |ΔΨ| / |dIF| cutoff: `r params$dpsi_cutoff`
-- MAJIQ P(|ΔΨ| > threshold) cutoff: `r params$majiq_prob_threshold`
-- MAJIQ |ΔΨ| cutoff: `r params$majiq_dpsi_cutoff` (native default, more conservative than the 0.1 rule)
-- LeafCutter: an intron is significant when its cluster passes FDR and `|ΔPSI| >= r params$dpsi_cutoff`
+cat(sprintf("**%s**\n\n", params$comparison_id))
+cat(knitr::kable(cover_rows, col.names = c("", "")), sep = "\n")
+cat("\n\n")
+
+rule_tools <- Filter(function(t) t$label != "PEGASAS", enabled_tools)
+if (length(rule_tools) > 0) {
+  rules_df <- data.frame(
+    Tool = vapply(rule_tools, function(t) t$label, character(1)),
+    `Significance rule` = vapply(rule_tools, function(t) t$rule, character(1)),
+    check.names = FALSE, stringsAsFactors = FALSE
+  )
+  cat(knitr::kable(rules_df), sep = "\n")
+}
+```
 
 ---
 
@@ -1115,7 +1154,7 @@ if (!is.na(tsv_file) && file.exists(tsv_file)) {
 majiq_summary_rows <- data.frame(
   Metric = c(
     "Total junctions detected",
-    sprintf("Significant LSVs (P(|ΔPSI|) >= %.2f & |ΔΨ| >= %.2f)",
+    sprintf("Significant LSVs (P(|ΔΨ|) >= %.2f & |ΔΨ| >= %.2f)",
             params$majiq_prob_threshold, params$majiq_dpsi_cutoff)
   ),
   Value = c(nrow(majiq_results), NA_integer_),
@@ -1229,7 +1268,7 @@ n_total <- nrow(isar_switches)
 n_sig   <- sum(isar_switches$significant, na.rm = TRUE)
 
 cat("Total isoforms tested:", n_total, "\n\n")
-cat(sprintf("Significant (FDR <= %.2f & |dIF| >= %.2f): %d\n\n",
+cat(sprintf("Significant (FDR <= %.2f & |ΔIF| >= %.2f): %d\n\n",
             params$fdr_cutoff, params$dpsi_cutoff, n_sig))
 
 if ("gene_name" %in% colnames(isar_switches)) {
@@ -1288,7 +1327,7 @@ if (length(cols_to_show) > 0) {
     caption  = paste0(
       "All tested isoforms, ordered by q-value. ",
       if (has_sig) paste0(n_sig_table, " pass FDR <= ", params$fdr_cutoff,
-                          " & |dIF| >= ", params$dpsi_cutoff, ".") else ""
+                          " & |ΔIF| >= ", params$dpsi_cutoff, ".") else ""
     ),
     options  = list(pageLength = 10, scrollX = TRUE),
     rownames = FALSE
@@ -2524,10 +2563,6 @@ cat("- `de_results: /path/to/dge/`  (directory with subdirs per DGE comparison, 
 
 # Data Exports
 
-Paths below are relative to the root of the shipped `deliverables/` folder (the
-folder that contains `run_info/` and `contrasts/`), not to this HTML file. This
-report and every table it lists ship together; `raw/` is not part of the shipment.
-
 ```{r data_exports, eval=!is.null(params$publish_deliverables) && params$publish_deliverables, results='asis'}
 # Inventory of the shippable deliverable tables for this comparison. Paths are
 # relative to the deliverables/ root (this folder), exactly as recorded in
@@ -2620,10 +2655,7 @@ add_export(
 )
 
 show_cols <- c("deliverable", "description", "rel_path")
-kable(export_rows[, show_cols], caption = sprintf(
-  "Shippable deliverables for %s (contract v%s, publish level %s)",
-  comp, params$results_contract_version, params$publish_level
-))
+kable(export_rows[, show_cols])
 ```
 
 ```{r data_exports_disabled, eval=is.null(params$publish_deliverables) || !params$publish_deliverables, results='asis'}
