@@ -62,11 +62,6 @@ isar_switches     <- data.frame()
 isar_consequences <- data.frame()
 leafcutter_clusters <- data.frame()
 
-# ISAR reliability thresholds. Mirror build_results_manifest.py
-# (ISAR_IQR_THRESHOLD / ISAR_DIF_THRESHOLD); keep the two in sync.
-ISAR_IQR_PIN_THRESHOLD <- 0.05
-ISAR_DIF_PIN_THRESHOLD <- 0.1
-
 # Defensive cap for the "show all rows" report tables (MAJIQ, LeafCutter): a
 # pathological run cannot blow up the HTML. The full set always lives in the
 # corresponding .significant.tsv deliverable.
@@ -1243,22 +1238,6 @@ if ("gene_name" %in% colnames(isar_switches)) {
     sig_genes_isar_n <- length(unique(isar_switches$gene_name[isar_switches$significant]))
     cat("Genes with significant switches:", sig_genes_isar_n, "\n")
   }
-}
-
-# Auto-warning for a saturated test: q-values pinned in a narrow band while
-# large dIF exist often signals a satuRn convergence failure rather than a
-# genuinely empty contrast (see plans/report_bugs_fix_plan.md, P1-1).
-q_vals <- isar_switches$isoform_switch_q_value[!is.na(isar_switches$isoform_switch_q_value)]
-d_vals <- isar_switches$dIF[!is.na(isar_switches$dIF)]
-if (length(q_vals) > 10 && IQR(q_vals) < ISAR_IQR_PIN_THRESHOLD &&
-    max(abs(d_vals)) >= ISAR_DIF_PIN_THRESHOLD) {
-  cat(paste0(
-    "<p style='color:#7a5c00'>NOTE: ISAR q-values are pinned in a narrow range ",
-    "(IQR &lt; ", ISAR_IQR_PIN_THRESHOLD, ") while isoforms with |dIF| >= ",
-    ISAR_DIF_PIN_THRESHOLD, " exist. The contrast is marked ",
-    "<em>under_investigation</em> in the run manifest; interpret the significant ",
-    "isoforms cautiously.</p>\n\n"
-  ))
 }
 ```
 

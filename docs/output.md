@@ -165,7 +165,7 @@ deliverables are published, using `assets/results_schema.yaml` as the source of 
 expected paths and columns. The run aborts if structural pieces are missing (e.g. a master
 table for an enabled tool, or an indexed sashimi PDF that does not exist), and also if any
 rMATS row has an empty `event_locus` (contract 2.1.0 — events must be localizable in IGV).
-Content warnings (FDR==0 fraction, pinned ISAR q-values, tools with 0 significant genes in the cross-tool
+Content warnings (FDR==0 fraction, tools with 0 significant genes in the cross-tool
 table, ...) are reported without blocking.
 
 The validator streams every master (nothing is loaded whole) and additionally checks:

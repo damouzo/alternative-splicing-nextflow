@@ -21,7 +21,6 @@ and checks:
       2.1.0) -> FAIL on runs declaring contract >= 2.1.0; WARN on older runs
       (their tables predate the column)
     - rMATS: fraction of FDR==0 rows above threshold -> WARN (--cstat floor)
-    - ISAR: padj pinned (IQR < 0.05) while |dIF| >= 0.1 exists -> WARN
     - cross_tool: tools that ran but contributed 0 significant genes -> WARN
     - PEGASAS: significant table is BH-corrected, noted
 
@@ -44,8 +43,6 @@ DEFAULT_REQUIRED_COLUMNS = ['comparison_id', 'tool', 'feature_type', 'feature_id
 
 RMATS_EVENT_TYPES = ('SE', 'A5SS', 'A3SS', 'MXE', 'RI')
 MAX_FDR_ZERO_FRACTION = 0.25
-ISAR_IQR_THRESHOLD = 0.05
-ISAR_DIF_THRESHOLD = 0.1
 # UpSet vs cross_tool.master gene-count gap tolerated before warning (WARN only).
 UPSET_DIFF_FRACTION = 0.02
 # effect_size is a rounded copy of a native metric; allow a small absolute slack.
@@ -271,17 +268,12 @@ def check_isar_master(deliverables, comparison_id, report, required_columns,
         return
     check_columns(master, report, required_columns)
     q_values = []
-    dmax = 0.0
     n_sig = 0
     padj_methods = set()
     non_ensg_gene_id = 0
     for row in iter_tsv(master):
         try:
             q_values.append(float(row.get('padj')))
-        except (TypeError, ValueError):
-            pass
-        try:
-            dmax = max(dmax, abs(float(row.get('effect_size'))))
         except (TypeError, ValueError):
             pass
         if row.get('is_significant') == 'true':
@@ -312,15 +304,6 @@ def check_isar_master(deliverables, comparison_id, report, required_columns,
             'engine %r (expected %s)'
             % (comparison_id, ','.join(sorted(padj_methods)),
                effective_method or 'unknown', expected))
-
-    if len(q_values) > 10:
-        q_sorted = sorted(q_values)
-        iqr = q_sorted[len(q_sorted) // 4 * 3] - q_sorted[len(q_sorted) // 4]
-        if iqr < ISAR_IQR_THRESHOLD and dmax >= ISAR_DIF_THRESHOLD:
-            report.warn(
-                'ISAR %s: padj pinned (IQR %.4f < %.2f) while |dIF| max = %.2f — '
-                'state under_investigation, do not read significant.tsv as authoritative'
-                % (comparison_id, iqr, ISAR_IQR_THRESHOLD, dmax))
 
 
 def check_cross_tool(deliverables, comparison_id, report, enabled_tools):

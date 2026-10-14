@@ -294,52 +294,14 @@ def group_counts_from_index(deliverables_root, comparison_id):
     return counts
 
 
-def isar_reliability_state(master_path, effective_method):
-    """(status, note) for ISAR given the engine and the master q-value spread."""
-    engine = str(effective_method or '').strip()
-    if engine and engine.lower() not in ('dexseq', 'na'):
-        return ('under_investigation',
-                'Switch-test engine is %s (not DEXSeq); q-values follow an '
-                'empirical FDR step. Treat ISAR significant calls cautiously.' % engine)
-    q_values = []
-    dmax = 0.0
-    if os.path.isfile(master_path):
-        with open(master_path, 'r', encoding='utf-8', errors='replace', newline='') as handle:
-            for row in csv.DictReader(handle, delimiter='\t'):
-                try:
-                    q_values.append(float(row.get('padj')))
-                except (TypeError, ValueError):
-                    pass
-                try:
-                    dmax = max(dmax, abs(float(row.get('effect_size'))))
-                except (TypeError, ValueError):
-                    pass
-    if len(q_values) > 10:
-        q_sorted = sorted(q_values)
-        iqr = q_sorted[len(q_sorted) // 4 * 3] - q_sorted[len(q_sorted) // 4]
-        if iqr < 0.05 and dmax >= 0.1:
-            return ('under_investigation',
-                    'ISAR q-values are pinned (IQR %.3f < 0.05) while |dIF| >= 0.1 '
-                    'exists. Treat ISAR significant calls cautiously.' % iqr)
-    return ('ok', '')
-
-
-def compute_reliability(pipeline, deliverables_root, comparison_id,
-                        effective_method, group_counts):
+def compute_reliability(pipeline, group_counts):
     """Per-contrast tool states; overrides the run-wide defaults."""
     tools = pipeline.get('tools', [])
     enabled = [t['name'] for t in tools if t.get('enabled')]
     defaults = {t.get('tool'): t for t in pipeline.get('tool_reliability', [])}
-    isar_master = os.path.join(
-        deliverables_root, 'contrasts', comparison_id, 'tables',
-        '%s.isar.master.tsv' % comparison_id)
-    isar_status, isar_note = isar_reliability_state(isar_master, effective_method)
 
     issues = []
     for name in enabled:
-        if name == 'isar':
-            issues.append({'tool': 'isar', 'status': isar_status, 'note': isar_note})
-            continue
         default = defaults.get(name, {'status': 'ok', 'note': ''})
         issues.append({
             'tool': name,
@@ -485,8 +447,7 @@ def build_contrast_manifest(comparison_id, group1_name, group2_name,
     if missing:
         lines.append('skipped_tools: [%s]' % ', '.join(yaml_scalar(t) for t in sorted(missing)))
 
-    issues, size_caveats, size_notes = compute_reliability(
-        pipeline, deliverables_root, comparison_id, effective_method, group_counts)
+    issues, size_caveats, size_notes = compute_reliability(pipeline, group_counts)
     if issues:
         lines.append('known_issues:')
         for item in issues:

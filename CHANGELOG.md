@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caption. `report_min_reads` now only gates the volcano's gene labels and the
   PSI PCA event pool.
 
+### Removed (qa)
+- ISAR "pinned q-values" reliability machinery removed end to end: the report's
+  amber note, its `q_vals`/`dIF` detection and constants, the per-contrast
+  `isar_reliability_state` state (`under_investigation`) in the manifest, the
+  validator's pinned WARN, and the note in `nextflow.config`. The flag fired on
+  the contrasts with the highest fraction of q-values near 1 (i.e. low signal /
+  low replication), not on a tool defect, so it added noise without a consumer.
+
 ## [2.5.0] - 2026-10-13
 
 `manifest.version`, `results_contract_version` and `assets/results_schema.yaml`
