@@ -553,7 +553,14 @@ Interactive HTML report integrating all three tools' results with visualizations
 
 6. **PEGASAS Results** (when `--run_pegasas true`)
    - KS score plots per pathway
-   - High-correlation event tables
+   - Event table listing events with `p_adj_bh` < `report_fdr_cutoff` (BH over all
+     events of the contrast), capped at 25000 rows
+   - Columns: `pearson_r`; `p_perm` (permutation p of Pearson r, computed only for
+     |r| > 0.3 and floored at 1/N_perm, so 0 means 'more extreme than all
+     permutations'); `p_adj_bh` (BH-adjusted analytic Pearson p, t distribution
+     df = n-2, pooled across all events of the contrast). The pathway-activity
+     heatmap p-value is the per-sample KS enrichment of the gene set, not a
+     correlation test
    - Exploratory: SE events are pre-selected by FDR < 0.05 and |ΔPSI| >= 0.1
      (`pegasas_fdr_cutoff`/`pegasas_dpsi_cutoff`) before correlating with pathway scores
      of the same samples, so the selection is circular; the KS score makes no

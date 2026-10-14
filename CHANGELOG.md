@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reads_group2`) plus a `reads_ok` flag, and states the thresholds in the
   caption. `report_min_reads` now only gates the volcano's gene labels and the
   PSI PCA event pool.
+- PEGASAS: trimmed the section text (dropped the intro, the two-p-values /
+  heatmap-p-value explanation, the `correlation_out/` path and the "Plot A/B"
+  labels; plots keep their titles). The event table now lists only events with
+  `p_adj_bh < report_fdr_cutoff` (NA-safe, capped at TABLE_ROW_CAP) with a short
+  caption, `p_perm`/`p_adj_bh` tooltips on the headers, no green highlighting and
+  no `bh_significant` column; when nothing passes it prints
+  "No events pass p_adj_bh < ... (<n> events tested)".
 
 ### Removed (qa)
 - ISAR "pinned q-values" reliability machinery removed end to end: the report's

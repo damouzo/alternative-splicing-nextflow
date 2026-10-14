@@ -1819,12 +1819,6 @@ if (nrow(ora_status_log) > 0) {
 run_pegasas_section <- !is.null(params$pegasas_dir)
 ```
 
-```{r pegasas_intro, eval=run_pegasas_section, results='asis'}
-cat("PEGASAS correlates each sample's single-sample pathway KS score with its ",
-    "per-sample PSI values to find splicing events that track with pathway ",
-    "activity. This section is exploratory (hypothesis-generating).\n\n")
-```
-
 ```{r pegasas_load, eval=run_pegasas_section}
 # PEGASAS runs pathway enrichment once for the whole cohort and subsets per
 # contrast. The per-contrast pegasas directory holds:
@@ -1907,15 +1901,17 @@ for (nm in names(cor_list)) {
   }
 }
 
-# Keep the most informative rows per pathway (top by |r|) for an HTML that stays
-# responsive. The complete, unfiltered table is on disk in correlation_out/.
-TOP_N <- 100
-cor_display <-
-  if (length(cor_list) > 0) do.call(rbind, lapply(cor_list, function(d) {
-    d <- d[order(-abs(d$pearson_r)), , drop = FALSE]
-    if (nrow(d) > TOP_N) d <- d[seq_len(TOP_N), , drop = FALSE]
-    d
-  })) else data.frame()
+# Show only events whose pooled BH-adjusted analytic Pearson p passes the FDR
+# cutoff (NA-safe); cap the HTML row count. The complete, unfiltered matrix stays
+# on disk in correlation_out/.
+cor_all  <- if (length(cor_list) > 0) do.call(rbind, cor_list) else data.frame()
+n_tested <- nrow(cor_all)
+cor_display <- if (n_tested > 0) {
+  d <- cor_all[!is.na(cor_all$p_adj) & cor_all$p_adj < params$fdr_cutoff, , drop = FALSE]
+  d <- d[order(d$p_adj, -abs(d$pearson_r)), , drop = FALSE]
+  if (nrow(d) > TABLE_ROW_CAP) d <- d[seq_len(TABLE_ROW_CAP), , drop = FALSE]
+  d
+} else data.frame()
 
 if (nrow(cor_display) > 0) {
   cor_display$event <-
@@ -1923,18 +1919,11 @@ if (nrow(cor_display) > 0) {
            cor_display$chr, ":", cor_display$strand, ":",
            cor_display$exonStart, "-", cor_display$exonEnd)
 
-  # p_value/p_adj are not a value/adjusted pair: p_perm is the permutation p of
-  # Pearson r, p_adj_bh is BH on the pooled analytic Pearson p. Rename so the
-  # table cannot be misread as such a pair, and highlight on the BH value only.
+  # p_perm (permutation p of Pearson r) and p_adj_bh (BH on the pooled analytic
+  # Pearson p) are not a value/adjusted pair; keep the names distinct.
   cor_display$p_perm   <- cor_display$p_value
   cor_display$p_adj_bh <- cor_display$p_adj
-  cor_display$bh_significant <-
-    !is.na(cor_display$p_adj_bh) & cor_display$p_adj_bh < params$fdr_cutoff
 }
-```
-
-```{r pegasas_score_plotA_caption, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
-cat("**Plot A — per-sample pathway activity.**\n\n")
 ```
 
 ```{r pegasas_score_plotA, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
@@ -1965,10 +1954,6 @@ save_plot_pdf(pegasas_pathway_activity_plot, "pegasas/pegasas_pathway_activity.p
               width = 10, height = 7)
 ```
 
-```{r pegasas_score_plotB_caption, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
-cat("**Plot B — cohort-average pathway ranking.**\n\n")
-```
-
 ```{r pegasas_score_plotB, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
 # Ranked dot-plot (GSEA-style): one axis, pathways ordered by mean KS score;
 # colour = mean KS, size = mean -log10(p). Compact summary of pathway activity.
@@ -1994,34 +1979,40 @@ save_plot_pdf(pegasas_pathway_ranking_plot, "pegasas/pegasas_pathway_ranking.pdf
 cat("No PEGASAS pathway scores available for this contrast.\n")
 ```
 
-```{r pegasas_cor_header, eval=run_pegasas_section && nrow(cor_display) > 0, results='asis'}
+```{r pegasas_cor_header, eval=run_pegasas_section && exists("n_tested") && n_tested > 0, results='asis'}
 cat("## Pathway–Correlated Splicing Events\n\n")
-cat("All tested events are shown (including non-significant ones), ranked by |Pearson r|.")
-cat(sprintf(" For responsiveness each pathway is capped at the top %d events; the complete, unfiltered table is in `correlation_out/<pathway>/<pathway>_global_cor_matrix.txt`.\n\n", TOP_N))
-cat("**Two distinct p-values are reported in this section, do not confuse them:**\n\n")
-cat("* The **heatmap p-value** is the KS enrichment of the pathway gene set per sample (can reach very small values because of the gene-set size), not a correlation test. It belongs to the pathway activity plots above.\n\n")
-cat("* The **correlation p-values** in the table below come from two different tests and are **not** a value/adjusted pair:\n\n")
-cat("  * `p_perm` — permutation p of an event's Pearson r against the pathway score, computed only for |r| > 0.3 (otherwise NA). It is floored at 1/N_perms, so p_perm == 0 means 'more extreme than all permutations'.\n\n")
-cat("  * `p_adj_bh` — Benjamini–Hochberg adjustment of the analytic Pearson p (t distribution, df = n − 2), pooled across every event of the whole contrast matrix.\n\n")
-cat(sprintf("Green rows are highlighted by the BH value: `p_adj_bh` < %s (rows where it is NA are not highlighted).\n\n", format(params$fdr_cutoff)))
 ```
 
 ```{r pegasas_cor_table, eval=run_pegasas_section && nrow(cor_display) > 0}
+pegasas_cols <- c("pathway", "event", "GeneName", "chr", "strand",
+                  "exonStart", "exonEnd", "pearson_r", "p_perm", "p_adj_bh")
+pegasas_tips <- c(
+  p_perm   = "Permutation p of the event's Pearson r vs the pathway score (computed only for |r| > 0.3; floored at 1/N_perm, so 0 means 'more extreme than all permutations').",
+  p_adj_bh = "BH-adjusted analytic Pearson p (t distribution, df = n-2), pooled across all events of the contrast.")
+pegasas_header <- htmltools::withTags(table(
+  class = "display",
+  thead(tr(lapply(pegasas_cols, function(cn) {
+    if (cn %in% names(pegasas_tips)) th(cn, title = pegasas_tips[[cn]]) else th(cn)
+  })))
+))
 datatable(
-  cor_display[, c("pathway", "event", "GeneName", "chr", "strand",
-                  "exonStart", "exonEnd", "pearson_r", "p_perm", "p_adj_bh",
-                  "bh_significant")],
-  caption = "Splicing events correlated with pathway activity (all events, top by |r|)",
+  cor_display[, pegasas_cols],
+  container = pegasas_header,
+  caption = sprintf("Events with p_adj_bh < %s (BH over all events of the contrast).",
+                    format(params$fdr_cutoff)),
   rownames = FALSE, filter = "top",
   options = list(pageLength = 15, scrollX = TRUE)
 ) |>
-  formatRound(c("pearson_r", "p_perm", "p_adj_bh"), digits = 4) |>
-  formatStyle("bh_significant", target = "row",
-              backgroundColor = styleEqual(c(TRUE, FALSE), c("#d9f2d9", "#ffffff")))
+  formatRound(c("pearson_r", "p_perm", "p_adj_bh"), digits = 4)
 ```
 
 ```{r pegasas_no_cor, eval=run_pegasas_section && nrow(cor_display) == 0, results='asis'}
-cat("No PEGASAS correlation results available for this contrast.\n")
+if (exists("n_tested") && n_tested > 0) {
+  cat(sprintf("No events pass p_adj_bh < %s (%d events tested).\n\n",
+              format(params$fdr_cutoff), n_tested))
+} else {
+  cat("No PEGASAS correlation results available for this contrast.\n\n")
+}
 ```
 
 ---
