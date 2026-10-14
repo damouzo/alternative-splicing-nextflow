@@ -236,7 +236,7 @@ truncate_geneid_datatable <- function(df, caption) {
         "function(data, type, row) {",
         "  if (type !== 'display' || data === null || data === undefined) return data;",
         "  if (data.length <= 80) return data;",
-        "  return '<span title=\"' + data + '\">' + data.substr(0, 80) + '... <em>(see more)</em></span>';",
+        "  return '<details style=\"white-space:nowrap;\"><summary>' + data.substr(0, 80) + '... (see more)</summary>' + data + '</details>';",
         "}"
       )
     ))
