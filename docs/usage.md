@@ -575,7 +575,6 @@ Use `-profile <name>` to select execution environment:
 | `slurm` | Submit jobs to a SLURM cluster |
 | `lowmem` | Cap ISAR process concurrency to 1 and limit executor resources to 4 CPUs / 16 GB. Use on small workstations where the default uncapped ISAR parallelisation causes OOM. |
 | `test` | Run with minimal test data (for pipeline validation) |
-| `test_full` | Run with the full demo dataset |
 
 Profiles can be combined. **Example**:
 ```bash

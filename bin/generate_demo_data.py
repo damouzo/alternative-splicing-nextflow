@@ -41,7 +41,6 @@ Outputs under <outdir>/ (default: test/):
   samples/<s>/quant.sf    Salmon-format quantification (for ISAR)
   samplesheet.csv
   comparisons.csv
-  params.yaml             ready-to-use params file (run_majiq disabled)
 
 Requires: pysam >= 0.20
   conda install -c bioconda pysam
@@ -51,15 +50,15 @@ Run:
   python bin/generate_demo_data.py --outdir test
 
 Then launch the full pipeline (rMATS + ISAR, MAJIQ disabled):
-  nextflow run main.nf -profile docker,test -params-file test/params.yaml
-  nextflow run main.nf -profile apptainer,test -params-file test/params.yaml
+  nextflow run main.nf -profile docker,test
+  nextflow run main.nf -profile apptainer,test
 """
 
 import argparse
 import csv
+import os
 import random
 import sys
-import textwrap
 from pathlib import Path
 
 try:
@@ -426,12 +425,13 @@ def write_quant_sf(path: Path, n_tx1: int, n_tx2: int) -> None:
 # ── Metadata files ────────────────────────────────────────────────────────────
 
 def write_samplesheet(path: Path, outdir: Path) -> None:
+    base = Path(__file__).resolve().parents[1]
     fieldnames = ["sample", "condition", "replicate", "bam", "bai", "salmon_dir"]
     with open(path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for sample, condition, replicate in SAMPLES:
-            sample_dir = outdir / "samples" / sample
+            sample_dir = Path(os.path.relpath(outdir / "samples" / sample, base))
             writer.writerow({
                 "sample":     sample,
                 "condition":  condition,
@@ -451,39 +451,6 @@ def write_comparisons(path: Path) -> None:
     print(f"  wrote {path}")
 
 
-def write_params_yaml(path: Path, outdir: Path) -> None:
-    abs_out = outdir.resolve()
-    content = textwrap.dedent(f"""\
-        # Synthetic SE test data — ctrl vs treat (3 replicates each).
-        # MAJIQ is disabled: requires academic licence + user-built container.
-        #
-        # Launch:
-        #   nextflow run main.nf -profile docker,test   -params-file {path}
-        #   nextflow run main.nf -profile apptainer,test -params-file {path}
-        #
-        # To also run MAJIQ, add:
-        #   --run_majiq true --majiq_sif <path/to/majiq.sif> --majiq_license <path/to/license>
-
-        input:        {abs_out}/samplesheet.csv
-        comparisons:  {abs_out}/comparisons.csv
-        outdir:       {abs_out}/results
-
-        gtf:          {abs_out}/ref/test.gtf
-        genome_fasta: {abs_out}/ref/test.genome.fa
-        use_gffread:  true
-
-        strandedness: unstranded
-        read_length:  {READ_LEN}
-
-        run_rmats: true
-        run_majiq: false
-        run_isar:  true
-    """)
-    with open(path, "w") as fh:
-        fh.write(content)
-    print(f"  wrote {path}")
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -497,16 +464,16 @@ def main() -> None:
     ref_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Genome FASTA ──
-    print("[1/5] genome FASTA")
+    print("[1/4] genome FASTA")
     genome = make_genome_seq(args.seed)
     write_fasta(ref_dir / "test.genome.fa", CHROM, genome)
 
     # ── 2. GTF ──
-    print("[2/5] GTF annotation")
+    print("[2/4] GTF annotation")
     write_gtf(ref_dir / "test.gtf")
 
     # ── 3. BAM + quant.sf per sample ──
-    print("[3/5] BAM files + Salmon quant.sf")
+    print("[3/4] BAM files + Salmon quant.sf")
     all_jct    = JUNCTION_COUNTS["ctrl"]  + JUNCTION_COUNTS["treat"]
     all_salmon = SALMON_COUNTS["ctrl"]    + SALMON_COUNTS["treat"]
 
@@ -531,20 +498,15 @@ def main() -> None:
         print(f"  wrote {quant_path}  (tx1={n_tx1}, tx2={n_tx2}, +{n_bg} bg isoforms)")
 
     # ── 4. Samplesheet + comparisons ──
-    print("[4/5] samplesheet and comparisons")
+    print("[4/4] samplesheet and comparisons")
     write_samplesheet(outdir / "samplesheet.csv", outdir)
     write_comparisons(outdir / "comparisons.csv")
-
-    # ── 5. params.yaml ──
-    print("[5/5] params.yaml")
-    write_params_yaml(outdir / "params.yaml", outdir)
 
     print(f"\nDone. Total samples: {len(SAMPLES)}")
     print(f"  ctrl  PSI target: 0.80  (IJC≈80, SJC≈10)")
     print(f"  treat PSI target: 0.20  (IJC≈20, SJC≈40)")
     print(f"\nLaunch:")
-    print(f"  nextflow run main.nf -profile docker,test \\")
-    print(f"    -params-file {outdir}/params.yaml\n")
+    print(f"  nextflow run main.nf -profile docker,test\n")
 
 
 if __name__ == "__main__":

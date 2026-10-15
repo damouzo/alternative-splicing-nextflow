@@ -15,6 +15,7 @@ Critical checks prevent silent pipeline failures.
 import sys
 import argparse
 import csv
+import os
 from pathlib import Path
 from collections import defaultdict, Counter
 import pysam
@@ -43,12 +44,25 @@ def parse_args():
         help="Expected read length (after trimming)"
     )
     parser.add_argument(
+        "--base_dir",
+        type=str,
+        default=".",
+        help="Base directory for resolving relative sample paths (default: .)"
+    )
+    parser.add_argument(
         "--output",
         type=str,
         required=True,
         help="Path to validated output CSV"
     )
     return parser.parse_args()
+
+
+def resolve_path(path, base_dir):
+    """Resolve relative paths against base_dir; leave absolute paths untouched."""
+    if os.path.isabs(path):
+        return path
+    return str(Path(base_dir) / path)
 
 
 def check_file_exists(filepath, description):
@@ -111,10 +125,10 @@ def get_bam_read_length(bam_path, n_reads=10000):
         sys.exit(f"ERROR: Could not extract read lengths from {bam_path}: {e}")
 
 
-def validate_samplesheet(samplesheet_path, gtf_path, expected_read_length):
+def validate_samplesheet(samplesheet_path, gtf_path, expected_read_length, base_dir="."):
     """
     Validate samplesheet format and content.
-    Returns list of validated sample dicts.
+    Returns list of validated sample dicts with resolved file paths.
     """
     required_cols = ['sample', 'condition', 'replicate', 'bam', 'bai', 'salmon_dir']
     
@@ -137,6 +151,10 @@ def validate_samplesheet(samplesheet_path, gtf_path, expected_read_length):
                 for col in required_cols:
                     if not row[col] or row[col].strip() == '':
                         sys.exit(f"ERROR: Empty value in column '{col}' at row {i}")
+                
+                # Resolve relative sample paths against base_dir before checks
+                for col in ('bam', 'bai', 'salmon_dir'):
+                    row[col] = resolve_path(row[col], base_dir)
                 
                 samples.append(row)
     
@@ -268,7 +286,8 @@ def main():
     validated_samples = validate_samplesheet(
         args.samplesheet,
         args.gtf,
-        args.read_length
+        args.read_length,
+        args.base_dir
     )
     
     # Write output

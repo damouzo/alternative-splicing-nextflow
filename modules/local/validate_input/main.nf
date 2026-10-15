@@ -19,6 +19,7 @@ process VALIDATE_INPUT {
         --samplesheet ${samplesheet} \\
         --gtf ${gtf} \\
         --read_length ${read_length} \\
+        --base_dir ${projectDir} \\
         --output samplesheet_validated.csv
     
     cat <<-END_VERSIONS > versions.yml
