@@ -32,6 +32,8 @@ build/
 .Rhistory
 .RData
 .Rproj.user
+# Manual rmarkdown::render('bin/render_report.Rmd') writes plots next to the Rmd
+bin/plots/
 
 # IDE
 .vscode/

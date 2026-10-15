@@ -9,19 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (report)
 - rMATS: replaced the per-panel top-N "Top significant events" ranking with a
-  single "All significant events" table below the tabs. It lists every
-  significant event (no coverage filter), adds a `site_class` (annotated /
-  de novo) column and per-group junction coverage (`reads_group1` /
-  `reads_group2`) plus a `reads_ok` flag, and states the thresholds in the
-  caption. `report_min_reads` now only gates the volcano's gene labels and the
-  PSI PCA event pool.
+  single "Significant events" table below the tabs. It lists every significant
+  event (no coverage filter), adds a `site_class` (annotated / de novo) column
+  and per-group junction coverage (`reads_group1` / `reads_group2`) plus a
+  `reads_ok` flag. `report_min_reads` now only gates the volcano's gene labels
+  and the PSI PCA event pool.
+- rMATS "Significant events" table: it previously rendered empty because the DT
+  widget was wrapped in `print()` (knitr only embeds a widget that is the
+  chunk's visible value). Dropped the wrapper. Also renamed the heading
+  ("All significant events" -> "Significant events"), replaced the caption with
+  the shown/total counts and the `.significant.tsv` full-list path, added the
+  rMATS event `ID` column, kept `FDR` numeric (formatted client-side, `0` shown
+  as `< 1e-300`), and added `filter = "top"` plus header tooltips for
+  `site_class`, `FDR`, `priority_score`, `reads_group1/2` and `reads_ok`.
 - PEGASAS: trimmed the section text (dropped the intro, the two-p-values /
-  heatmap-p-value explanation, the `correlation_out/` path and the "Plot A/B"
-  labels; plots keep their titles). The event table now lists only events with
+  heatmap-p-value explanation and the `correlation_out/` path; plots keep their
+  titles). Added `##` mini-titles before each plot ("Pathway activity per sample"
+  and "Pathway activity ranking (cohort average)") so they appear in the TOC. The
+  event table now lists only events with
   `p_adj_bh < report_fdr_cutoff` (NA-safe, capped at TABLE_ROW_CAP) with a short
   caption, `p_perm`/`p_adj_bh` tooltips on the headers, no green highlighting and
-  no `bh_significant` column; when nothing passes it prints
-  "No events pass p_adj_bh < ... (<n> events tested)".
+  no `bh_significant` column; when nothing passes it states the BH is pooled over
+  the whole event × pathway matrix and that PEGASAS is exploratory (only
+  BH-significant correlations are listed).
+- ORA tables (GO BP + KEGG, all sets): dropped the legacy ` (see more)` suffix
+  from the `geneID` `<details>` summary (the triangle marks the expandable cell),
+  widened the `Description` column to 300px so it wraps to a couple of lines, and
+  chained `DT::formatSignif(digits = 3)` on `pvalue`/`p.adjust` to remove the
+  floating-point noise DataTables re-serialized (`7.430000000000001e-27` ->
+  `7.43e-27`); display-only, so numeric sorting is unchanged.
+- rMATS: shortened the Annotated panel caption and added a De novo caption
+  (`fromGTF.novelSpliceSite`) so both tabs describe their splice-site class.
 - Data Exports: dropped the intro paragraph and the table caption so the
   deliverables table is shown directly under the section heading.
 - Cover: replaced the hand-written Summary text with a generated header

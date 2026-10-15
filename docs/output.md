@@ -528,8 +528,9 @@ Interactive HTML report integrating all three tools' results with visualizations
 2. **rMATS Results**
    - Event counts per AS type (bar chart)
    - Volcano plots (deltaPSI vs -log10(FDR))
-   - Interactive table of all significant events (sorted by prioritization
-     score: −log10(FDR) × |ΔΨ|), with `site_class` (annotated/de novo) and
+   - Interactive table of significant events (sorted by priority score:
+     min(−log10(FDR), 300) × |ΔΨ|), exposing the rMATS event `ID`, `site_class`
+     (annotated/de novo), the numeric `FDR` (formatted client-side) and
      per-group junction coverage
    - De novo splice-site event table
    - Distribution of deltaPSI values
@@ -613,17 +614,28 @@ volcano, PSI PCA, junction-coverage plot and sashimi browser. Splice-site class
 comes from `is_novel_splice_site` (`fromGTF.novelSpliceSite`): it reflects
 **splice-site novelty only**, so events with known splice sites but a novel
 junction (`fromGTF.novelJunction`) remain in the annotated tab. Below the tabs
-a single "All significant events" table lists every significant event (no
-coverage filter) with a `site_class` column (`annotated`/`de_novo`), sorted by
-priority score and capped at 25000 rows (the full set is in the
-`.significant.tsv` deliverable). It exposes the per-group junction coverage
+a single "Significant events" table lists every significant event (no coverage
+filter) with a `site_class` column (`annotated`/`de_novo`), sorted by priority
+score and capped at 25000 rows (the full set is in the `.significant.tsv`
+deliverable; the caption states the shown/total counts and the TSV path). It
+exposes the rMATS event `ID` (`event_id` in the TSV, so a row can be located
+there) and a numeric `FDR` column, formatted for display in the browser (kept
+numeric so it sorts correctly and underflowed `--cstat` values render as
+`< 1e-300`). It also exposes the per-group junction coverage
 (`reads_group1`/`reads_group2`) and a `reads_ok` flag marking events with >=
 `report_min_reads` junction reads (IJC+SJC) in **both** groups; significance
 calling is never coverage-filtered, and the summary's `Significant_min_reads`
 column counts how many significant events clear the minimum. `report_min_reads`
-only gates the volcano's gene labels and the PSI PCA event pool. Saturated
-priority scores (past the -log10(FDR) cap of 50) are tie-broken by the
-weakest group's coverage. The junction-coverage barplot uses a fixed-seed
+only gates the volcano's gene labels and the PSI PCA event pool.
+
+The table's `priority_score` (`min(-log10(FDR), 300) × |ΔΨ|`, saturated scores
+tie-broken by the weakest group's junction coverage) is **report-only**: it is
+not a column of the TSV, so the report's top order differs from the
+`padj`-then-effect ordering of `.significant.tsv`. The report's `site_class`
+collapses `novel_junction` into `annotated` (it reflects splice-site novelty
+only), whereas the TSV `event_class` distinguishes
+`annotated`/`novel_junction`/`novel_splice_site`; the two labels for the same
+event can therefore differ. The junction-coverage barplot uses a fixed-seed
 random sample of SE events with counts (not the first rows in file order). Note that
 `is_novel_splice_site` can be high in total RNA-seq with this annotation (for
 example ~41% of SE events in the reference run); it is a property of the

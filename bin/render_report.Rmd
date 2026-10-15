@@ -223,28 +223,47 @@ get_orgdb_name <- function(organism) {
 
 truncate_geneid_datatable <- function(df, caption) {
   geneid_col <- which(colnames(df) == "geneID")
+  desc_col   <- which(colnames(df) == "Description")
 
   dt_options <- list(pageLength = 15, scrollX = TRUE)
+
+  column_defs <- list()
   if (length(geneid_col) == 1) {
-    dt_options$columnDefs <- list(list(
+    column_defs <- c(column_defs, list(list(
       targets = geneid_col - 1,
       render = JS(
         "function(data, type, row) {",
         "  if (type !== 'display' || data === null || data === undefined) return data;",
         "  if (data.length <= 80) return data;",
-        "  return '<details style=\"white-space:nowrap;\"><summary>' + data.substr(0, 80) + '... (see more)</summary>' + data + '</details>';",
+        "  return '<details style=\"white-space:nowrap;\"><summary>' + data.substr(0, 80) + '...</summary>' + data + '</details>';",
         "}"
       )
-    ))
+    )))
   }
+  if (length(desc_col) == 1) {
+    # Wrap/truncate the term description to a couple of lines; no nowrap so it
+    # can still wrap. DT ships autoWidth: false, so the width is honoured.
+    column_defs <- c(column_defs, list(list(
+      targets = desc_col - 1,
+      width = "300px"
+    )))
+  }
+  if (length(column_defs) > 0) dt_options$columnDefs <- column_defs
 
-  datatable(
+  dt <- datatable(
     df,
     caption = caption,
     options = dt_options,
     rownames = FALSE,
     escape = FALSE
   )
+
+  # Stored values are already signif(x, 3), but DataTables re-serializes the raw
+  # doubles and prints float noise (7.430000000000001e-27). formatSignif only
+  # touches type === 'display', so numeric sorting is preserved.
+  sig_cols <- intersect(c("pvalue", "p.adjust"), colnames(df))
+  if (length(sig_cols) > 0) dt <- formatSignif(dt, columns = sig_cols, digits = 3)
+  dt
 }
 
 # Append-only record of every ORA set rendered (or skipped), so the report and
@@ -1039,7 +1058,7 @@ render_rmats_panel(
 ```{r rmats_panel_annotated, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
 render_rmats_panel(
   rmats_annotated, "Annotated splice sites",
-  "Every splice site present in the GTF annotation. Note: the class reflects splice-site novelty only — events with known splice sites but a novel junction (fromGTF.novelJunction) also fall here.",
+  "Every splice site belongs to the GTF annotation. Novel-junction combinations of known sites also count as annotated.",
   "annotated", "annotated"
 )
 ```
@@ -1049,7 +1068,7 @@ render_rmats_panel(
 ```{r rmats_panel_denovo, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0, results='asis', fig.width=10, fig.height=7}
 render_rmats_panel(
   rmats_denovo, "De novo splice sites",
-  "",
+  "At least one splice site is absent from the GTF annotation (fromGTF.novelSpliceSite).",
   "de_novo", "de_novo"
 )
 ```
@@ -1059,7 +1078,7 @@ Vector PDFs for publication are published inside the deliverables folder, under
 `contrasts/<comparison_id>/plots/rmats/sashimi/<EVENT_TYPE>/`, and indexed by
 `contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv`.
 
-## All significant events
+## Significant events
 
 ```{r rmats_sig_all_table, eval=!is.null(params$rmats_dir) && exists("all_rmats") && nrow(all_rmats) > 0}
 sig_all <- all_rmats %>%
@@ -1067,41 +1086,72 @@ sig_all <- all_rmats %>%
   # Tie-break saturated priority scores (past the -log10(FDR) cap) by the
   # weakest group's junction-read coverage.
   arrange(desc(priority_score), desc(pmin(reads_group1, reads_group2))) %>%
-  select(EventType, GeneID, geneSymbol, chr, strand, site_class,
+  # FDR stays numeric so the column sorts correctly; it is formatted for
+  # display only, via columnDefs below.
+  select(EventType, ID, GeneID, geneSymbol, chr, strand, site_class,
          FDR, IncLevelDifference, priority_score, reads_group1, reads_group2, reads_ok)
 
 if (nrow(sig_all) == 0) {
-  cat("No significant rMATS events.\n\n")
+  knitr::asis_output("No significant rMATS events.\n\n")
 } else {
-  capped <- nrow(sig_all) > TABLE_ROW_CAP
+  n_sig_total <- nrow(sig_all)
+  capped <- n_sig_total > TABLE_ROW_CAP
   if (capped) sig_all <- head(sig_all, TABLE_ROW_CAP)
-  cap_note <- if (capped) {
-    sprintf("; showing first %d rows \u2014 full set in the .significant.tsv deliverable",
-            TABLE_ROW_CAP)
-  } else ""
+  n_shown <- nrow(sig_all)
+  # Audit trail: n_sig_total must equal the row count of
+  # <id>.rmats.significant.tsv minus its header. Written straight to stderr
+  # because the chunk option silences message().
+  cat(sprintf("[render_report] rmats significant: total=%d shown=%d\n",
+              n_sig_total, n_shown), file = stderr())
 
-  # Keep underflowed --cstat p-values readable instead of rounding them to 0.
-  sig_all <- sig_all %>%
-    mutate(FDR_display = ifelse(FDR == 0, "< 1e-300",
-                                formatC(FDR, format = "e", digits = 2))) %>%
-    select(-FDR)
+  sig_caption <- sprintf(
+    "%s significant events by priority score. Full list: tables/%s.rmats.significant.tsv",
+    if (capped) sprintf("Top %s of %s",
+                        format(n_shown, big.mark = ","),
+                        format(n_sig_total, big.mark = ","))
+    else format(n_sig_total, big.mark = ","),
+    params$comparison_id)
 
-  print(
-    datatable(
-      sig_all,
-      elementId = "rmats_sig_all",
-      caption = sprintf(
-        paste0("All significant rMATS events (FDR <= %s & |\u0394\u03a8| >= %s), ",
-               "sorted by priority score; site_class distinguishes annotated from de novo. ",
-               "Coverage shown per group (IJC+SJC); reads_ok marks events with >= %s in both ",
-               "groups (report_min_reads); significance is not coverage-filtered%s."),
-        params$fdr_cutoff, params$dpsi_cutoff, min_reads, cap_note),
-      options = list(pageLength = 15, scrollX = TRUE, deferRender = TRUE),
-      rownames = FALSE, escape = FALSE
-    ) %>%
-      formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4) %>%
-      formatRound(columns = c("reads_group1", "reads_group2"), digits = 0)
+  sig_tips <- c(
+    site_class = "Splice-site novelty only: annotated (all sites in the GTF) or de_novo (>= 1 site from fromGTF.novelSpliceSite). Novel-junction events with known sites fall under annotated; the TSV event_class also distinguishes novel_junction.",
+    FDR = "rMATS --cstat FDR. 0 is the numeric floor; displayed as '< 1e-300'.",
+    priority_score = "min(-log10(FDR), 300) * |Delta PSI|, tie-broken by the weakest group's junction-read coverage. Report-only ranking, not present in the .significant.tsv.",
+    reads_group1 = "Junction reads (IJC + SJC) in group 1.",
+    reads_group2 = "Junction reads (IJC + SJC) in group 2.",
+    reads_ok = sprintf("TRUE when both groups have >= %s junction reads (report_min_reads). Display flag only; significance is not coverage-filtered.", min_reads)
   )
+  sig_cols <- names(sig_all)
+  sig_header <- htmltools::withTags(table(
+    class = "display",
+    thead(tr(lapply(sig_cols, function(cn) {
+      if (cn %in% names(sig_tips)) th(cn, title = sig_tips[[cn]]) else th(cn)
+    })))
+  ))
+  fdr_idx <- match("FDR", sig_cols) - 1
+
+  # DataTables target index is 0-based.
+  datatable(
+    sig_all,
+    elementId = "rmats_sig_all",
+    container = sig_header,
+    caption = sig_caption,
+    filter = "top",
+    rownames = FALSE, escape = TRUE,
+    options = list(
+      pageLength = 15, scrollX = TRUE, deferRender = TRUE,
+      # DT does not sort by default; explicit for intent.
+      order = list(),
+      columnDefs = list(list(
+        targets = fdr_idx,
+        render = JS(
+          "function(d, type) { if (type !== 'display') return d;",
+          "  return d === 0 ? '< 1e-300' : Number(d).toExponential(2); }"
+        )
+      ))
+    )
+  ) %>%
+    formatRound(columns = c("IncLevelDifference", "priority_score"), digits = 4) %>%
+    formatRound(columns = c("reads_group1", "reads_group2"), digits = 0)
 }
 ```
 
@@ -1965,6 +2015,10 @@ if (nrow(cor_display) > 0) {
 }
 ```
 
+```{r pegasas_score_plotA_title, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
+cat("## Pathway activity per sample\n\n")
+```
+
 ```{r pegasas_score_plotA, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
 # Heatmap of points (bubble heatmap): pathways x samples, sized by KS score,
 # coloured by -log10(p). Samples are faceted by group so the activity pattern
@@ -1991,6 +2045,10 @@ pegasas_pathway_activity_plot <- ggplot(plot_df, aes(x = sample, y = pathway,
 print(pegasas_pathway_activity_plot)
 save_plot_pdf(pegasas_pathway_activity_plot, "pegasas/pegasas_pathway_activity.pdf",
               width = 10, height = 7)
+```
+
+```{r pegasas_score_plotB_title, eval=run_pegasas_section && nrow(score_df) > 0, results='asis'}
+cat("## Pathway activity ranking (cohort average)\n\n")
 ```
 
 ```{r pegasas_score_plotB, eval=run_pegasas_section && nrow(score_df) > 0, fig.height=7}
@@ -2047,8 +2105,8 @@ datatable(
 
 ```{r pegasas_no_cor, eval=run_pegasas_section && nrow(cor_display) == 0, results='asis'}
 if (exists("n_tested") && n_tested > 0) {
-  cat(sprintf("No events pass p_adj_bh < %s (%d events tested).\n\n",
-              format(params$fdr_cutoff), n_tested))
+  cat(sprintf("No events pass p_adj_bh < %s (BH over all %s event \u00d7 pathway tests). PEGASAS is exploratory; only BH-significant correlations are listed.\n\n",
+              format(params$fdr_cutoff), format(n_tested, big.mark = ",")))
 } else {
   cat("No PEGASAS correlation results available for this contrast.\n\n")
 }
