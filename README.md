@@ -1,149 +1,133 @@
 # alternative-splicing-nextflow
 
-Nextflow DSL2 pipeline for differential alternative splicing analysis.
+Nextflow DSL2 pipeline for differential alternative splicing analysis from bulk RNA-seq. It takes the output of nf-core/rnaseq (BAMs and Salmon quantifications) and produces, for every comparison you define, a set of standardised tables, PDF figures and one self-contained HTML report.
 
-Accepts outputs from nf-core/rnaseq (BAMs + Salmon quantifications). Produces one self-contained HTML report per comparison.
+## Tools
 
-## What It Runs
+| Tool | What it measures | Default |
+|------|------------------|---------|
+| rMATS-turbo | Event-based splicing (SE, A5SS, A3SS, MXE, RI), annotated and de novo | on |
+| MAJIQ V3 | Local splicing variations, Bayesian ΔPSI | on |
+| IsoformSwitchAnalyzeR | Isoform switches and their consequences (NMD, ORF, coding potential) | on |
+| LeafCutter | Differential intron excision | off |
+| PEGASAS | Pathway activity versus PSI | off |
+| rmats2sashimiplot | Sashimi plots of the top rMATS events | off |
 
-**Core tools** (all enabled by default):
+IsoformSwitchAnalyzeR can optionally add PFAM domains and IUPred3 disordered regions (`--run_isar_full_annotation`).
 
-- rMATS-turbo — event-based splicing (SE, A5SS, A3SS, MXE, RI)
-- MAJIQ V3 — Local Splicing Variations with Bayesian deltaPSI
-- IsoformSwitchAnalyzeR — isoform switches with functional consequences (NMD, ORF, coding potential)
+The report also includes volcano plots, PSI PCA, junction QC, cross-tool gene overlap (UpSet), GO/KEGG enrichment, and a differential expression plus splicing comparison when `--dge_dirs` is given.
 
-**Optional tools** (disabled by default):
+For every tool, the effect size is **group2 − group1**: positive values mean higher in the second group of each row of `comparisons.csv`. Multiple-testing correction is done per comparison.
 
-- Sashimi plots (`--run_sashimi`) — rmats2sashimiplot for top rMATS events
-- PEGASAS (`--run_pegasas`) — pathway activity × PSI correlation
-- LeafCutter (`--run_leafcutter`) — intron excision differential splicing
-- ISAR full annotation (`--run_isar_full_annotation`) — PFAM domains + IUPred3 IDR prediction (Tier A)
+## Requirements
 
-**Report features** (always included if data available):
-
-- Interactive volcano plots (plotly)
-- Cross-tool gene overlap (UpSetR)
-- Per-tool effect-size distributions (|ΔPSI| for MAJIQ/LeafCutter, |ΔIF| for ISAR)
-- PSI PCA and splice junction QC
-- GO/KEGG enrichment (clusterProfiler) with an ORA status table (ran / no enriched terms / error)
-- DE + AS dual-hit volcano (`--de_results`)
+- Nextflow
+- Docker or Apptainer
+- Output of rnaseq (BAM, BAI, Salmon)
+- A MAJIQ academic licence if you run MAJIQ (free, https://majiq.biociphers.org)
 
 ## Input
 
-Two CSV files:
+Two CSV files.
 
-1. `samplesheet.csv` — sample, condition, replicate, bam, bai, salmon_dir
-2. `comparisons.csv` — group1, group2
+`samplesheet.csv`: `sample, condition, replicate, bam, bai, salmon_dir`
 
-## Required Parameters
+`comparisons.csv`: `group1, group2`
 
-- `--input`
-- `--comparisons`
-- `--gtf`
-- `--strandedness` (unstranded, forward, reverse)
+## Parameters
+
+Required:
+
+- `--input` samplesheet
+- `--comparisons` comparisons file
+- `--gtf` annotation
+- `--strandedness` `unstranded`, `forward` or `reverse`
 - `--read_length`
 
-If `use_gffread=true` (default: false), also provide `--genome_fasta`.
-If `run_majiq=true`, provide `--majiq_license` or set `MAJIQ_LICENSE_FILE` env var.
+Also needed in some cases:
 
-## Quick Run
+- `--genome_fasta` if `--use_gffread true`
+- `--majiq_license` or the `MAJIQ_LICENSE_FILE` environment variable if MAJIQ is enabled
+
+Commonly changed:
+
+- `--run_majiq`, `--run_isar`, `--run_leafcutter`, `--run_pegasas`, `--run_sashimi` enable or disable tools
+- `--organism` `human` or `mouse`
+- `--dge_dirs` differential expression results, for the DE + AS comparison
+- `--publish_level` how much of the native tool output is published
+- `--report_min_reads` minimum junction reads for ranking tables and PCA
+
+The full list, with defaults and per-tool thresholds, is in [docs/usage.md](docs/usage.md). Templates: [assets/params.yaml](assets/params.yaml) and [demo/params.yaml](demo/params.yaml).
+
+## Running
 
 ```bash
-# Using a params file (recommended)
+# Docker
 nextflow run main.nf -profile docker -params-file assets/params.yaml
 
 # HPC with Apptainer
 nextflow run main.nf -profile apptainer,slurm -params-file demo/params.yaml
 
-# rMATS + sashimi plots only
-nextflow run main.nf -profile docker \
+# rMATS only, with sashimi plots
+nextflow run main.nf -profile docker -params-file params.yaml \
   --run_majiq false --run_isar false \
-  --run_sashimi true --sashimi_top_n 10 \
-  -params-file params.yaml
+  --run_sashimi true --sashimi_top_n 10
 
-# With LeafCutter and ISAR full annotation
-nextflow run main.nf -profile docker \
+# LeafCutter and full ISAR annotation
+nextflow run main.nf -profile docker -params-file params.yaml \
   --run_leafcutter true \
-  --run_isar_full_annotation true --pfam_hmm /data/Pfam-A.hmm \
-  -params-file params.yaml
+  --run_isar_full_annotation true --pfam_hmm /data/Pfam-A.hmm
 ```
 
-Parameter templates:
+MAJIQ:
 
-- Generic: [assets/params.yaml](assets/params.yaml)
-- Demo (ad vs old): [demo/params.yaml](demo/params.yaml)
+```bash
+export MAJIQ_LICENSE_FILE=/path/to/majiq_license.key
+```
+
+## Output
+
+```
+results/
+├── deliverables/                    # what you send
+│   ├── run_info/                    # sample_index, software_versions, qa_report
+│   └── contrasts/<comparison_id>/
+│       ├── <id>_splicing_report.html
+│       ├── tables/                  # <id>.<tool>.{master,significant,summary}.tsv + cross-tool tables
+│       └── plots/                   # one PDF per figure, grouped by tool
+└── raw/<tool>/<comparison_id>/      # native tool output, for audit only
+```
+
+To send the results:
+
+```bash
+mv deliverables <name> && zip -r <name>.zip <name>
+```
+
+Column definitions are in [docs/output.md](docs/output.md).
 
 ## Containers
 
-Container images are built automatically from `containers/` and published to GitHub Container Registry (GHCR) via `.github/workflows/build-containers.yml` on push to `main`.
+Images for isar, report, pegasas and leafcutter are built from `containers/` and published to GHCR by `.github/workflows/build-containers.yml`:
 
-| Image | Registry tag | Built from |
-|-------|-------------|------------|
-| isar | `ghcr.io/damouzo/alternative-splicing-nextflow/isar:latest` | `containers/isar/` |
-| report | `ghcr.io/damouzo/alternative-splicing-nextflow/report:latest` | `containers/report/` |
-| pegasas | `ghcr.io/damouzo/alternative-splicing-nextflow/pegasas:latest` | `containers/pegasas/` |
-| leafcutter | `ghcr.io/damouzo/alternative-splicing-nextflow/leafcutter:latest` | `containers/leafcutter/` |
+```
+ghcr.io/damouzo/alternative-splicing-nextflow/<tool>:latest
+```
 
-MAJIQ is excluded from auto-build (requires academic licence). Build locally:
+MAJIQ is not built automatically because of its licence. Build it locally:
 
 ```bash
 docker build -t your-registry/majiq:3.0 containers/majiq/
 ```
 
-Override any image via env var or param:
+Any image can be overridden with an environment variable (`ISAR_CONTAINER=...`) or a parameter (`--isar_container ...`).
 
-```bash
-export ISAR_CONTAINER=my-registry/isar:custom
-# or --isar_container my-registry/isar:custom
-```
-
-## MAJIQ License
-
-MAJIQ requires an academic licence (free from https://majiq.biociphers.org).
-
-```bash
-export MAJIQ_LICENSE_FILE=/path/to/majiq_license.key
-nextflow run main.nf -profile apptainer -params-file demo/params.yaml
-```
-
-## Output Layout
-
-Published under `results/`:
-
-```
-results/
-├── deliverables/                    # shippable (internal paths relative to here)
-│   ├── run_info/                    # run_manifest, sample_index, software_versions, qa_report
-│   ├── contrasts/<comparison_id>/   # <id>_splicing_report.html, tables/, plots/
-└── raw/<tool>/<comparison_id>/      # native outputs, audit-only (see --publish_level)
-```
-
-`tables/` holds the standardised `<id>.<tool>.{master,significant,summary}.tsv`
-plus the cross-tool tables. `plots/` holds one PDF per figure, grouped per tool
-(`rmats/{Volcano,PCA,Coverage,ORA,sashimi}`, `majiq/`, `isar/`, `leafcutter/`,
-`pegasas/`, `cross_tool_overlap/`, `de_as/`) and the UpSet membership TSV. Every
-non-sashimi deliverable PDF is single-page; `VALIDATE_RESULTS` fails on more.
-
-Sending the results is `mv deliverables <name> && zip -r <name>.zip <name>`.
-
-## Internal Assets
-
-`assets/empty/` holds sentinel directories used internally when a tool branch is disabled. They must not be removed.
-
-- `assets/empty/NO_RMATS`
-- `assets/empty/NO_MAJIQ`
-- `assets/empty/NO_ISAR`
-- `assets/empty/NO_SASHIMI`
-- `assets/empty/NO_SASHIMI_INDEX`
-- `assets/empty/NO_PEGASAS`
-- `assets/empty/NO_LEAFCUTTER`
-- `assets/empty/NO_PFAM`
-- `assets/empty/NO_IUPRED`
 
 ## Documentation
 
-- Parameters and usage: [docs/usage.md](docs/usage.md)
-- Output files: [docs/output.md](docs/output.md)
+- [docs/usage.md](docs/usage.md) parameters and usage
+- [docs/output.md](docs/output.md) output files
+- [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 

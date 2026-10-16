@@ -118,11 +118,12 @@ relative_paths:
   - deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv: pdf_path
   - deliverables/contrasts/<comparison_id>/contrast_manifest.yaml: all entries
 
-# padj_method vocabulary.
+# padj_method vocabulary emitted by bin/export_tool_masters.py.
 padj_methods:
   - BH
   - rmats_cstat
-  - satuRn_empirical
+  - empirical_FDR
+  - BH_event_wise
   - none
 
 # rMATS location columns (contract 2.1.0, additive; validated non-empty):

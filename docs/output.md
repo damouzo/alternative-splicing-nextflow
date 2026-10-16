@@ -105,7 +105,7 @@ Manifests (`run_manifest.yaml`, per-contrast manifests) are run metadata and liv
 | `sample_index.tsv` | `sample_id, condition, replicate, comparison_id, group` — deliberately free of absolute paths |
 | `software_versions.yml` | every per-process `versions.yml` merged into one file |
 | `qa_report.txt` | output of `validate_results_contract.py` (errors + warnings) |
-| `pipeline_info/` | Nextflow `execution_report.html`, `execution_trace.txt`, `execution_timeline.html`, `pipeline_dag.svg` (audit-only) |
+| `pipeline_info/` | Nextflow `execution_report.html`, `execution_trace.txt`, `execution_timeline.html`, `pipeline_dag.html` (audit-only) |
 
 `run_manifest.yaml` and the per-contrast manifests are in `results/run_info/` (outside
 `deliverables/`), together with the embedded `params_criticos`, `tools_enabled`/
@@ -229,14 +229,13 @@ rMATS-turbo detects five types of alternative splicing events and performs stati
 | `exonEnd` | Event end position | `41234789` |
 | `IncLevel1` | Mean PSI in group1 (comma-separated replicates) | `0.85,0.88,0.82` |
 | `IncLevel2` | Mean PSI in group2 (comma-separated replicates) | `0.45,0.42,0.48` |
-| `IncLevelDifference` | deltaPSI (group2 - group1) | `-0.40` |
+| `IncLevelDifference` | deltaPSI, native rMATS convention = group1 - group2 (the pipeline negates it to group2 - group1 in the standardised tables) | `-0.40` |
 | `PValue` | Statistical significance | `0.00012` |
 | `FDR` | False Discovery Rate (adjusted p-value) | `0.0034` |
 
 **Interpretation**:
 - **PSI** (Percent Spliced In): 0.0 = exon fully excluded, 1.0 = exon fully included
-- **deltaPSI > 0**: Increased inclusion in group2 vs group1
-- **deltaPSI < 0**: Decreased inclusion in group2 vs group1
+- In this native file, `IncLevelDifference > 0` means higher inclusion in **group1** than group2. The pipeline negates it into `effect_size`, so in the standardised tables **effect_size > 0** means increased inclusion in group2 vs group1 and **effect_size < 0** decreased inclusion.
 
 **Recommended filtering criteria**:
 ```r
@@ -663,7 +662,7 @@ Nextflow generates these execution artefacts (enabled in `nextflow.config`):
 | `execution_report.html` | Visual summary of pipeline execution |
 | `execution_timeline.html` | Timeline of process execution (useful for optimization) |
 | `execution_trace.txt` | Detailed resource usage per process (CPU, memory, time) |
-| `pipeline_dag.svg` | Workflow DAG |
+| `pipeline_dag.html` | Workflow DAG |
 
 **Use cases**:
 - **Debugging**: Identify failed processes
@@ -764,4 +763,4 @@ When publishing results, cite all tools used:
 
 - **rMATS**: Shen et al. (2014) PNAS. doi:10.1073/pnas.1419161111
 - **MAJIQ**: Vaquero-Garcia et al. (2016) eLife. doi:10.7554/eLife.11752
-- **IsoformSwitchAnalyzeR**: Vitting-Seerup & Sandelin (2019) Mol Cell. doi:10.1016/j.molcel.2019.09.005
+- **IsoformSwitchAnalyzeR**: Vitting-Seerup & Sandelin (2019) Bioinformatics 35(21):4469-4471. doi:10.1093/bioinformatics/btz247

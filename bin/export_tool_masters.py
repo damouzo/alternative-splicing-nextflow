@@ -16,7 +16,7 @@ Standard columns in every master (native columns are appended, never dropped):
   significance_rule, source_file
 
 padj is never left as an ambiguous empty "fdr": each tool reports its adjusted
-p-value with the method used (BH, rmats_cstat, satuRn_empirical, none). Tools
+p-value with the method used (BH, rmats_cstat, empirical_FDR, BH_event_wise, none). Tools
 without an adjusted p-value expose their native probability instead (MAJIQ
 prob_changing) and set padj_method = none.
 
@@ -709,79 +709,78 @@ def export_cross_tool(comparison_id, master_files, out_dir, params=None):
 
     for tool, raw in significant_rows:
         stats = tool_stats.setdefault(tool, {'significant': set(), 'ok': set()})
-        for raw in (raw,):
-                gid = str(raw.get('gene_id') or '').strip()
-                symbols = [s.strip().upper() for s in
-                           str(raw.get('gene_symbol') or '').split(',')]
-                symbols = [s for s in symbols if s and s != 'NA']
-                reads_ok = raw.get('reads_ok', 'true')
-                row_is_ok = reads_ok != 'false'
-                for symbol in symbols:
-                    if is_ensg(gid):
-                        ensg = gid
-                    else:
-                        ensg = symbol_to_ensg.get(symbol, '')
-                    # Key the overlap by ENSG; fall back to the symbol only when
-                    # no ENSG could be resolved.
-                    gene_key = ensg or symbol
-                    key = (gene_key, tool)
-                    entry = genes.setdefault(key, {
-                        'comparison_id': comparison_id,
-                        'gene_symbol': symbol,
-                        'gene_id': ensg,
-                        'tool': tool,
-                        'group1_name': group1_name,
-                        'group2_name': group2_name,
-                        'n_significant_features': 0,
-                        'n_ok_features': 0,
-                        'best_abs_effect_size': '',
-                        'best_padj': '',
-                    })
-                    if not entry['gene_symbol'] and symbol:
-                        entry['gene_symbol'] = symbol
-                    if not entry['gene_id'] and ensg:
-                        entry['gene_id'] = ensg
-                    entry['n_significant_features'] += 1
-                    if row_is_ok:
-                        entry['n_ok_features'] += 1
-                    stats['significant'].add(gene_key)
-                    if row_is_ok:
-                        stats['ok'].add(gene_key)
-                    try:
-                        effect = abs(float(raw.get('effect_size')))
-                        if entry['best_abs_effect_size'] == '' or \
-                           effect > float(entry['best_abs_effect_size']):
-                            entry['best_abs_effect_size'] = fmt(effect)
-                    except (TypeError, ValueError):
-                        pass
-                    try:
-                        padj = float(raw.get('padj'))
-                        if entry['best_padj'] == '' or padj < float(entry['best_padj']):
-                            entry['best_padj'] = fmt(padj)
-                    except (TypeError, ValueError):
-                        pass
+        gid = str(raw.get('gene_id') or '').strip()
+        symbols = [s.strip().upper() for s in
+                   str(raw.get('gene_symbol') or '').split(',')]
+        symbols = [s for s in symbols if s and s != 'NA']
+        reads_ok = raw.get('reads_ok', 'true')
+        row_is_ok = reads_ok != 'false'
+        for symbol in symbols:
+            if is_ensg(gid):
+                ensg = gid
+            else:
+                ensg = symbol_to_ensg.get(symbol, '')
+            # Key the overlap by ENSG; fall back to the symbol only when
+            # no ENSG could be resolved.
+            gene_key = ensg or symbol
+            key = (gene_key, tool)
+            entry = genes.setdefault(key, {
+                'comparison_id': comparison_id,
+                'gene_symbol': symbol,
+                'gene_id': ensg,
+                'tool': tool,
+                'group1_name': group1_name,
+                'group2_name': group2_name,
+                'n_significant_features': 0,
+                'n_ok_features': 0,
+                'best_abs_effect_size': '',
+                'best_padj': '',
+            })
+            if not entry['gene_symbol'] and symbol:
+                entry['gene_symbol'] = symbol
+            if not entry['gene_id'] and ensg:
+                entry['gene_id'] = ensg
+            entry['n_significant_features'] += 1
+            if row_is_ok:
+                entry['n_ok_features'] += 1
+            stats['significant'].add(gene_key)
+            if row_is_ok:
+                stats['ok'].add(gene_key)
+            try:
+                effect = abs(float(raw.get('effect_size')))
+                if entry['best_abs_effect_size'] == '' or \
+                   effect > float(entry['best_abs_effect_size']):
+                    entry['best_abs_effect_size'] = fmt(effect)
+            except (TypeError, ValueError):
+                pass
+            try:
+                padj = float(raw.get('padj'))
+                if entry['best_padj'] == '' or padj < float(entry['best_padj']):
+                    entry['best_padj'] = fmt(padj)
+            except (TypeError, ValueError):
+                pass
 
-                    summary = per_gene.setdefault(gene_key, {
-                        'comparison_id': comparison_id,
-                        'gene_symbol': symbol,
-                        'gene_id': ensg,
-                        'tools': set(),
-                        'best_abs_effect_size': '',
-                        'best_padj': '',
-                    })
-                    if not summary['gene_symbol'] and symbol:
-                        summary['gene_symbol'] = symbol
-                    if not summary['gene_id'] and ensg:
-                        summary['gene_id'] = ensg
-                    summary['tools'].add(tool)
-                    if entry['best_abs_effect_size'] != '' and (
-                            summary['best_abs_effect_size'] == '' or
-                            float(entry['best_abs_effect_size']) > float(summary['best_abs_effect_size'])):
-                        summary['best_abs_effect_size'] = entry['best_abs_effect_size']
-                    if entry['best_padj'] != '' and (
-                            summary['best_padj'] == '' or
-                            float(entry['best_padj']) < float(summary['best_padj'])):
-                        summary['best_padj'] = entry['best_padj']
+            summary = per_gene.setdefault(gene_key, {
+                'comparison_id': comparison_id,
+                'gene_symbol': symbol,
+                'gene_id': ensg,
+                'tools': set(),
+                'best_abs_effect_size': '',
+                'best_padj': '',
+            })
+            if not summary['gene_symbol'] and symbol:
+                summary['gene_symbol'] = symbol
+            if not summary['gene_id'] and ensg:
+                summary['gene_id'] = ensg
+            summary['tools'].add(tool)
+            if entry['best_abs_effect_size'] != '' and (
+                    summary['best_abs_effect_size'] == '' or
+                    float(entry['best_abs_effect_size']) > float(summary['best_abs_effect_size'])):
+                summary['best_abs_effect_size'] = entry['best_abs_effect_size']
+            if entry['best_padj'] != '' and (
+                    summary['best_padj'] == '' or
+                    float(entry['best_padj']) < float(summary['best_padj'])):
+                summary['best_padj'] = entry['best_padj']
 
     rows = list(genes.values())
     columns = ['comparison_id', 'gene_symbol', 'gene_id', 'tool',

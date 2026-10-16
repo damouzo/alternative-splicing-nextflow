@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.5.0] - 2026-10-15
 
 ### Changed (report)
 - rMATS: replaced the per-panel top-N "Top significant events" ranking with a
@@ -57,8 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validator's pinned WARN, and the note in `nextflow.config`. The flag fired on
   the contrasts with the highest fraction of q-values near 1 (i.e. low signal /
   low replication), not on a tool defect, so it added noise without a consumer.
-
-## [2.5.0] - 2026-10-13
 
 `manifest.version`, `results_contract_version` and `assets/results_schema.yaml`
 (`schema_version`) bumped to `2.5.0` for the incompatible `cross_tool` column

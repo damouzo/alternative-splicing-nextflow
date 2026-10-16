@@ -681,7 +681,7 @@ panel_volcano <- function(df, label) {
       title    = paste0("rMATS Volcano Plots (", label, ")"),
       subtitle = sub_note,
       x        = paste0("\u0394\u03a8 (group2 - group1: ", g2_label, " - ", g1_label, ")"),
-      y        = "-log10(FDR), capped at 50"
+      y        = "-log10(FDR), capped at 300"
     ) +
     theme(
       legend.position = "bottom",
