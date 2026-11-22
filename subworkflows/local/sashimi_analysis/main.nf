@@ -12,7 +12,9 @@
  * ========================================================================================
  */
 
-include { SASHIMI_PLOTS } from '../../../modules/local/sashimi_plots/main'
+include { SASHIMI_PLOTS }    from '../../../modules/local/sashimi_plots/main'
+include { SASHIMI_TARGETED } from '../../../modules/local/sashimi_targeted/main'
+include { SASHIMI_MERGE }    from '../../../modules/local/sashimi_merge/main'
 
 workflow SASHIMI_ANALYSIS {
 
@@ -83,7 +85,37 @@ workflow SASHIMI_ANALYSIS {
 
     SASHIMI_PLOTS(ch_sashimi_input, file("${projectDir}/bin/filter_rmats_for_sashimi.py"))
 
+    /*
+     * Optional: targeted sashimi plots for a user-provided gene list.
+     * A separate process keeps -resume selective: adding genes rebuilds only
+     * the targeted plots (and the report), not the top-N automatic ones.
+     * When the list is not set the process is skipped entirely.
+     */
+    if (params.sashimi_gene_must) {
+        ch_gene_must = channel.fromPath(params.sashimi_gene_must, checkIfExists: true).first()
+
+        SASHIMI_TARGETED(
+            ch_sashimi_input,
+            ch_gene_must,
+            file("${projectDir}/bin/filter_rmats_for_sashimi.py"),
+            file("${projectDir}/bin/finalize_targeted_sashimi.py")
+        )
+
+        SASHIMI_MERGE(
+            SASHIMI_PLOTS.out.results
+                .join(SASHIMI_TARGETED.out.results, by: 0)
+        )
+
+        ch_sashimi_results = SASHIMI_MERGE.out.results
+        ch_sashimi_versions = SASHIMI_PLOTS.out.versions
+            .mix(SASHIMI_TARGETED.out.versions)
+            .mix(SASHIMI_MERGE.out.versions)
+    } else {
+        ch_sashimi_results  = SASHIMI_PLOTS.out.results
+        ch_sashimi_versions = SASHIMI_PLOTS.out.versions
+    }
+
     emit:
-    results  = SASHIMI_PLOTS.out.results
-    versions = SASHIMI_PLOTS.out.versions
+    results  = ch_sashimi_results
+    versions = ch_sashimi_versions
 }

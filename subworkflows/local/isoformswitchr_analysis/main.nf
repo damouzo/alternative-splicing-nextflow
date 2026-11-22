@@ -122,19 +122,36 @@ workflow ISOFORMSWITCHR_ANALYSIS {
     ch_orf_rds = ISAR_EXTRACT_ORF.out.rds
 
     if (params.run_isar_full_annotation) {
-        ISAR_RUN_IUPRED(ch_orf_rds, file("${projectDir}/bin/run_iupred3.py"))
+        // IDR prediction is optional and off by default: the shipped isar image
+        // has no iupred3 package. When off, feed the NO_IUPRED sentinel so the
+        // consequence step runs Pfam/NMD/IR/ORF-similarity only.
+        if (params.run_isar_iupred) {
+            ISAR_RUN_IUPRED(ch_orf_rds, file("${projectDir}/bin/run_iupred3.py"))
+            ch_iupred = ISAR_RUN_IUPRED.out.results   // [comp_id, iupred_file]
+        } else {
+            ch_iupred = ch_orf_rds.map { id, rds -> [id, no_iupred_file] }
+        }
 
         if (params.pfam_hmm) {
-            ch_pfam_hmm = channel.fromPath(params.pfam_hmm, checkIfExists: true).first()
-            ISAR_RUN_PFAM(ch_orf_rds, ch_pfam_hmm)
+            // Stage the Pfam-A.hmm plus its hmmpressed index siblings
+            // (Pfam-A.hmm.h3{f,i,m,p}); hmmscan reads them alongside the DB.
+            // The clan map is needed to turn the domtblout into the table
+            // analyzePFAM() expects.
+            ch_pfam_hmm = channel.fromPath("${params.pfam_hmm}*", checkIfExists: true).collect()
+            ISAR_RUN_PFAM(
+                ch_orf_rds,
+                ch_pfam_hmm,
+                file(params.pfam_clans),
+                file("${projectDir}/bin/hmmscan_to_pfam.py")
+            )
 
             ch_orf_rds
                 .join(ISAR_RUN_PFAM.out.results)
-                .join(ISAR_RUN_IUPRED.out.results)
+                .join(ch_iupred)
                 .set { ch_consequences_input }
         } else {
             ch_orf_rds
-                .join(ISAR_RUN_IUPRED.out.results)
+                .join(ch_iupred)
                 .map { id, rds, iupred -> [id, rds, no_pfam_file, iupred] }
                 .set { ch_consequences_input }
         }

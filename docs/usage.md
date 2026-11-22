@@ -418,7 +418,8 @@ Or use `--use_gffread true` to extract from genome+GTF (ensures consistency).
 | `--run_sashimi` | boolean | `false` | Generate sashimi plots for top rMATS events |
 | `--run_pegasas` | boolean | `false` | Run PEGASAS pathway–splicing PSI correlation |
 | `--run_leafcutter` | boolean | `false` | Run LeafCutter intron excision analysis |
-| `--run_isar_full_annotation` | boolean | `false` | Enable Tier A ISAR annotation (PFAM + IUPred3) |
+| `--run_isar_full_annotation` | boolean | `true` | Enable Tier A ISAR annotation (PFAM + IUPred3); requires `--pfam_hmm` |
+| `--sashimi_gene_must` | file | `null` | Targeted sashimi: one gene symbol per line; plots every significant event of those genes |
 
 **Example**: To run only rMATS and skip MAJIQ/ISAR:
 ```bash
@@ -465,8 +466,8 @@ nextflow run main.nf \
 | `--isar_gene_expr_cutoff` | float | `1` | Minimum gene TPM |
 | `--isar_iso_expr_cutoff` | float | `1` | Minimum isoform TPM |
 | `--isar_test_method` | string | `'auto'` | Switch-test engine, selected per contrast: `auto` (default) uses DEXSeq when the smallest condition has ≤5 replicates and satuRn otherwise, mirroring ISAR's adequacy rule; `dexseq` and `satuRn` force a specific engine. DEXSeq avoids the locfdr empirical-FDR step in satuRn that can pin all q-values to one value in high-isoform runs. |
-| `--run_isar_full_annotation` | boolean | `false` | Enable Tier A annotation: PFAM + IUPred3 IDR |
-| `--pfam_hmm` | file | `null` | Path to Pfam-A.hmm database file (~500 MB) |
+| `--run_isar_full_annotation` | boolean | `true` | Enable Tier A annotation: PFAM + IUPred3 IDR. Required for protein-level consequences (domain / IDR gain/loss). Aborts at startup if `--pfam_hmm` is missing |
+| `--pfam_hmm` | file | `null` | Path to a hmmpressed Pfam-A.hmm database (~500 MB) |
 
 ### Sashimi Plots
 

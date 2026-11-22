@@ -13,6 +13,15 @@ Output format per isoform:
 import sys
 import argparse
 
+try:
+    from iupred3 import iupred3_lib
+except ImportError as exc:
+    sys.exit(
+        "ERROR: the 'iupred3' Python package is not available in this container, "
+        "so IDR prediction cannot run. Install iupred3 in the image or run with "
+        "--run_isar_iupred false. (%s)" % exc
+    )
+
 
 def parse_fasta(fasta_path):
     """Yield (header, sequence) tuples."""
@@ -35,14 +44,13 @@ def parse_fasta(fasta_path):
 def run_iupred3_on_sequence(sequence):
     """Return (iupred_scores, anchor_scores) for a single protein sequence."""
     try:
-        from iupred3 import iupred3_lib
         iupred_result = iupred3_lib.iupred(sequence, iupred_type='long')
         anchor_result = iupred3_lib.iupred(sequence, iupred_type='anchor2')
-        iupred_scores = iupred_result[1]
-        anchor_scores = anchor_result[1]
-        return iupred_scores, anchor_scores
+        return iupred_result[1], anchor_result[1]
     except Exception as e:
-        # Fallback: return zeros if iupred3 fails for this sequence
+        # A single failing sequence must not abort the run; warn and use zeros
+        print('WARN: IUPred3 failed for a sequence (%s); using zero scores' % e,
+              file=sys.stderr)
         n = len(sequence)
         return [0.0] * n, [0.0] * n
 

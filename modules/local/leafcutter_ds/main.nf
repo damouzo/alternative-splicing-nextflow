@@ -86,6 +86,11 @@ PYEOF
         ${counts_gz} \
         groups.txt
 
+    # Carry the per-sample intron counts into this comparison's output dir so the
+    # report can build a per-sample PSI heatmap (PSI = intron count / cluster sum).
+    # Audit/raw only; never part of the shippable deliverables tables.
+    cp -L ${counts_gz} ${comparison_id}/
+
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
         leafcutter: \$(Rscript -e "cat(as.character(packageVersion('leafcutter')))" 2>/dev/null || echo "unknown")

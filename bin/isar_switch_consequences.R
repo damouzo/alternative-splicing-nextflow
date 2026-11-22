@@ -47,40 +47,47 @@ switchAnalyzeRlist <- readRDS(opt$input)
 
 cat("Loaded data with", nrow(switchAnalyzeRlist$isoformFeatures), "isoforms\n")
 
-# PFAM domain analysis (Tier A full annotation)
+# PFAM domain analysis (Tier A full annotation).
+# With --run_isar_full_annotation true the pipeline guarantees a Pfam DB and a
+# Pfam result file, so a failure here is a real error (bad DB, empty/invalid
+# hmmscan output) and must abort loudly instead of silently emptying the
+# consequence summary. An absent/tiny file means the sentinel was used (full
+# annotation off) and is skipped.
 pfam_ran <- FALSE
 if (!is.null(opt$pfam_results) && file.exists(opt$pfam_results) && file.size(opt$pfam_results) > 100) {
     cat("\nRunning analyzePFAM()...\n")
-    switchAnalyzeRlist <- tryCatch({
-        analyzePFAM(
-            switchAnalyzeRlist   = switchAnalyzeRlist,
-            pathToPFAMresultFile = opt$pfam_results,
-            showProgress         = FALSE,
-            quiet                = TRUE
-        )
-    }, error = function(e) {
-        cat("  NOTE: analyzePFAM() failed:", conditionMessage(e), "\n")
-        switchAnalyzeRlist
-    })
+    switchAnalyzeRlist <- analyzePFAM(
+        switchAnalyzeRlist   = switchAnalyzeRlist,
+        pathToPFAMresultFile = opt$pfam_results,
+        showProgress         = FALSE,
+        quiet                = TRUE
+    )
     pfam_ran <- TRUE
 }
 
-# IUPred3 IDR prediction (Tier A full annotation)
+# IUPred3 IDR prediction (Tier A full annotation). A failure here is tolerated:
+# a contrast with no IDR regions (or an empty/all-zero prediction file) would
+# otherwise abort the whole consequence step, which must not happen.
 iupred_ran <- FALSE
 if (!is.null(opt$iupred_results) && file.exists(opt$iupred_results) && file.size(opt$iupred_results) > 0) {
     cat("\nRunning analyzeIUPred2A()...\n")
-    switchAnalyzeRlist <- tryCatch({
+    iupred_result <- tryCatch(
         analyzeIUPred2A(
             switchAnalyzeRlist       = switchAnalyzeRlist,
             pathToIUPred2AresultFile = opt$iupred_results,
             showProgress             = FALSE,
             quiet                    = TRUE
-        )
-    }, error = function(e) {
-        cat("  NOTE: analyzeIUPred2A() failed:", conditionMessage(e), "\n")
-        switchAnalyzeRlist
-    })
-    iupred_ran <- TRUE
+        ),
+        error = function(e) {
+            cat("  NOTE: Skipping IDR analysis (analyzeIUPred2A failed):",
+                conditionMessage(e), "\n")
+            NULL
+        }
+    )
+    if (!is.null(iupred_result)) {
+        switchAnalyzeRlist <- iupred_result
+        iupred_ran <- TRUE
+    }
 }
 
 cat("\nAnalyzing switch consequences...\n")
@@ -88,7 +95,6 @@ cat("  dIF cutoff:", opt$dif_cutoff, "\n")
 
 consequences_to_analyze <- c(
     'intron_retention',
-    'coding_potential',
     'ORF_seq_similarity',
     'NMD_status'
 )
@@ -136,11 +142,7 @@ while (length(consequences_to_analyze) > 0) {
     }
 
     err_msg <- analysis_attempt$message
-    if (grepl("coding_potential", err_msg, fixed = TRUE) &&
-        'coding_potential' %in% consequences_to_analyze) {
-        cat("  NOTE: Skipping coding_potential (missing CPAT/CPC2 results)\n")
-        consequences_to_analyze <- consequences_to_analyze[consequences_to_analyze != 'coding_potential']
-    } else if (grepl("No genes were considered switching", err_msg, fixed = TRUE)) {
+    if (grepl("No genes were considered switching", err_msg, fixed = TRUE)) {
         cat("  NOTE: No genes considered switching with current cutoffs; skipping consequence analysis\n")
         no_switching_genes <- TRUE
         break
@@ -196,17 +198,24 @@ write.csv(all_switches, output_csv, row.names = FALSE)
 cat("  Saved:", output_csv, "\n")
 cat("  Total isoforms tested:", nrow(all_switches), "\n")
 
-# Extract consequence summary
+# Extract consequence summary. Note the argument is `consequencesToAnalyze`,
+# not `consequencesToPlot`: the previous call passed a non-existent argument and
+# R aborted, which silently emptied this table. `plot = FALSE, returnResult =
+# TRUE` returns the data frame (native IsoformSwitchAnalyzeR schema:
+# Comparison, featureCompared, switchConsequence, nrGenesWithConsequences,
+# nrIsoWithConsequences); the report reads those columns directly.
 cat("\nExtracting consequence summary...\n")
 consequenceSummary <- tryCatch({
     if (no_switching_genes) {
         stop("No switching genes available for consequence summary")
     }
     extractConsequenceSummary(
-        switchAnalyzeRlist = switchAnalyzeRlist,
-        includeCombined = TRUE,
-        consequencesToPlot = 'all',
-        asFractionTotal = FALSE
+        switchAnalyzeRlist    = switchAnalyzeRlist,
+        consequencesToAnalyze = 'all',
+        includeCombined       = TRUE,
+        asFractionTotal       = FALSE,
+        plot                  = FALSE,
+        returnResult          = TRUE
     )
 }, error = function(e) {
     cat("  NOTE: Could not build consequence summary:", conditionMessage(e), "\n")
@@ -216,6 +225,21 @@ consequenceSummary <- tryCatch({
 output_summary <- file.path(opt$output_dir, "consequence_summary.csv")
 write.csv(consequenceSummary, output_summary, row.names = FALSE)
 cat("  Saved:", output_summary, "\n")
+
+# Gene -> consequence table (one row per switch x featureCompared), straight from
+# switchAnalyzeRlist$switchConsequence. The deliverables layer reshapes this into
+# <comparison_id>.isar.consequences.tsv.
+cat("\nExtracting per-switch consequence table...\n")
+switch_consequence <- tryCatch({
+    sw <- switchAnalyzeRlist$switchConsequence
+    if (is.null(sw) || nrow(sw) == 0) data.frame() else sw
+}, error = function(e) {
+    cat("  NOTE: Could not extract switchConsequence table:", conditionMessage(e), "\n")
+    data.frame()
+})
+output_detail <- file.path(opt$output_dir, "switch_consequence_detail.csv")
+write.csv(switch_consequence, output_detail, row.names = FALSE)
+cat("  Saved:", output_detail, " (", nrow(switch_consequence), " rows)\n")
 
 # Generate switch plots for top N significant genes.
 # Use report_fdr_cutoff / report_dpsi_cutoff defaults as approximation;

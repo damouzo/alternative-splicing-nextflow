@@ -48,6 +48,15 @@ def helpMessage() {
     rMATS Options:
       --rmats_novel_ss     Detect unannotated (de novo) splice sites [default: true]
     
+    ISAR Options:
+      --run_isar_full_annotation  Pfam domains + IUPred3 IDRs (Tier A) [default: true]
+      --pfam_hmm           Path to a hmmpressed Pfam-A.hmm (required when the above is true)
+      --pfam_clans         Path to Pfam-A.clans.tsv from the same release (required with the above)
+      --run_isar_iupred    Enable IUPred3 IDR prediction (needs iupred3 in the isar image) [default: false]
+
+    Sashimi Options:
+      --sashimi_gene_must  Gene list (one symbol per line) to always plot in every contrast
+
     Output:
       --outdir             Output directory [default: ./results]
       --publish_dir_mode   Mode for publishDir: copy, symlink, link [default: copy]
@@ -87,6 +96,21 @@ def validateParams() {
 
     if (params.run_majiq && !params.majiq_license) {
         log.warn "WARNING: --majiq_license not provided. MAJIQ analysis will fail without a valid license file."
+    }
+
+    if (params.run_isar && params.run_isar_full_annotation && !params.pfam_hmm) {
+        exit 1, "ERROR: --pfam_hmm is required when --run_isar_full_annotation is true. Provide a hmmpressed Pfam-A.hmm, or run with --run_isar_full_annotation false to skip protein-domain consequences."
+    }
+    if (params.run_isar && params.run_isar_full_annotation && params.pfam_hmm &&
+        !file("${params.pfam_hmm}.h3f").exists()) {
+        exit 1, "ERROR: --pfam_hmm must point to an hmmpressed Pfam-A.hmm (missing the .h3f/.h3i/.h3m/.h3p index siblings next to it). Run: hmmpress ${params.pfam_hmm}"
+    }
+    if (params.run_isar && params.run_isar_full_annotation && params.pfam_hmm && !params.pfam_clans) {
+        exit 1, "ERROR: --pfam_clans is required when --run_isar_full_annotation is true. Provide the Pfam-A.clans.tsv map (accession -> clan) from the same Pfam release as --pfam_hmm."
+    }
+    if (params.run_isar && params.run_isar_full_annotation && params.pfam_clans &&
+        !file(params.pfam_clans).exists()) {
+        exit 1, "ERROR: --pfam_clans does not exist: ${params.pfam_clans}"
     }
 }
 

@@ -10,7 +10,7 @@
 #   run_info/      run metadata (run_manifest.yaml, contrast manifests), not shipped
 # All paths *inside* deliverables/ (sashimi_index.tsv) are relative to the
 # deliverables/ root, so the folder survives renaming/moving.
-schema_version: 2.5.0
+schema_version: 2.6.0
 
 shippable_root: deliverables/
 
@@ -24,6 +24,7 @@ shippable:
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.<tool>.master.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.<tool>.significant.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.<tool>.summary.tsv
+  - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.isar.consequences.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.cross_tool.master.tsv
   - deliverables/contrasts/<comparison_id>/tables/<comparison_id>.cross_tool.gene_summary.tsv
   - deliverables/contrasts/<comparison_id>/plots/rmats/sashimi/sashimi_index.tsv
@@ -31,6 +32,7 @@ shippable:
   - deliverables/contrasts/<comparison_id>/plots/rmats/{Volcano,PCA,Coverage,ORA}/*.pdf
   - deliverables/contrasts/<comparison_id>/plots/majiq/*.pdf
   - deliverables/contrasts/<comparison_id>/plots/isar/*.pdf
+  - deliverables/contrasts/<comparison_id>/plots/isar/switchplots/
   - deliverables/contrasts/<comparison_id>/plots/leafcutter/*.pdf
   - deliverables/contrasts/<comparison_id>/plots/pegasas/*.pdf
   - deliverables/contrasts/<comparison_id>/plots/cross_tool_overlap/*.pdf
@@ -101,7 +103,23 @@ sashimi_index_columns:
   - gene_symbol
   - site_class
   - plot_id
+  - selection
+  - event_id
+  - deltapsi
+  - fdr
   - pdf_path
+
+# Gene -> predicted consequence table (IsoformSwitchAnalyzeR switchConsequence).
+isar_consequence_columns:
+  - comparison_id
+  - gene_id
+  - gene_symbol
+  - isoform_upregulated
+  - isoform_downregulated
+  - condition_1
+  - condition_2
+  - feature_compared
+  - switch_consequence
 
 cross_tool_gene_columns:
   - comparison_id

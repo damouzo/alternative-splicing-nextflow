@@ -42,6 +42,25 @@ run_sashimi:    false
 run_pegasas:    false
 run_de_as:      false
 
+# Targeted sashimi: path to a one-symbol-per-line gene list (blank lines and '#'
+# ignored, case-insensitive). Every significant event of those genes is plotted
+# in every contrast, in addition to the automatic --sashimi_top_n plots. Kept as
+# a separate process so adding genes and re-running with -resume only rebuilds
+# the targeted plots and the report. Leave null/commented to disable.
+# sashimi_gene_must: /path/to/genes_of_interest.txt
+
+# ISAR protein-level consequences (Tier A: Pfam domains + IUPred3 IDRs).
+# Enabled by default; requires a hmmpressed Pfam-A.hmm below. The run aborts at
+# startup if run_isar_full_annotation is true and pfam_hmm is missing.
+# pfam_clans is the Pfam-A.clans.tsv map (accession -> clan) shipped with the
+# same Pfam release; analyzePFAM() needs the clan column it provides.
+run_isar_full_annotation: true
+pfam_hmm: /path/to/Pfam-A.hmm
+pfam_clans: /path/to/Pfam-A.clans.tsv
+# IUPred3 IDR prediction needs the 'iupred3' Python package in the isar image,
+# which the shipped container does not include. Off by default.
+run_isar_iupred: false
+
 # Optional inputs required by the optional tools.
 # Only needed when the matching toggle above is set to true:
 

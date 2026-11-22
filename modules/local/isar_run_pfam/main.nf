@@ -6,13 +6,24 @@ process ISAR_RUN_PFAM {
 
     input:
     tuple val(comparison_id), path(rds_input)
-    path pfam_hmm
+    // Pfam-A.hmm plus its hmmpressed index siblings (.h3f/.h3i/.h3m/.h3p).
+    // Staged as symlinks (stageInMode in modules.config) so the ~7 GB DB is not
+    // copied per task; the container bind for the source dir is added in the
+    // singularity/apptainer profiles.
+    path pfam_db
+    // Pfam-A.clans.tsv (accession -> clan). analyzePFAM() needs a clan column.
+    path pfam_clans
+    // domtblout -> ISAR pfam table converter. Input so edits invalidate the cache.
+    path convert_script
 
     output:
-    tuple val(comparison_id), path("${comparison_id}_pfam.domtblout"), emit: results
-    path "versions.yml"                                               , emit: versions
+    tuple val(comparison_id), path("${comparison_id}_pfam.txt"), emit: results
+    path "versions.yml"                                        , emit: versions
 
     script:
+    def pfam_main = (pfam_db instanceof List || pfam_db instanceof Object[])
+        ? (pfam_db.find { p -> p.name.endsWith('.hmm') && !p.name.contains('.h3') } ?: pfam_db[0])
+        : pfam_db
     """
     export OPENBLAS_NUM_THREADS=1
     export OMP_NUM_THREADS=1
@@ -37,22 +48,26 @@ process ISAR_RUN_PFAM {
 
     AA_FASTA=isoformSwitchAnalyzeR_AA.fasta
 
-    if [ ! -s "\$AA_FASTA" ]; then
-        # No sequences available — write empty domtblout
-        echo "# hmmscan :: no sequences available" > ${comparison_id}_pfam.domtblout
-    else
+    if [ -s "\$AA_FASTA" ]; then
         hmmscan \\
             --domtblout ${comparison_id}_pfam.domtblout \\
             --cpu ${task.cpus} \\
-            -E 1e-5 \\
-            --domE 1e-5 \\
-            ${pfam_hmm} \\
+            --cut_ga \\
+            ${pfam_main} \\
             \$AA_FASTA > /dev/null
+    else
+        : > ${comparison_id}_pfam.domtblout
     fi
+
+    # analyzePFAM() reads the pfam_scan.pl-style table, not raw hmmscan domtblout
+    python3 ${convert_script} \\
+        --domtblout ${comparison_id}_pfam.domtblout \\
+        --clans ${pfam_clans} \\
+        --output ${comparison_id}_pfam.txt
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":
-        hmmer: \$(hmmscan --version 2>&1 | head -1 | sed 's/# HMMER //')
+        hmmer: \$(hmmscan -h 2>&1 | head -2 | tail -1 | sed 's/# HMMER //')
     END_VERSIONS
     """
 }

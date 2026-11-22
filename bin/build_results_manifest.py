@@ -342,7 +342,7 @@ def build_contrast_manifest(comparison_id, group1_name, group2_name,
     data_tables = {}
     if os.path.isdir(tables_dir):
         pattern = re.compile(
-            r'^%s\.([a-z_]+)\.(master|significant|summary)\.tsv$' % re.escape(comparison_id))
+            r'^%s\.([a-z_]+)\.(master|significant|summary|consequences)\.tsv$' % re.escape(comparison_id))
         for name in sorted(os.listdir(tables_dir)):
             match = pattern.match(name)
             if not match or match.group(1) == 'cross_tool':
