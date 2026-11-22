@@ -94,6 +94,7 @@ def load_schema(path):
         return schema
     list_keys = ('required_master_columns', 'master_columns',
                  'sample_index_columns', 'sashimi_index_columns',
+                 'isar_consequence_columns',
                  'cross_tool_gene_columns', 'shippable', 'audit_only')
     key = None
     with open(path, 'r', encoding='utf-8', errors='replace') as handle:
@@ -304,6 +305,19 @@ def check_isar_master(deliverables, comparison_id, report, required_columns,
             'engine %r (expected %s)'
             % (comparison_id, ','.join(sorted(padj_methods)),
                effective_method or 'unknown', expected))
+
+
+def check_isar_consequences(deliverables, comparison_id, report, required_columns):
+    """The schema lists isar.consequences.tsv as a shippable deliverable, so it
+    must be present whenever ISAR ran (the exporter writes it header-only for
+    contrasts with no switching genes). Its absence is a shipping defect, not an
+    orphan."""
+    path = os.path.join(tables_dir(deliverables, comparison_id),
+                        '%s.isar.consequences.tsv' % comparison_id)
+    if not os.path.isfile(path):
+        report.error('ISAR consequences table missing: %s' % path)
+        return
+    check_columns(path, report, required_columns)
 
 
 def check_cross_tool(deliverables, comparison_id, report, enabled_tools):
@@ -910,6 +924,7 @@ def main():
         args.deliverables_root or os.path.join(outdir, 'deliverables'))
     schema = load_schema(args.schema)
     required_columns = schema.get('required_master_columns') or DEFAULT_REQUIRED_COLUMNS
+    isar_consequence_columns = schema.get('isar_consequence_columns') or []
 
     report = Report()
     run_info = os.path.join(deliverables, 'run_info')
@@ -1023,6 +1038,8 @@ def main():
             check_isar_master(deliverables, comparison_id, report,
                               required_columns, effective_method,
                               strict=contract_at_least(manifest, (2, 4, 0)))
+            check_isar_consequences(deliverables, comparison_id, report,
+                                    isar_consequence_columns)
         check_cross_tool(deliverables, comparison_id, report, enabled_tools)
         check_upset_membership(deliverables, comparison_id, report)
         check_plot_pdf_pages(deliverables, comparison_id, report)

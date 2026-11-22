@@ -273,7 +273,7 @@ ora_status_log <- data.frame(
   n_kegg = integer(), status = character(), stringsAsFactors = FALSE
 )
 
-run_ora_for_set <- function(genes, set_name, min_genes = 10) {
+run_ora_for_set <- function(genes, set_name, min_genes = 10, universe = NULL) {
   genes <- unique(as.character(genes))
   genes <- genes[!is.na(genes) & genes != ""]
 
@@ -305,9 +305,20 @@ run_ora_for_set <- function(genes, set_name, min_genes = 10) {
 
   orgdb_obj <- get(orgdb_name, envir = asNamespace(orgdb_name))
 
+  # Background: the genes actually tested by this tool (symbols), not the whole
+  # genome. More power for small sets and a fairer null. Invalid symbols are
+  # ignored by enrichGO; an empty universe falls back to the OrgDb default.
+  go_universe <- NULL
+  if (!is.null(universe)) {
+    go_universe <- unique(as.character(universe))
+    go_universe <- go_universe[!is.na(go_universe) & go_universe != ""]
+    if (length(go_universe) < min_genes) go_universe <- NULL
+  }
+
   res$go <- tryCatch(
     clusterProfiler::enrichGO(
       gene = genes,
+      universe = go_universe,
       OrgDb = orgdb_obj,
       keyType = "SYMBOL",
       ont = "BP",
@@ -344,11 +355,26 @@ run_ora_for_set <- function(genes, set_name, min_genes = 10) {
   gene_ids <- unique(gene_ids$ENTREZID)
   gene_ids <- gene_ids[!is.na(gene_ids) & gene_ids != ""]
 
+  # Matching KEGG background (the tested genes, as ENTREZ ids).
+  kegg_universe <- NULL
+  if (!is.null(universe)) {
+    u <- unique(as.character(universe))
+    u <- u[!is.na(u) & u != ""]
+    u_entrez <- tryCatch(
+      unique(clusterProfiler::bitr(u, fromType = "SYMBOL", toType = "ENTREZID",
+                                   OrgDb = orgdb_obj)$ENTREZID),
+      error = function(e) character(0)
+    )
+    u_entrez <- u_entrez[!is.na(u_entrez) & u_entrez != ""]
+    if (length(u_entrez) >= 5) kegg_universe <- u_entrez
+  }
+
   if (length(gene_ids) >= 5) {
     kegg_org <- if (identical(params$organism, "mouse")) "mmu" else "hsa"
     res$kegg <- tryCatch(
       clusterProfiler::enrichKEGG(
         gene = gene_ids,
+        universe = kegg_universe,
         organism = kegg_org,
         pAdjustMethod = "BH",
         pvalueCutoff = 0.05
@@ -414,11 +440,15 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
     print(go_plot)
     save_plot_pdf(go_plot, ora_plot_path("GO_BP"), width = 10, height = 7)
     # A datatable printed inside a function body is discarded by knitr under
-    # results='asis'; emit its widget HTML explicitly via knit_print.
+    # results='asis'; emit its widget HTML explicitly via knit_print. Wrap it in
+    # a collapsible <details> so the table sits under its plot, collapsed.
+    cat(sprintf('\n\n<details><summary>GO BP enrichment table \u2014 %s</summary>\n\n',
+                ora_res$set_name))
     cat(knitr::knit_print(truncate_geneid_datatable(
       ora_res$go_df,
       caption = paste0("GO BP enrichment table \u2014 ", ora_res$set_name)
     )))
+    cat('\n\n</details>\n\n')
   } else {
     cat(sprintf("\n\nNo GO BP terms available for %s.\n\n", subject))
   }
@@ -431,10 +461,13 @@ render_ora_result <- function(ora_res, heading_level = 3, plots_subdir = NULL,
     )
     print(kegg_plot)
     save_plot_pdf(kegg_plot, ora_plot_path("KEGG"), width = 10, height = 7)
+    cat(sprintf('\n\n<details><summary>KEGG enrichment table \u2014 %s</summary>\n\n',
+                ora_res$set_name))
     cat(knitr::knit_print(truncate_geneid_datatable(
       ora_res$kegg_df,
       caption = paste0("KEGG enrichment table \u2014 ", ora_res$set_name)
     )))
+    cat('\n\n</details>\n\n')
   } else {
     cat(sprintf("\n\nNo KEGG pathways available for %s.\n\n", subject))
   }
@@ -823,8 +856,12 @@ sashimi_widget_html <- function(widget_id) {
     '<div id="', widget_id, '" style="border:1px solid #d9d9d9; border-radius:8px; padding:12px; margin:12px 0 20px 0;">',
     '<div style="font-weight:600; margin-bottom:8px;">Sashimi browser</div>',
     '<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-bottom:10px;">',
+    '<label style="font-size:0.9em;">Selection<br><select id="', widget_id, '_selection">',
+    '<option value="">All</option><option value="auto">Automatic</option>',
+    '<option value="targeted">Targeted</option></select></label>',
     '<label style="font-size:0.9em;">Event type<br><select id="', widget_id, '_event"></select></label>',
     '<label style="font-size:0.9em;">Gene<br><select id="', widget_id, '_gene"></select></label>',
+    '<label style="font-size:0.9em;">Event<br><select id="', widget_id, '_evkey"></select></label>',
     '</div>',
     '<div id="', widget_id, '_holder" style="width:100%; height:760px; border:1px solid #e5e5e5; border-radius:6px; overflow:auto; background:#fafafa;">',
     '<p style="padding:10px;">Select an event type and gene above to preview the sashimi plot.</p>',
@@ -901,15 +938,15 @@ sashimi_table <- data.frame()
 
 if (length(sashimi_pdfs) > 0) {
   event_from_path <- function(paths) {
-    rel <- basename(dirname(dirname(paths)))
-    ifelse(rel %in% c("SE", "A5SS", "A3SS", "MXE", "RI"), rel, NA_character_)
+    # Derive the event type from any path component so both layouts work:
+    # <ETYPE>/Sashimi_plot/<file>.pdf and <ETYPE>/<file>.pdf.
+    vapply(strsplit(paths, .Platform$file.sep, fixed = TRUE), function(parts) {
+      hit <- intersect(parts, c("SE", "A5SS", "A3SS", "MXE", "RI"))
+      if (length(hit) == 0) NA_character_ else hit[1]
+    }, character(1))
   }
 
-  extract_gene_symbol <- function(x) {
-    has_prefix <- grepl("^[0-9]+_[^_]+_", x)
-    out <- ifelse(has_prefix, sub("^[0-9]+_([^_]+)_.*$", "\\1", x), NA_character_)
-    out
-  }
+  is_targeted_pdf <- function(x) grepl("^A_", x)
 
   # Convert each PDF to a PNG (~150 dpi) so the HTML stays light and
   # self-contained. Falls back to embedding the PDF when pdftoppm is missing
@@ -942,43 +979,119 @@ if (length(sashimi_pdfs) > 0) {
 
   sashimi_data_uris <- vapply(sashimi_pdfs, embed_sashimi, character(1))
 
-  # Per-PDF splice-site class from the SASHIMI_PLOTS manifest. The manifest rank
-  # is the same 1-based <rank> prefix rmats2sashimiplot writes into the filename,
-  # so de novo events are labelled correctly instead of assumed annotated.
-  site_class_lookup <- list()
+  # Per-PDF splice-site class + event id from the SASHIMI_PLOTS manifest. The
+  # manifest rank is the same 1-based <rank> prefix rmats2sashimiplot writes
+  # into the filename, so de novo events are labelled correctly.
+  site_class_meta <- list()
   classes_path <- file.path(params$sashimi_dir, "site_classes.tsv")
   if (file.exists(classes_path)) {
     cls <- tryCatch(read.delim(classes_path, stringsAsFactors = FALSE),
                     error = function(e) NULL)
     if (!is.null(cls) && nrow(cls) > 0) {
       for (i in seq_len(nrow(cls))) {
-        site_class_lookup[[paste0(cls$event_type[i], "|", cls$rank[i])]] <- cls$site_class[i]
+        site_class_meta[[paste0(cls$event_type[i], "|", cls$rank[i])]] <- list(
+          site_class = as.character(cls$site_class[i]),
+          event_id   = as.character(cls$event_id[i]))
       }
     }
   }
+  pdf_file       <- basename(sashimi_pdfs)
   pdf_event_type <- event_from_path(sashimi_pdfs)
-  pdf_rank <- suppressWarnings(as.integer(sub("^([0-9]+)_.*$", "\\1", basename(sashimi_pdfs))))
-  pdf_site_class <- vapply(seq_along(sashimi_pdfs), function(i) {
-    value <- site_class_lookup[[paste0(pdf_event_type[i], "|", pdf_rank[i])]]
-    if (is.null(value) || is.na(value) || !nzchar(value)) "annotated" else value
-  }, character(1))
+  pdf_stem       <- sub("\\.pdf$", "", pdf_file)
+  pdf_rank       <- suppressWarnings(as.integer(sub("^([0-9]+)_.*$", "\\1", pdf_file)))
+  pdf_targeted   <- is_targeted_pdf(pdf_file)
 
-  sashimi_table <- data.frame(
-    file = basename(sashimi_pdfs),
-    event_type = pdf_event_type,
-    gene = extract_gene_symbol(basename(sashimi_pdfs)),
-    site_class = pdf_site_class,
-    data_uri = sashimi_data_uris,
-    mime = ifelse(grepl("^data:image/png", sashimi_data_uris), "image/png", "application/pdf"),
-    stringsAsFactors = FALSE
-  ) %>%
-    dplyr::arrange(event_type, gene, file) %>%
-    dplyr::filter(!is.na(data_uri) & nzchar(data_uri))
+  # Targeted manifest, keyed by plot_id.
+  target_lookup <- list()
+  target_path <- file.path(params$sashimi_dir, "targeted_classes.tsv")
+  if (file.exists(target_path)) {
+    tgt <- tryCatch(read.delim(target_path, stringsAsFactors = FALSE),
+                    error = function(e) NULL)
+    if (!is.null(tgt) && nrow(tgt) > 0 && "plot_id" %in% colnames(tgt)) {
+      for (i in seq_len(nrow(tgt))) {
+        target_lookup[[as.character(tgt$plot_id[i])]] <- tgt[i, , drop = FALSE]
+      }
+    }
+  }
+
+  # (event_type | event_id) -> effect size / FDR from the rMATS table.
+  # Built vectorised: appending per row is O(n^2) and takes ~40 min on
+  # genome-wide rMATS output (~6e5 rows), which blows the report walltime.
+  rmats_lookup <- list()
+  if (exists("all_rmats") && nrow(all_rmats) > 0 && "ID" %in% colnames(all_rmats)) {
+    rmats_keys <- paste0(all_rmats$EventType, "|", all_rmats$ID)
+    rmats_lookup <- stats::setNames(
+      lapply(seq_len(nrow(all_rmats)), function(i) c(
+        dpsi = as.character(all_rmats$IncLevelDifference[i]),
+        fdr  = as.character(all_rmats$FDR[i])
+      )),
+      rmats_keys
+    )
+  }
+
+  fmtnum <- function(x) {
+    v <- suppressWarnings(as.numeric(x))
+    if (length(v) == 0 || is.na(v)) "" else formatC(v, format = "g", digits = 3)
+  }
+
+  pdf_rows <- lapply(seq_along(sashimi_pdfs), function(i) {
+    if (is.na(pdf_event_type[i])) return(NULL)
+    if (isTRUE(pdf_targeted[i])) {
+      rec <- target_lookup[[pdf_stem[i]]]
+      if (is.null(rec)) return(NULL)
+      gene <- as.character(rec$gene[1])
+      evid <- as.character(rec$event_id[1])
+      site <- as.character(rec$site_class[1]); if (is.na(site) || !nzchar(site)) site <- "annotated"
+      dpsi <- as.character(rec$deltapsi[1])
+      fdr  <- as.character(rec$fdr[1])
+      selection <- "targeted"
+    } else {
+      gene <- ifelse(grepl("^[0-9]+_[^_]+_", pdf_file[i]),
+                     sub("^[0-9]+_([^_]+)_.*$", "\\1", pdf_file[i]), NA_character_)
+      key  <- paste0(pdf_event_type[i], "|", pdf_rank[i])
+      meta <- site_class_meta[[key]]
+      evid <- if (!is.null(meta)) meta$event_id else ""
+      site <- if (!is.null(meta) && !is.na(meta$site_class) && nzchar(meta$site_class)) meta$site_class else "annotated"
+      rm   <- rmats_lookup[[paste0(pdf_event_type[i], "|", evid)]]
+      dpsi <- if (!is.null(rm)) rm[["dpsi"]] else ""
+      fdr  <- if (!is.null(rm)) rm[["fdr"]] else ""
+      selection <- "auto"
+    }
+    if (is.na(gene) || !nzchar(gene)) return(NULL)
+    label <- paste0(pdf_event_type[i], " \u00b7 ",
+                    if (nzchar(evid)) evid else pdf_stem[i],
+                    " \u00b7 \u0394\u03a8=", fmtnum(dpsi),
+                    " \u00b7 FDR=", fmtnum(fdr))
+    data.frame(
+      file = pdf_file[i], event_type = pdf_event_type[i], gene = gene,
+      site_class = site, selection = selection,
+      event_key = if (nzchar(evid)) evid else pdf_stem[i],
+      event_label = label,
+      data_uri = sashimi_data_uris[i],
+      mime = ifelse(grepl("^data:image/png", sashimi_data_uris[i]), "image/png", "application/pdf"),
+      stringsAsFactors = FALSE)
+  })
+
+  keep <- !vapply(pdf_rows, is.null, logical(1))
+  sashimi_table <- if (any(keep)) do.call(rbind, pdf_rows[keep]) else data.frame()
+  if (nrow(sashimi_table) > 0) {
+    # Deduplicate by (event_type, event_key) preferring targeted: an event that
+    # is both a top-N hit and a requested gene appears once, marked targeted.
+    sashimi_table$.pref <- ifelse(sashimi_table$selection == "targeted", 0L, 1L)
+    sashimi_table <- sashimi_table[order(sashimi_table$.pref), , drop = FALSE]
+    sashimi_table <- sashimi_table[!duplicated(paste(sashimi_table$event_type,
+                                                      sashimi_table$event_key)), , drop = FALSE]
+    sashimi_table$.pref <- NULL
+    sashimi_table <- sashimi_table %>%
+      dplyr::arrange(event_type, gene, event_label) %>%
+      dplyr::filter(!is.na(data_uri) & nzchar(data_uri))
+  }
 }
 
 if (nrow(sashimi_table) > 0) {
   browser_json <- jsonlite::toJSON(
-    sashimi_table[, c("file", "event_type", "gene", "site_class", "data_uri", "mime")],
+    sashimi_table[, c("file", "event_type", "gene", "site_class", "selection",
+                      "event_key", "event_label", "data_uri", "mime")],
     dataframe = "rows", auto_unbox = TRUE
   )
   cat('<script>window.__SASHIMI_PLOTS__ = ', browser_json, ';</script>\n')
@@ -987,20 +1100,21 @@ if (nrow(sashimi_table) > 0) {
     'window.__sashimiBrowser = function (widgetId, classFilter) {',
     'const root = document.getElementById(widgetId);',
     'if (!root) { return; }',
+    'const selFilter = document.getElementById(widgetId + "_selection");',
     'const eventSel = document.getElementById(widgetId + "_event");',
     'const geneSel = document.getElementById(widgetId + "_gene");',
+    'const evkeySel = document.getElementById(widgetId + "_evkey");',
     'const holder = document.getElementById(widgetId + "_holder");',
     'const all = Array.isArray(window.__SASHIMI_PLOTS__) ? window.__SASHIMI_PLOTS__ : [];',
-    'const data = classFilter ? all.filter(d => d.site_class === classFilter) : all;',
     'const uniq = (arr) => Array.from(new Set(arr));',
     'const sortText = (arr) => arr.sort((a,b) => String(a).localeCompare(String(b)));',
     'const setOptions = (sel, values) => {',
     'sel.innerHTML = "";',
-    'values.forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); });',
+    'values.forEach(v => { const o=document.createElement("option"); o.value=v.value; o.textContent=v.label; sel.appendChild(o); });',
     '};',
     'const renderPreview = (row) => {',
     'holder.innerHTML = "";',
-    'if(!row){ holder.innerHTML = "<p style=\\"padding:10px;\\">No plot available.</p>"; return; }',
+    'if(!row){ holder.innerHTML = "<p style=\\"padding:10px;\\">No plot available for this event.</p>"; return; }',
     'if(row.mime === "image/png"){',
     'const img = document.createElement("img");',
     'img.src = row.data_uri;',
@@ -1017,24 +1131,39 @@ if (nrow(sashimi_table) > 0) {
     'holder.appendChild(obj);',
     '}',
     '};',
-    'if (data.length === 0) {',
-    'holder.innerHTML = "<p style=\\"padding:10px;\\">No sashimi plots available for this class: rmats2sashimiplot cannot draw unannotated (de novo) splice sites, so sashimi output covers annotated events only.</p>";',
-    'return;',
-    '}',
-    'const eventValues = sortText(uniq(data.map(d => d.event_type)));',
-    'setOptions(eventSel, eventValues);',
-    'const currentRows = () => data.filter(d => d.event_type === eventSel.value);',
-    'const refreshGenes = () => {',
-    'const genes = sortText(uniq(currentRows().map(d => d.gene)));',
-    'setOptions(geneSel, genes);',
-    '};',
-    'const refreshPreview = () => {',
-    'const row = currentRows().find(d => d.gene === geneSel.value);',
+    'const base = classFilter ? all.filter(d => d.site_class === classFilter) : all;',
+    'const applySelection = () => (selFilter && selFilter.value) ? base.filter(d => d.selection === selFilter.value) : base;',
+    'let data = [];',
+    'const currentEvent = () => data.filter(d => d.event_type === eventSel.value);',
+    'const currentGene = () => currentEvent().filter(d => d.gene === geneSel.value);',
+    'const refreshEvents = () => {',
+    'const rows = currentGene();',
+    'setOptions(evkeySel, rows.map(d => ({value:d.event_key, label:d.event_label})));',
+    'const row = rows.find(d => d.event_key === evkeySel.value) || rows[0];',
     'renderPreview(row);',
     '};',
-    'eventSel.addEventListener("change", () => { refreshGenes(); refreshPreview(); });',
-    'geneSel.addEventListener("change", refreshPreview);',
-    'refreshGenes(); refreshPreview();',
+    'const refreshGenes = () => {',
+    'setOptions(geneSel, sortText(uniq(currentEvent().map(d => d.gene))).map(v => ({value:v,label:v})));',
+    'refreshEvents();',
+    '};',
+    'const refresh = () => {',
+    'data = applySelection();',
+    'if (data.length === 0) {',
+    'setOptions(eventSel, []); setOptions(geneSel, []); setOptions(evkeySel, []);',
+    'holder.innerHTML = "<p style=\\"padding:10px;\\">No sashimi plots available for this selection.</p>";',
+    'return;',
+    '}',
+    'setOptions(eventSel, sortText(uniq(data.map(d => d.event_type))).map(v => ({value:v,label:v})));',
+    'refreshGenes();',
+    '};',
+    'if (selFilter) selFilter.addEventListener("change", refresh);',
+    'eventSel.addEventListener("change", refreshGenes);',
+    'geneSel.addEventListener("change", refreshEvents);',
+    'evkeySel.addEventListener("change", () => {',
+    'const row = currentGene().find(d => d.event_key === evkeySel.value);',
+    'renderPreview(row);',
+    '});',
+    'refresh();',
     '};',
     '})();</script>'
   ))
@@ -1330,21 +1459,116 @@ if ("gene_name" %in% colnames(isar_switches)) {
 }
 ```
 
-```{r isar_consequences_plot, eval=!is.null(params$isar_dir) && nrow(isar_consequences) > 0, fig.height=6}
-if ("feature" %in% colnames(isar_consequences) && "count" %in% colnames(isar_consequences)) {
-  isar_consequences_plot <- isar_consequences %>%
-    ggplot(aes(x = reorder(feature, count), y = count)) +
+```{r isar_consequences_plot, eval=!is.null(params$isar_dir), fig.height=6}
+# Native IsoformSwitchAnalyzeR summary schema: Comparison, featureCompared,
+# switchConsequence, nrGenesWithConsequences, nrIsoWithConsequences. A single
+# switch can carry several consequences, so the bars are per consequence type,
+# faceted by the feature compared.
+isar_consequence_detail_path <- file.path(params$isar_dir, "switch_consequence_detail.csv")
+isar_consequence_detail <- read_csv_safe(isar_consequence_detail_path)
+
+has_consequences <- nrow(isar_consequences) > 0 &&
+  all(c("switchConsequence", "nrGenesWithConsequences", "featureCompared") %in%
+        colnames(isar_consequences))
+
+if (has_consequences) {
+  isar_consequences_plot <- ggplot(
+    isar_consequences,
+    aes(x = reorder(switchConsequence, nrGenesWithConsequences),
+        y = nrGenesWithConsequences)
+  ) +
     geom_col(fill = "steelblue") +
+    facet_wrap(~ featureCompared, scales = "free") +
     coord_flip() +
     theme_bw() +
     labs(
       title = "Functional Consequences of Isoform Switches",
-      x     = "Consequence Type",
-      y     = "Count"
+      x     = "Consequence of the switch",
+      y     = "Number of genes"
     )
   print(isar_consequences_plot)
   save_plot_pdf(isar_consequences_plot, "isar/isar_consequence_barplot.pdf",
                 width = 10, height = 6)
+
+  if (nrow(isar_consequence_detail) > 0) {
+    detail_cols <- intersect(
+      c("gene_name", "gene_id", "isoformUpregulated", "isoformDownregulated",
+        "featureCompared", "switchConsequence", "condition_1", "condition_2"),
+      colnames(isar_consequence_detail)
+    )
+    if (length(detail_cols) > 0) {
+      print(truncate_geneid_datatable(
+        isar_consequence_detail[, detail_cols, drop = FALSE],
+        "Predicted functional consequences per switch"))
+    }
+  }
+} else {
+  cat("No isoform switch passed the consequence analysis for this contrast, ",
+      "or the functional annotations were unavailable.\n", sep = "")
+}
+```
+
+```{r isar_consequence_detail_note, eval=!is.null(params$isar_dir), results='asis'}
+# Surface why the per-switch table is missing instead of leaving a silent gap.
+if (has_consequences && nrow(isar_consequence_detail) == 0) {
+  reason <- if (!file.exists(isar_consequence_detail_path)) {
+    "switch_consequence_detail.csv not found in the ISAR results"
+  } else if (file.size(isar_consequence_detail_path) < 3) {
+    "switch_consequence_detail.csv is empty"
+  } else {
+    "switch_consequence_detail.csv could not be parsed"
+  }
+  cat(sprintf("<p><strong>Per-switch consequence table not shown:</strong> %s.</p>\n",
+              reason))
+}
+```
+
+```{r isar_switchplot_gallery, eval=!is.null(params$isar_dir), results='asis'}
+# Per-gene switch plots (PDF at source, PNG in the gallery). Every PDF is copied
+# under plots/isar/switchplots/; the first few are embedded as PNG so the report
+# stays self-contained without bloating the HTML on large runs.
+isar_switchplot_pdfs <- list.files(file.path(params$isar_dir, "switchplots"),
+                                   pattern = "\\.pdf$", recursive = TRUE,
+                                   full.names = TRUE)
+if (length(isar_switchplot_pdfs) > 0) {
+  isar_sp_rel <- file.path(
+    "isar", "switchplots", basename(dirname(isar_switchplot_pdfs)),
+    basename(isar_switchplot_pdfs))
+  for (i in seq_along(isar_switchplot_pdfs)) {
+    dest <- plots_path(isar_sp_rel[i])
+    if (!is.null(dest)) {
+      dir.create(dirname(dest), recursive = TRUE, showWarnings = FALSE)
+      tryCatch(file.copy(isar_switchplot_pdfs[i], dest, overwrite = TRUE),
+               error = function(e) NULL)
+    }
+  }
+
+  embed_n <- min(length(isar_switchplot_pdfs), 10L)
+  cat(sprintf('<details><summary>Isoform switch plots (%d genes; showing %d)</summary>\n\n',
+              length(isar_switchplot_pdfs), embed_n))
+  has_pdftoppm_sp <- nzchar(Sys.which("pdftoppm"))
+  for (i in seq_len(embed_n)) {
+    pdf_path <- isar_switchplot_pdfs[i]
+    gene_label <- basename(pdf_path)
+    cat(sprintf('<p style="font-weight:600;margin:10px 0 4px 0;">%s</p>\n', gene_label))
+    if (has_pdftoppm_sp) {
+      tmpdir <- tempfile("isar_sp_png_")
+      dir.create(tmpdir, showWarnings = FALSE)
+      out_stem <- file.path(tmpdir, "plot")
+      status <- system2("pdftoppm",
+                        c("-png", "-r", "100", shQuote(pdf_path), shQuote(out_stem)),
+                        stdout = FALSE, stderr = FALSE)
+      pngs <- list.files(tmpdir, pattern = "\\.png$", full.names = TRUE)
+      if (status == 0 && length(pngs) > 0) {
+        raw_png <- readBin(pngs[1], what = "raw", n = file.info(pngs[1])$size)
+        cat(sprintf('<img src="data:image/png;base64,%s" style="max-width:100%%;display:block;margin:0 auto 12px auto;">\n',
+                    jsonlite::base64_enc(raw_png)))
+        next
+      }
+    }
+    cat(sprintf('<p>PDF: <code>plots/%s</code></p>\n', isar_sp_rel[i]))
+  }
+  cat('\n</details>\n\n')
 }
 ```
 
@@ -1401,6 +1625,14 @@ if (length(cols_to_show) > 0) {
 
 # LeafCutter Results
 
+LeafCutter tests *relative intron usage* within clusters of competing splice
+junctions, not annotated events.
+
+- **cluster** — a group of introns that compete for the same exons (`chr:clu_N_strand`); the unit that is statistically tested.
+- **loglr** — log-likelihood ratio statistic of the cluster test (higher = stronger signal).
+- **df** — degrees of freedom of the test (number of introns in the cluster minus one).
+- **deltapsi** — change in the usage of a single intron between the two groups (`group2 - group1`), on the 0–1 PSI scale.
+
 ```{r leafcutter_load, eval=!is.null(params$leafcutter_dir)}
 # Standard leafcutter_ds.R output: *_cluster_significance.txt and *_effect_sizes.txt
 sig_file <- list.files(params$leafcutter_dir,
@@ -1418,10 +1650,6 @@ if (!is.na(sig_file) && file.exists(sig_file)) {
     read.delim(sig_file, stringsAsFactors = FALSE),
     error = function(e) data.frame()
   )
-  if (nrow(leafcutter_clusters) > 0 && "p.adjust" %in% colnames(leafcutter_clusters)) {
-    leafcutter_clusters <- leafcutter_clusters %>%
-      mutate(Significant = p.adjust <= params$fdr_cutoff & status == "Success")
-  }
 }
 
 # Sanity check: leafcutter_ds.R writes status = "Success"; flag silently on any
@@ -1438,6 +1666,71 @@ if (!is.na(eff_file) && file.exists(eff_file)) {
     error = function(e) data.frame()
   )
 }
+
+# Cluster-level effect size = max |deltapsi| over the cluster's introns. LeafCutter
+# tests the cluster but reports the effect per intron, so the report applies the
+# same two-level rule as the deliverables master: the cluster must pass FDR AND
+# contain at least one intron clearing |deltapsi| >= dpsi_cutoff. This keeps the
+# summary count, the ORA gene set and the UpSet panel consistent.
+leafcluster_id <- function(introns) sub("^([^:]+):[0-9]+:[0-9]+:", "\\1:", introns)
+
+# LeafCutter's `genes` column is a comma-separated mix of HGNC symbols and
+# Ensembl gene ids. ORA and the UpSet need symbols, so ENSG tokens are mapped
+# through a symbol<->ENSG dictionary built from the tables loaded above; ENSG
+# tokens that cannot be mapped are dropped rather than counted as symbols.
+lc_ensg_to_sym <- local({
+  pair_list_lc <- list()
+  if (nrow(all_rmats) > 0 && all(c("geneSymbol", "GeneID") %in% colnames(all_rmats))) {
+    pair_list_lc[["rMATS"]] <- data.frame(sym = all_rmats$geneSymbol,
+                                          gid = all_rmats$GeneID, stringsAsFactors = FALSE)
+  }
+  if (nrow(majiq_results) > 0 && all(c("gene_name", "gene_id") %in% colnames(majiq_results))) {
+    pair_list_lc[["MAJIQ"]] <- data.frame(sym = majiq_results$gene_name,
+                                          gid = majiq_results$gene_id, stringsAsFactors = FALSE)
+  }
+  if (nrow(isar_switches) > 0 && all(c("gene_name", "gene_id") %in% colnames(isar_switches))) {
+    pair_list_lc[["ISAR"]] <- data.frame(sym = isar_switches$gene_name,
+                                         gid = isar_switches$gene_id, stringsAsFactors = FALSE)
+  }
+  if (length(pair_list_lc) == 0) return(list())
+  p <- do.call(rbind, pair_list_lc)
+  p$sym <- toupper(trimws(as.character(p$sym)))
+  p$gid <- trimws(as.character(p$gid))
+  p <- p[grepl("^ENS", p$gid) & p$sym != "" & p$sym != "NA", , drop = FALSE]
+  p <- p[!duplicated(p$gid), , drop = FALSE]
+  as.list(stats::setNames(p$sym, p$gid))
+})
+
+lc_gene_symbols <- function(tokens) {
+  tokens <- trimws(as.character(tokens))
+  tokens <- tokens[!is.na(tokens) & tokens != ""]
+  is_ensg <- grepl("^ENS", tokens)
+  if (any(is_ensg)) {
+    tokens[is_ensg] <- vapply(tokens[is_ensg], function(z) {
+      mapped <- lc_ensg_to_sym[[toupper(z)]]
+      if (is.null(mapped)) NA_character_ else mapped
+    }, character(1))
+  }
+  unique(tokens[!is.na(tokens) & nzchar(tokens)])
+}
+if (nrow(leafcutter_clusters) > 0 && "cluster" %in% colnames(leafcutter_clusters) &&
+    nrow(leafcutter_effects) > 0 && all(c("intron", "deltapsi") %in% colnames(leafcutter_effects))) {
+  absd <- abs(suppressWarnings(as.numeric(leafcutter_effects$deltapsi)))
+  cid  <- leafcluster_id(as.character(leafcutter_effects$intron))
+  keep <- is.finite(absd) & !is.na(cid)
+  if (any(keep)) {
+    maxd <- tapply(absd[keep], cid[keep], max)
+    leafcutter_clusters$max_abs_deltapsi <- as.numeric(maxd[leafcutter_clusters$cluster])
+    leafcutter_clusters$max_abs_deltapsi[is.na(leafcutter_clusters$max_abs_deltapsi)] <- 0
+  }
+}
+
+if (nrow(leafcutter_clusters) > 0 && "p.adjust" %in% colnames(leafcutter_clusters)) {
+  has_effect_cut <- "max_abs_deltapsi" %in% colnames(leafcutter_clusters)
+  leafcutter_clusters <- leafcutter_clusters %>%
+    mutate(Significant = status == "Success" & p.adjust <= params$fdr_cutoff &
+             (!has_effect_cut | max_abs_deltapsi >= params$dpsi_cutoff))
+}
 ```
 
 ```{r leafcutter_summary, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
@@ -1449,18 +1742,18 @@ lc_summary_rows <- data.frame(
   Metric = c(
     "Total clusters tested",
     "Clusters passing noise filter (status = Success)",
-    sprintf("Significant clusters (FDR <= %.2f)", params$fdr_cutoff)
+    sprintf("Significant clusters (FDR <= %.2f and max|delta PSI| >= %.2f)",
+            params$fdr_cutoff, params$dpsi_cutoff)
   ),
   Value = c(n_clusters, n_ok, n_sig),
   stringsAsFactors = FALSE
 )
 
 if ("genes" %in% colnames(leafcutter_clusters)) {
-  sig_genes_lc <- unique(unlist(strsplit(
+  sig_genes_lc <- lc_gene_symbols(unlist(strsplit(
     leafcutter_clusters$genes[leafcutter_clusters$Significant & !is.na(leafcutter_clusters$genes)],
     ","
   )))
-  sig_genes_lc <- trimws(sig_genes_lc[sig_genes_lc != "" & !is.na(sig_genes_lc)])
   lc_summary_rows <- rbind(
     lc_summary_rows,
     data.frame(Metric = "Genes in significant clusters", Value = length(sig_genes_lc),
@@ -1496,16 +1789,153 @@ save_plot_pdf(leafcutter_dpsi_dist_plot, "leafcutter/leafcutter_dpsi_distributio
               width = 10, height = 5)
 ```
 
-```{r leafcutter_top_table, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
+```{r leafcutter_volcano, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_effects) > 0 && all(c("intron", "deltapsi") %in% colnames(leafcutter_effects)), fig.height=6}
+# Intron-level volcano: delta PSI (effect) vs -log10(cluster p), coloured by the
+# significance rule. LeafCutter tests the cluster, so p comes from the cluster;
+# the effect is per intron.
+lc_volc <- data.frame(
+  intron   = as.character(leafcutter_effects$intron),
+  deltapsi = suppressWarnings(as.numeric(leafcutter_effects$deltapsi)),
+  stringsAsFactors = FALSE)
+lc_volc$.cluster <- leafcluster_id(lc_volc$intron)
+if (nrow(leafcutter_clusters) > 0 && "cluster" %in% colnames(leafcutter_clusters)) {
+  cl_cols <- intersect(c("cluster", "p", "p.adjust", "Significant"), colnames(leafcutter_clusters))
+  lc_volc <- merge(lc_volc, leafcutter_clusters[, cl_cols, drop = FALSE],
+                   by.x = ".cluster", by.y = "cluster", all.x = TRUE)
+}
+if ("p" %in% colnames(lc_volc)) {
+  lc_volc$.p <- suppressWarnings(as.numeric(lc_volc$p))
+  lc_volc <- lc_volc[is.finite(lc_volc$deltapsi) & is.finite(lc_volc$.p), , drop = FALSE]
+}
+
+if (nrow(lc_volc) > 0 && ".p" %in% colnames(lc_volc)) {
+  lc_volc$.neglogp <- pmin(-log10(pmax(lc_volc$.p, .Machine$double.xmin)), 300)
+  lc_volc$.sig <- if ("Significant" %in% colnames(lc_volc)) {
+    !is.na(lc_volc$Significant) & lc_volc$Significant &
+      abs(lc_volc$deltapsi) >= params$dpsi_cutoff
+  } else {
+    rep(FALSE, nrow(lc_volc))
+  }
+  leafcutter_volcano_plot <- ggplot(lc_volc, aes(x = deltapsi, y = .neglogp,
+                                                 colour = .sig)) +
+    geom_point(alpha = 0.5, size = 1) +
+    scale_colour_manual(values = c(`FALSE` = "grey70", `TRUE` = "#c0392b"),
+                        labels = c("not significant", "significant"),
+                        name = NULL) +
+    geom_vline(xintercept = c(-params$dpsi_cutoff, params$dpsi_cutoff),
+               linetype = "dashed", colour = "grey40") +
+    theme_bw() +
+    labs(title = "LeafCutter intron-level volcano",
+         x = "delta PSI (group2 - group1)", y = "-log10(cluster p)")
+  print(leafcutter_volcano_plot)
+  save_plot_pdf(leafcutter_volcano_plot, "leafcutter/leafcutter_volcano.pdf",
+                width = 9, height = 6)
+}
+```
+
+```{r leafcutter_psi_heatmap, eval=!is.null(params$leafcutter_dir), fig.height=8}
+# Per-sample PSI heatmap for the top significant clusters. PSI(intron, sample) =
+# count(intron, sample) / sum of counts over the introns of its cluster. The
+# counts file is carried into the comparison dir by LEAFCUTTER_DS (audit only).
+# Failures are surfaced by the note chunk below instead of being swallowed.
+lc_heatmap_plot <- NULL
+lc_heatmap_error <- NULL
+lc_heatmap_plot <- tryCatch({
+  if (nrow(leafcutter_clusters) == 0) stop("no LeafCutter clusters loaded")
+  if (!"max_abs_deltapsi" %in% colnames(leafcutter_clusters)) {
+    stop("cluster effect sizes unavailable")
+  }
+  counts_files <- list.files(params$leafcutter_dir,
+                             pattern = "_perind_numers\\.counts\\.gz$",
+                             full.names = TRUE)
+  if (length(counts_files) == 0) {
+    stop("per-sample intron counts (_perind_numers.counts.gz) not found")
+  }
+
+  # leafcutter perind counts are whitespace-separated; the header names the sample
+  # columns only (no name for the leading intron column), so parse it separately.
+  con <- gzfile(counts_files[1], "rt")
+  hdr <- strsplit(trimws(readLines(con, n = 1L, warn = FALSE)), "[[:space:]]+")[[1]]
+  cnt <- read.table(con, header = FALSE, sep = "", stringsAsFactors = FALSE,
+                    fill = TRUE, comment.char = "", quote = "")
+  close(con)
+  if (nrow(cnt) == 0) stop("counts file has no data rows")
+  if (ncol(cnt) == length(hdr) + 1L) {
+    colnames(cnt) <- c("intron", hdr)
+  } else if (ncol(cnt) == length(hdr)) {
+    colnames(cnt) <- hdr
+  } else {
+    stop(sprintf("counts columns (%d) do not match header (%d)",
+                 ncol(cnt), length(hdr)))
+  }
+
+  intron_ids <- as.character(cnt[[1]])
+  mat <- as.matrix(cnt[, -1, drop = FALSE])
+  mat[is.na(mat)] <- 0
+  rownames(mat) <- intron_ids
+  cid <- leafcluster_id(intron_ids)
+  cluster_sums <- rowsum(mat, group = cid, reorder = FALSE)
+  denom <- cluster_sums[match(cid, rownames(cluster_sums)), , drop = FALSE]
+  psi <- mat / pmax(denom, 1)
+
+  top_clusters <- leafcutter_clusters %>%
+    filter(Significant) %>%
+    arrange(desc(max_abs_deltapsi)) %>%
+    head(20)
+  keep <- cid %in% top_clusters$cluster
+  stopifnot(any(keep))
+  psi_sub <- psi[keep, , drop = FALSE]
+  # Cap introns per cluster so the tile grid stays readable.
+  keep_ids <- rownames(psi_sub)
+  keep_cid <- cid[keep]
+  per_cluster_idx <- ave(seq_along(keep_ids), keep_cid, FUN = seq_along)
+  psi_sub <- psi_sub[per_cluster_idx <= 10, , drop = FALSE]
+  keep_cid <- keep_cid[per_cluster_idx <= 10]
+
+  long <- as.data.frame(as.table(psi_sub), stringsAsFactors = FALSE)
+  colnames(long) <- c("intron", "sample", "psi")
+  long$cluster <- keep_cid[match(long$intron, keep_ids)]
+
+  ggplot(long, aes(x = sample, y = intron, fill = psi)) +
+    geom_tile(colour = "grey85") +
+    facet_grid(cluster ~ ., scales = "free_y", space = "free_y") +
+    scale_fill_gradient(low = "white", high = "#2166ac", name = "PSI") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          axis.text.y = element_text(size = 6)) +
+    labs(title = "PSI per sample — top significant LeafCutter clusters",
+         x = NULL, y = NULL)
+}, error = function(e) {
+  lc_heatmap_error <<- conditionMessage(e)
+  NULL
+})
+if (!is.null(lc_heatmap_plot)) {
+  print(lc_heatmap_plot)
+  save_plot_pdf(lc_heatmap_plot, "leafcutter/leafcutter_psi_heatmap.pdf",
+                width = 10, height = 9)
+}
+```
+
+```{r leafcutter_psi_heatmap_note, eval=!is.null(params$leafcutter_dir), results='asis'}
+if (is.null(lc_heatmap_plot) && !is.null(lc_heatmap_error)) {
+  cat(sprintf("<p><strong>LeafCutter PSI heatmap not rendered:</strong> %s.</p>\n",
+              lc_heatmap_error))
+}
+```
+
+### LeafCutter tables {.tabset .tabset-pills}
+
+#### By cluster
+
+```{r leafcutter_cluster_table, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_clusters) > 0}
 cols_to_show <- intersect(
-  c("cluster", "genes", "loglr", "df", "p", "p.adjust"),
-  colnames(leafcutter_clusters)
-)
+  c("cluster", "genes", "loglr", "df", "p", "p.adjust", "max_abs_deltapsi"),
+  colnames(leafcutter_clusters))
 
 if (length(cols_to_show) > 0) {
   top_clusters <- leafcutter_clusters %>%
     filter(Significant) %>%
-    arrange(p.adjust) %>%
+    arrange(desc(max_abs_deltapsi)) %>%
     select(all_of(cols_to_show))
 
   lc_capped <- nrow(top_clusters) > TABLE_ROW_CAP
@@ -1513,20 +1943,62 @@ if (length(cols_to_show) > 0) {
 
   if (nrow(top_clusters) > 0) {
     cap_note <- if (lc_capped) {
-      sprintf("; showing first %d rows \u2014 full set in the .significant.tsv deliverable",
+      sprintf("; showing first %d rows \u2014 full set in the .leafcutter.significant.tsv deliverable",
               TABLE_ROW_CAP)
     } else ""
-    datatable(
+    lc_dt <- datatable(
       top_clusters,
-      caption  = paste0("All significant LeafCutter clusters, sorted by FDR. ",
-                        n_sig, " pass FDR < ", params$fdr_cutoff, ".", cap_note),
+      caption  = paste0("Significant LeafCutter clusters, sorted by max|delta PSI|. ",
+                        n_sig, " pass FDR < ", params$fdr_cutoff, " and max|delta PSI| >= ",
+                        params$dpsi_cutoff, ".", cap_note),
       options  = list(pageLength = 15, scrollX = TRUE, deferRender = TRUE),
-      rownames = FALSE
-    ) %>%
-      formatRound(columns = intersect(c("loglr", "p", "p.adjust"), cols_to_show), digits = 4)
+      rownames = FALSE)
+    sig_cols <- intersect(c("p", "p.adjust"), cols_to_show)
+    if (length(sig_cols) > 0) lc_dt <- formatSignif(lc_dt, columns = sig_cols, digits = 3)
+    num_cols <- intersect(c("loglr", "df", "max_abs_deltapsi"), cols_to_show)
+    if (length(num_cols) > 0) lc_dt <- formatRound(lc_dt, columns = num_cols, digits = 3)
+    lc_dt
   } else {
     cat("No significant clusters.\n")
   }
+}
+```
+
+#### By intron
+
+```{r leafcutter_intron_table, eval=!is.null(params$leafcutter_dir) && nrow(leafcutter_effects) > 0}
+if (all(c("intron", "deltapsi") %in% colnames(leafcutter_effects))) {
+  lc_introns <- data.frame(
+    intron   = as.character(leafcutter_effects$intron),
+    deltapsi = suppressWarnings(as.numeric(leafcutter_effects$deltapsi)),
+    stringsAsFactors = FALSE)
+  # PSI per group: columns are named after the real group names in effect_sizes.
+  g1_col <- if (!is.null(params$group1_name) && params$group1_name %in% colnames(leafcutter_effects)) params$group1_name else colnames(leafcutter_effects)[3]
+  g2_col <- if (!is.null(params$group2_name) && params$group2_name %in% colnames(leafcutter_effects)) params$group2_name else colnames(leafcutter_effects)[4]
+  lc_introns$psi_group1 <- suppressWarnings(as.numeric(leafcutter_effects[[g1_col]]))
+  lc_introns$psi_group2 <- suppressWarnings(as.numeric(leafcutter_effects[[g2_col]]))
+  lc_introns$.cluster <- leafcluster_id(lc_introns$intron)
+  if (nrow(leafcutter_clusters) > 0 && "genes" %in% colnames(leafcutter_clusters)) {
+    gene_map <- stats::setNames(leafcutter_clusters$genes, leafcutter_clusters$cluster)
+    lc_introns$gene_symbol <- gene_map[lc_introns$.cluster]
+  } else {
+    lc_introns$gene_symbol <- NA_character_
+  }
+  lc_introns$.absdpsi <- abs(lc_introns$deltapsi)
+  lc_introns <- lc_introns[order(-lc_introns$.absdpsi), , drop = FALSE]
+  lc_introns <- lc_introns[, c("intron", "gene_symbol", "deltapsi",
+                               "psi_group1", "psi_group2"), drop = FALSE]
+
+  lc_capped <- nrow(lc_introns) > TABLE_ROW_CAP
+  if (lc_capped) lc_introns <- head(lc_introns, TABLE_ROW_CAP)
+  cap_note <- if (lc_capped) sprintf("; showing first %d rows", TABLE_ROW_CAP) else ""
+  lc_dt <- datatable(
+    lc_introns,
+    caption  = paste0("LeafCutter introns sorted by |delta PSI| (all introns).", cap_note),
+    options  = list(pageLength = 15, scrollX = TRUE, deferRender = TRUE),
+    rownames = FALSE)
+  lc_dt <- formatRound(lc_dt, columns = c("deltapsi", "psi_group1", "psi_group2"), digits = 3)
+  lc_dt
 }
 ```
 
@@ -1572,14 +2044,30 @@ pairs <- pairs[!is.na(pairs$sym) & pairs$sym != "" & pairs$sym != "NA" &
                !is.na(pairs$gid) &
                pairs$gid != "" & grepl("^ENS", pairs$gid), , drop = FALSE]
 
+# --- symbol -> ENSG dictionary (first mapping wins), mirroring
+#     export_tool_masters.export_cross_tool so the UpSet/set-size counts equal the
+#     cross_tool.master per-tool counts (no uniqueness filter there either). ---
 sym_to_ensg <- list()
 ensg_to_sym <- list()
 if (nrow(pairs) > 0) {
-  n_uniq <- tapply(pairs$gid, pairs$sym, function(x) length(unique(x)))
-  pairs <- pairs[pairs$sym %in% names(n_uniq)[n_uniq == 1], , drop = FALSE]
-  pairs <- pairs[!duplicated(pairs$sym), , drop = FALSE]
-  sym_to_ensg <- as.list(setNames(pairs$gid, pairs$sym))
-  ensg_to_sym <- as.list(setNames(pairs$sym, pairs$gid))
+  pairs_first <- pairs[!duplicated(pairs$sym), , drop = FALSE]
+  sym_to_ensg <- as.list(setNames(pairs_first$gid, pairs_first$sym))
+  pairs_gid   <- pairs[!duplicated(pairs$gid), , drop = FALSE]
+  ensg_to_sym <- as.list(setNames(pairs_gid$sym, pairs_gid$gid))
+}
+
+is_ensg <- function(x) grepl("^ENSG[0-9]", trimws(as.character(x)))
+
+# Gene key = the row's own Ensembl id when it has one, else the symbol resolved
+# through the dictionary (both uppercased) — the exact key export_cross_tool uses.
+cross_key <- function(sym, gid) {
+  sym <- toupper(trimws(as.character(sym)))
+  gid <- trimws(as.character(gid))
+  vapply(seq_along(gid), function(i) {
+    if (is_ensg(gid[i])) return(gid[i])
+    s <- sym[i]
+    if (!is.na(s) && nzchar(s) && !is.null(sym_to_ensg[[s]])) sym_to_ensg[[s]] else s
+  }, character(1))
 }
 
 canonical_key <- function(x) {
@@ -1597,16 +2085,16 @@ key_to_display <- function(k) {
 # rMATS
 rmats_sig_genes <- character(0)
 rmats_sig_keys <- character(0)
-if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
-  rmats_sig_genes <- unique(all_rmats$geneSymbol[
-    all_rmats$Significant & !is.na(all_rmats$geneSymbol) &
-      nzchar(trimws(all_rmats$geneSymbol)) &
-      toupper(trimws(all_rmats$geneSymbol)) != "NA"
-  ])
-  if (length(rmats_sig_genes) > 0) {
-    rmats_sig_keys <- canonical_key(rmats_sig_genes)
+if (nrow(all_rmats) > 0 && all(c("geneSymbol", "GeneID") %in% colnames(all_rmats))) {
+  rmats_mask <- all_rmats$Significant & !is.na(all_rmats$geneSymbol) &
+    nzchar(trimws(all_rmats$geneSymbol)) &
+    toupper(trimws(all_rmats$geneSymbol)) != "NA"
+  if (any(rmats_mask)) {
+    rmats_sig_genes <- unique(trimws(all_rmats$geneSymbol[rmats_mask]))
+    rmats_sig_keys  <- unique(cross_key(all_rmats$geneSymbol[rmats_mask],
+                                        all_rmats$GeneID[rmats_mask]))
     gene_sets[["rMATS"]] <- rmats_sig_keys
-    active_tool_sig_symbols[["rMATS"]] <- toupper(trimws(rmats_sig_genes))
+    active_tool_sig_symbols[["rMATS"]] <- rmats_sig_genes
   }
 }
 if (!is.null(params$rmats_dir)) active_tool_sig_sets[["rMATS"]] <- rmats_sig_keys
@@ -1614,18 +2102,23 @@ if (!is.null(params$rmats_dir)) active_tool_sig_sets[["rMATS"]] <- rmats_sig_key
 # MAJIQ
 majiq_sig_genes <- character(0)
 majiq_sig_keys <- character(0)
-if (nrow(majiq_results) > 0 && "gene_name" %in% colnames(majiq_results)) {
+if (nrow(majiq_results) > 0 && all(c("gene_name", "gene_id") %in% colnames(majiq_results))) {
   majiq_mask <- majiq_results$Significant & !is.na(majiq_results$gene_name) &
     nzchar(trimws(majiq_results$gene_name)) &
     toupper(trimws(majiq_results$gene_name)) != "NA"
-  if ("InformativeGene" %in% colnames(majiq_results)) {
-    majiq_mask <- majiq_mask & majiq_results$InformativeGene
-  }
-  majiq_sig_genes <- unique(majiq_results$gene_name[majiq_mask])
-  if (length(majiq_sig_genes) > 0) {
-    majiq_sig_keys <- canonical_key(majiq_sig_genes)
+  if (any(majiq_mask)) {
+    # Overlap key keeps every significant gene, including ID-echo labels, to match
+    # cross_tool.master. The ORA symbol set drops ID-echo labels (InformativeGene)
+    # because enrichGO needs real HGNC symbols.
+    majiq_sig_keys <- unique(cross_key(majiq_results$gene_name[majiq_mask],
+                                       majiq_results$gene_id[majiq_mask]))
     gene_sets[["MAJIQ"]] <- majiq_sig_keys
-    active_tool_sig_symbols[["MAJIQ"]] <- toupper(trimws(majiq_sig_genes))
+    majiq_sym_mask <- majiq_mask
+    if ("InformativeGene" %in% colnames(majiq_results)) {
+      majiq_sym_mask <- majiq_sym_mask & majiq_results$InformativeGene
+    }
+    majiq_sig_genes <- unique(trimws(majiq_results$gene_name[majiq_sym_mask]))
+    active_tool_sig_symbols[["MAJIQ"]] <- majiq_sig_genes
   }
 }
 if (!is.null(params$majiq_dir)) active_tool_sig_sets[["MAJIQ"]] <- majiq_sig_keys
@@ -1633,17 +2126,17 @@ if (!is.null(params$majiq_dir)) active_tool_sig_sets[["MAJIQ"]] <- majiq_sig_key
 # ISAR
 isar_sig_genes <- character(0)
 isar_sig_keys <- character(0)
-if (nrow(isar_switches) > 0 && "gene_name" %in% colnames(isar_switches) &&
+if (nrow(isar_switches) > 0 && all(c("gene_name", "gene_id") %in% colnames(isar_switches)) &&
     "significant" %in% colnames(isar_switches)) {
-  isar_sig_genes <- unique(isar_switches$gene_name[
-    isar_switches$significant & !is.na(isar_switches$gene_name) &
-      nzchar(trimws(isar_switches$gene_name)) &
-      toupper(trimws(isar_switches$gene_name)) != "NA"
-  ])
-  if (length(isar_sig_genes) > 0) {
-    isar_sig_keys <- canonical_key(isar_sig_genes)
+  isar_mask <- isar_switches$significant & !is.na(isar_switches$gene_name) &
+    nzchar(trimws(isar_switches$gene_name)) &
+    toupper(trimws(isar_switches$gene_name)) != "NA"
+  if (any(isar_mask)) {
+    isar_sig_genes <- unique(trimws(isar_switches$gene_name[isar_mask]))
+    isar_sig_keys  <- unique(cross_key(isar_switches$gene_name[isar_mask],
+                                       isar_switches$gene_id[isar_mask]))
     gene_sets[["ISAR"]] <- isar_sig_keys
-    active_tool_sig_symbols[["ISAR"]] <- toupper(trimws(isar_sig_genes))
+    active_tool_sig_symbols[["ISAR"]] <- isar_sig_genes
   }
 }
 if (!is.null(params$isar_dir)) active_tool_sig_sets[["ISAR"]] <- isar_sig_keys
@@ -1670,15 +2163,40 @@ if (nrow(leafcutter_clusters) > 0 &&
   lc_genes_raw <- leafcutter_clusters$genes[
     leafcutter_clusters$cluster %in% sig_clusters & !is.na(leafcutter_clusters$genes)
   ]
-  leafcutter_sig_genes <- unique(trimws(unlist(strsplit(lc_genes_raw, ","))))
-  leafcutter_sig_genes <- leafcutter_sig_genes[leafcutter_sig_genes != ""]
-  if (length(leafcutter_sig_genes) > 0) {
-    leafcutter_sig_keys <- canonical_key(leafcutter_sig_genes)
+  # Overlap key: every token of a significant cluster, ENSG tokens included,
+  # keyed exactly like export_cross_tool. The ORA symbol set keeps only resolvable
+  # HGNC symbols (ensembl-only tokens dropped) because enrichGO needs symbols.
+  lc_tokens <- trimws(unlist(strsplit(lc_genes_raw, ",")))
+  lc_tokens <- lc_tokens[!is.na(lc_tokens) & lc_tokens != "" & toupper(lc_tokens) != "NA"]
+  leafcutter_sig_keys <- unique(cross_key(lc_tokens, rep("", length(lc_tokens))))
+  leafcutter_sig_genes <- lc_gene_symbols(lc_tokens)
+  if (length(leafcutter_sig_keys) > 0) {
     gene_sets[["LeafCutter"]] <- leafcutter_sig_keys
-    active_tool_sig_symbols[["LeafCutter"]] <- toupper(trimws(leafcutter_sig_genes))
+    active_tool_sig_symbols[["LeafCutter"]] <- leafcutter_sig_genes
   }
 }
 if (!is.null(params$leafcutter_dir)) active_tool_sig_sets[["LeafCutter"]] <- leafcutter_sig_keys
+
+# Background universe per tool = every gene the tool tested in this contrast
+# (not only the significant ones), used by the ORA. LeafCutter universes are
+# resolved to symbols (ENSG tokens mapped/dropped) for enrichGO keyType = SYMBOL.
+tool_universe <- list()
+if (nrow(all_rmats) > 0 && "geneSymbol" %in% colnames(all_rmats)) {
+  tool_universe[["rMATS"]] <- unique(trimws(as.character(all_rmats$geneSymbol)))
+}
+if (nrow(majiq_results) > 0 && "gene_name" %in% colnames(majiq_results)) {
+  tool_universe[["MAJIQ"]] <- unique(trimws(as.character(majiq_results$gene_name)))
+}
+if (nrow(isar_switches) > 0 && "gene_name" %in% colnames(isar_switches)) {
+  tool_universe[["ISAR"]] <- unique(trimws(as.character(isar_switches$gene_name)))
+}
+if (nrow(leafcutter_clusters) > 0 && "genes" %in% colnames(leafcutter_clusters)) {
+  tool_universe[["LeafCutter"]] <- lc_gene_symbols(
+    unlist(strsplit(leafcutter_clusters$genes, ",")))
+}
+tool_universe <- lapply(tool_universe, function(x) x[!is.na(x) & x != "" & x != "NA"])
+tool_universe <- tool_universe[names(tool_universe) %in% names(active_tool_sig_sets)]
+global_universe <- unique(unlist(tool_universe, use.names = FALSE))
 
 # Robust cross-tool core: intersect canonical keys; report display symbols
 shared_sig_keys <- if (length(active_tool_sig_sets) >= 2) {
@@ -1831,7 +2349,8 @@ if (length(active_tool_sig_sets) < 2) {
 } else if (length(shared_sig_genes) == 0) {
   cat("No genes available for shared-genes ORA.\n")
 } else {
-  shared_res <- run_ora_for_set(shared_sig_genes, "shared genes")
+  shared_res <- run_ora_for_set(shared_sig_genes, "shared genes",
+                                universe = global_universe)
   render_ora_result(shared_res, heading_level = 3,
                     plots_subdir = "cross_tool_overlap",
                     plots_stem = "shared_genes",
@@ -1864,7 +2383,8 @@ if (length(active_tool_sig_sets) == 0) {
     }
     tool_res <- run_ora_for_set(
       tool_genes,
-      paste0(tool_name, " significant genes")
+      paste0(tool_name, " significant genes"),
+      universe = tool_universe[[tool_name]]
     )
     render_ora_result(tool_res, heading_level = 3,
                       plots_subdir = ora_tool_dirs[[tool_name]],
@@ -1877,7 +2397,8 @@ if (length(active_tool_sig_sets) == 0) {
 
 ```{r enrichment_global, results='asis'}
 global_sig_genes <- unique(unlist(active_tool_sig_symbols, use.names = FALSE))
-global_res <- run_ora_for_set(global_sig_genes, "Global AS genes (union across active tools)")
+global_res <- run_ora_for_set(global_sig_genes, "Global AS genes (union across active tools)",
+                              universe = global_universe)
 render_ora_result(global_res, heading_level = 3,
                   plots_subdir = "cross_tool_overlap", plots_stem = "global")
 ```

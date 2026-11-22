@@ -27,6 +27,12 @@ process EXPORT_TOOL_MASTERS {
           path("${comparison_id}.${tool}.significant.tsv"),
           path("${comparison_id}.${tool}.summary.tsv"),
           emit: tables
+    // ISAR only: gene -> switch consequence table. Must be declared so publishDir
+    // copies it to deliverables/tables/ (undeclared files are not published).
+    // `optional` because the other tools never write it.
+    path("${comparison_id}.isar.consequences.tsv"),
+          emit: isar_consequences,
+          optional: true
     path "versions.yml", emit: versions
 
     script:

@@ -361,6 +361,50 @@ def export_isar(comparison_id, input_dir, out_dir, params):
          if len(q_values) > 3 else ''),
     ])
     print('[export_tool_masters] ISAR: %d rows (%d significant)' % (len(rows), len(significant)))
+    export_isar_consequences(comparison_id, input_dir, out_dir)
+    return 0
+
+
+ISAR_CONSEQUENCE_COLUMNS = [
+    'comparison_id', 'gene_id', 'gene_symbol', 'isoform_upregulated',
+    'isoform_downregulated', 'condition_1', 'condition_2',
+    'feature_compared', 'switch_consequence',
+]
+
+
+def export_isar_consequences(comparison_id, input_dir, out_dir):
+    """Gene -> consequence table from IsoformSwitchAnalyzeR's switchConsequence.
+
+    The R step writes switch_consequence_detail.csv (one row per switch x
+    featureCompared). This reshapes it into the standard header. Missing/empty
+    file yields a header-only table (a contrast with no switching genes is
+    legitimate, not an error).
+    """
+    detail_path = os.path.join(input_dir, 'switch_consequence_detail.csv')
+    rows = []
+    if os.path.isfile(detail_path):
+        with open(detail_path, 'r', encoding='utf-8', errors='replace', newline='') as handle:
+            for raw in csv.DictReader(handle):
+                gene_symbol = str(raw.get('gene_name') or '').strip()
+                gene_id = str(raw.get('gene_id') or '').strip()
+                if gene_symbol in ('NA', 'None'):
+                    gene_symbol = ''
+                if gene_id in ('NA', 'None'):
+                    gene_id = ''
+                rows.append({
+                    'comparison_id': comparison_id,
+                    'gene_id': gene_id,
+                    'gene_symbol': gene_symbol,
+                    'isoform_upregulated': raw.get('isoformUpregulated', ''),
+                    'isoform_downregulated': raw.get('isoformDownregulated', ''),
+                    'condition_1': raw.get('condition_1', ''),
+                    'condition_2': raw.get('condition_2', ''),
+                    'feature_compared': raw.get('featureCompared', ''),
+                    'switch_consequence': raw.get('switchConsequence', ''),
+                })
+    path = os.path.join(out_dir, '%s.isar.consequences.tsv' % comparison_id)
+    write_rows(path, ISAR_CONSEQUENCE_COLUMNS, rows)
+    print('[export_tool_masters] ISAR: %d consequence rows' % len(rows))
     return 0
 
 
@@ -467,8 +511,8 @@ def export_leafcutter(comparison_id, input_dir, out_dir, params):
             'effect_size_direction': 'group2_minus_group1',
             'effect_size': eff.get('deltapsi', ''),
             'effect_size_type': 'delta_psi',
-            'pvalue': cluster.get('p', ''),
-            'padj': cluster.get('p.adjust', ''),
+            'pvalue': fmt(cluster.get('p', '')),
+            'padj': fmt(cluster.get('p.adjust', '')),
             'padj_method': 'BH',
             'is_significant': 'true' if significant else 'false',
             'significance_rule': rule,

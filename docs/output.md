@@ -60,6 +60,7 @@ results/
 │   │       │   ├── <c>.rmats.{master,significant,summary}.tsv
 │   │       │   ├── <c>.majiq.{master,significant,summary}.tsv      (when run_majiq)
 │   │       │   ├── <c>.isar.{master,significant,summary}.tsv       (when run_isar)
+│   │       │   ├── <c>.isar.consequences.tsv                       (when run_isar)
 │   │       │   ├── <c>.leafcutter.{master,significant,summary}.tsv (when run_leafcutter)
 │   │       │   ├── <c>.pegasas.{master,significant,summary}.tsv    (when run_pegasas)
 │   │       │   ├── <c>.cross_tool.master.tsv                       (when build_cross_tool_master)
@@ -470,6 +471,17 @@ isoform_features <- extractSwitchSummary(aSwitchList)
 
 Per-switch PDF plots written by `switchPlotTopN()` (top switches with
 consequences), under `raw/isar/<comparison_id>/<comparison_id>/switchplots/`.
+They are also shipped under
+`deliverables/contrasts/<comparison_id>/plots/isar/switchplots/` and embedded (as
+a collapsible PNG gallery) in the report.
+
+#### `tables/<comparison_id>.isar.consequences.tsv`
+
+Gene → predicted consequence table (contract 2.6.0), one row per switch ×
+`featureCompared` (`Comparison`, `featureCompared`, `switchConsequence`,
+`nrGenesWithConsequences`, `nrIsoWithConsequences`). Sourced from
+`switchAnalyzeRlist$switchConsequence`; produced only when the switch-consequence
+analysis ran (empty, header-only, when a contrast has no switching genes).
 
 ---
 
@@ -506,6 +518,16 @@ LeafCutter quantifies intron usage ratios (not exon inclusion) and is especially
 | `deltapsi` | Change in intron usage (group2 − group1) |
 | `psi1` | Mean intron usage in group1 |
 | `psi2` | Mean intron usage in group2 |
+
+The report's LeafCutter section now also emits `plots/leafcutter/leafcutter_volcano.pdf`
+(intron-level `deltapsi` vs `-log10(cluster p)`) and
+`plots/leafcutter/leafcutter_psi_heatmap.pdf` (per-sample PSI of the top clusters).
+The per-sample counts file (`*_perind_numers.counts.gz`) is copied into the
+comparison dir by `LEAFCUTTER_DS` so the heatmap can be built; it is kept for
+audit only and is not a deliverable.
+
+Report significance uses the same two-level rule as the `.leafcutter.master.tsv`:
+a cluster passes FDR **and** has `max|ΔPSI| >= dpsi_cutoff`.
 
 ---
 

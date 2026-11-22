@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-11-20
+
+### Added
+- Targeted sashimi plots: `--sashimi_gene_must <file>` (one gene symbol per
+  line, `#`/blank ignored, case-insensitive) plots every significant event of the
+  requested genes in every contrast, via a separate `SASHIMI_TARGETED` process
+  (adding genes and re-running with `-resume` rebuilds only the targeted plots
+  and the report). Plots are named `A_<GENE>_<EVENT_TYPE>_<coords>.pdf` and the
+  sashimi browser gained a `Selection` (auto/targeted) filter and a per-gene
+  event selector (type · event · ΔΨ · FDR), deduplicating by `(event_type,
+  event_id)` with targeted taking precedence.
+- ISAR protein-level consequences (Tier A): `run_isar_full_annotation` now
+  defaults to `true` and requires `--pfam_hmm`; the run aborts at startup if the
+  Pfam DB is missing. Pfam/IUPred failures now fail loudly instead of leaving an
+  empty consequence summary. New deliverable
+  `<comparison_id>.isar.consequences.tsv` (gene → predicted consequence) and a
+  collapsible gallery of per-gene switch plots in `plots/isar/switchplots/`.
+  `ISAR_RUN_PFAM` now stages the whole hmmpressed DB (`.hmm` + `.h3f/.h3i/.h3m/.h3p`)
+  as symlinks and bind-mounts its directory into the container, so the ~7 GB
+  Pfam-A.hmm is not copied per task.
+- LeafCutter: brief interpretation text, two tables (by cluster / by intron)
+  sorted by effect size, an intron-level volcano, and a per-sample PSI heatmap in
+  `plots/leafcutter/`. `LEAFCUTTER_DS` now carries the per-sample counts into the
+  comparison dir (audit only, not a deliverable) so the heatmap can be built.
+- ORA now uses the genes tested by each tool as the enrichment background
+  (`universe`) instead of the whole genome.
+
+### Fixed
+- `isar.consequences.tsv` is now declared in `EXPORT_TOOL_MASTERS`'s output block
+  so `publishDir` ships it (undeclared files were never published). The validator
+  now fails when the shipped table is missing for a contrast where ISAR ran.
+- Per-switch consequence table: the read of `switch_consequence_detail.csv` now
+  surfaces (in the report) why the table is absent, instead of leaving a silent
+  gap when the file is missing, empty or unparseable.
+- LeafCutter PSI heatmap: the per-sample counts file is whitespace-separated with
+  a header naming only the sample columns, so `read.delim` (tab) parsed a single
+  column and the plot was skipped silently. The parser is fixed and, if the plot
+  still cannot be built, the report states the reason.
+
+### Changed
+- LeafCutter significance in the report now uses the same two-level rule as the
+  deliverables master (cluster passes FDR **and** `max|ΔPSI| >= dpsi_cutoff`);
+  the summary metric label reflects this.
+- Cross-tool overlap now keys genes exactly like `export_cross_tool` (the row's
+  own Ensembl id when present, else symbol mapped through the dictionary), so the
+  UpSet / set-size counts equal `cross_tool.master` per tool. ENSG-only labels and
+  ID echoes are kept in the overlap; a symbol-only set is used for the ORA.
+- Report p-values: LeafCutter `p`/`p.adjust` render in scientific notation
+  (`3.7e-05`) via `DT::formatSignif` (sort stays numeric). The TSV keeps full
+  precision.
+- ISAR consequence summary read with the native IsoformSwitchAnalyzeR schema
+  (`featureCompared` / `switchConsequence` / `nrGenesWithConsequences`); the
+  previous `consequencesToPlot` argument typo that silently emptied the summary
+  is fixed.
+- ORA gene symbols are no longer upper-cased before `enrichGO`/`enrichKEGG`
+  (upper-casing broke lowercase-suffix symbols such as `C1orf162`); upper-casing
+  is kept only for the cross-tool canonical keys. GO/KEGG tables are now inside
+  per-set `<details>` dropdowns under their plots.
+- Results contract bumped to 2.6.0.
+
 ## [2.5.0] - 2026-10-15
 
 ### Changed (report)
