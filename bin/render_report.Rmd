@@ -1459,7 +1459,7 @@ if ("gene_name" %in% colnames(isar_switches)) {
 }
 ```
 
-```{r isar_consequences_plot, eval=!is.null(params$isar_dir), fig.height=6}
+```{r isar_consequences_plot, eval=!is.null(params$isar_dir), fig.height=6, results='asis'}
 # Native IsoformSwitchAnalyzeR summary schema: Comparison, featureCompared,
 # switchConsequence, nrGenesWithConsequences, nrIsoWithConsequences. A single
 # switch can carry several consequences, so the bars are per consequence type,
@@ -1497,9 +1497,11 @@ if (has_consequences) {
       colnames(isar_consequence_detail)
     )
     if (length(detail_cols) > 0) {
-      print(truncate_geneid_datatable(
+      # Emit the widget HTML explicitly; a datatable passed to print() here is
+      # dropped by knitr (same reason ORA uses cat(knitr::knit_print())).
+      cat(knitr::knit_print(truncate_geneid_datatable(
         isar_consequence_detail[, detail_cols, drop = FALSE],
-        "Predicted functional consequences per switch"))
+        "Predicted functional consequences per switch")))
     }
   }
 } else {
@@ -1882,12 +1884,16 @@ lc_heatmap_plot <- tryCatch({
     filter(Significant) %>%
     arrange(desc(max_abs_deltapsi)) %>%
     head(20)
-  keep <- cid %in% top_clusters$cluster
+  # The per-sample counts name chromosomes Ensembl-style ("1:clu_...") while the
+  # cluster tables use UCSC ("chr1:clu_..."); match on the prefix-stripped id.
+  norm_chr <- function(x) sub("^chr", "", x)
+  cluster_label <- stats::setNames(top_clusters$cluster, norm_chr(top_clusters$cluster))
+  keep <- norm_chr(cid) %in% names(cluster_label)
   stopifnot(any(keep))
   psi_sub <- psi[keep, , drop = FALSE]
   # Cap introns per cluster so the tile grid stays readable.
   keep_ids <- rownames(psi_sub)
-  keep_cid <- cid[keep]
+  keep_cid <- unname(cluster_label[norm_chr(cid[keep])])
   per_cluster_idx <- ave(seq_along(keep_ids), keep_cid, FUN = seq_along)
   psi_sub <- psi_sub[per_cluster_idx <= 10, , drop = FALSE]
   keep_cid <- keep_cid[per_cluster_idx <= 10]

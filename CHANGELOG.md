@@ -36,13 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `isar.consequences.tsv` is now declared in `EXPORT_TOOL_MASTERS`'s output block
   so `publishDir` ships it (undeclared files were never published). The validator
   now fails when the shipped table is missing for a contrast where ISAR ran.
-- Per-switch consequence table: the read of `switch_consequence_detail.csv` now
-  surfaces (in the report) why the table is absent, instead of leaving a silent
-  gap when the file is missing, empty or unparseable.
-- LeafCutter PSI heatmap: the per-sample counts file is whitespace-separated with
-  a header naming only the sample columns, so `read.delim` (tab) parsed a single
-  column and the plot was skipped silently. The parser is fixed and, if the plot
-  still cannot be built, the report states the reason.
+- Per-switch consequence table is now emitted with `cat(knitr::knit_print(...))`
+  (as the ORA tables are); a datatable passed to `print()` in that chunk was
+  silently dropped by knitr, so the table never reached the report.
+- LeafCutter PSI heatmap: the per-sample counts name chromosomes Ensembl-style
+  (`1:clu_...`) while the cluster tables use UCSC (`chr1:clu_...`), so the
+  intron→cluster match failed and the plot was skipped. The match now ignores the
+  `chr` prefix; the parser also handles the whitespace-separated counts file, and
+  if the plot still cannot be built the report states the reason.
 
 ### Changed
 - LeafCutter significance in the report now uses the same two-level rule as the
